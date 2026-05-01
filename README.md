@@ -1,57 +1,67 @@
-# Jarvis Studio
+# Jarvis Note
 
-Cross-platform desktop screen recorder with AI-driven annotations, transcription, agent-backed Q&A, and self-hosted sharing.
+macOS menu-bar voice-first AI capture tool. Records audio (mic + system), transcribes via cloud APIs, runs AI processing for summaries / action items / dictation.
 
-> **Status:** v0 — design phase. No code yet. See the [design doc](docs/plans/2026-05-01-jarvis-studio-design.md).
+> **Status:** v0 — design phase. No code yet. See the [design doc](docs/plans/2026-05-02-jarvis-note-design.md).
+>
+> **Pivot history:** This project started as **Jarvis Studio** — a cross-platform Tauri/iced screen recorder. After ~5 weeks of build (37 passing tests, working v0.1.1) the scope was pivoted to a smaller voice-first product. The complete Rust workspace is preserved on the `archive/jarvis-studio-rust` branch.
 
-## What It Does
+## What it does
 
-- Record screen + webcam + mic + system audio
-- Live transcription via Whisper (cloud or local)
-- **AI-driven annotations** — type *"circle the error message at 2:14"*, vision LLM places it
-- Q&A over completed sessions via pluggable subprocess agents (Claude Code, Codex CLI, ...)
-- Self-hosted sharing via S3-compatible storage (RustFS, MinIO, R2, B2)
-- One portable executable — no installer required
-
-## Why
-
-Loom-style recording is good. Loom-style sharing is good. AI tools that understand your screen recordings are good. None of them are open source, self-hostable, or composable. Jarvis Studio is.
+- **Meeting Mode** — long-form (30 min – 3 hr), mic + system audio, post-call AI summary in your client's language
+- **Dictation Mode** — short bursts (<60 s), mic only, paste-to-active-app, <1.5 s end-to-end latency
+- **Voice Note Mode** — medium-form (1–15 min), AI structures into note / task / journal / checklist
+- **Multi-language native** — UA / RU / EN / FR. Record UA-language call → FR summary for client.
+- **Self-hosted LLM via Ollama REST** — local or remote (Hetzner GPU box), bring your own
+- **Developer-context paste** — Cursor / VS Code / GitHub / Linear / Jira aware
 
 ## Stack
 
-- **App:** [Tauri 2](https://v2.tauri.app/) (Rust + system webview), portable build
-- **Capture:** [`scap`](https://github.com/CapSoftware/scap) + ffmpeg sidecar
-- **Transcription:** OpenAI Whisper API or local `whisper-rs`
-- **AI annotations:** Claude Sonnet 4 / GPT-4o vision (direct API)
-- **Agents:** subprocess-pluggable — Claude Code, [OpenAI Codex CLI](https://github.com/openai/codex), or any CLI you wire in
-- **Storage:** any S3-compatible — [RustFS](https://rustfs.com) recommended for self-hosting
+- **App:** Pure Swift / SwiftUI / AppKit. No Rust, no FFI, no webview. Single `.app`, ~5–15 MB.
+- **Capture:** `AVAudioEngine` (mic) + Core Audio Tap on macOS 14.4+ / ScreenCaptureKit on 12.3–14.3 (system audio)
+- **Transcription:** Cloud only — Deepgram Nova-2 (default), OpenAI Whisper, AssemblyAI
+- **AI processing:** Anthropic / OpenAI / OpenRouter / **Ollama (REST)** — single `Provider` protocol
+- **Storage:** GRDB.swift / SQLite (index, FTS5) + filesystem sidecars (transcript.jsonl, summary.md, audio.opus)
+- **Sharing:** Any S3-compatible — RustFS / MinIO / R2 / B2. Presigned URLs, no hosted viewer.
 
 ## Platform Support
 
 | OS | v1 | Notes |
 |---|---|---|
-| macOS | ✅ | ScreenCaptureKit via scap; notarized |
-| Windows | ✅ | WGC via scap; signed |
-| Linux | 🔜 | Deferred — revisit when Wayland audio matures |
+| macOS 14.4+ | ✅ | Core Audio Tap, full per-process system audio |
+| macOS 12.3–14.3 | ✅ | ScreenCaptureKit fallback (whole-system mixdown) |
+| macOS <12.3 | ❌ | Unsupported (no system audio API) |
+| Windows | ❌ | Out of scope |
+| Linux | ❌ | Out of scope |
+
+## Privacy posture
+
+**Honest version:** Audio always leaves the machine for transcription (Deepgram / OpenAI / AssemblyAI). The LLM stage can be local via Ollama, or cloud. **Privacy is partial** — see §12 of the design doc. If you require fully-local audio processing, this is not your tool — try Macwhisper or Aiko.
 
 ## Roadmap
 
-- [x] Design document
-- [ ] Implementation plan
-- [ ] v0.1 — Recording pipeline + library UI
-- [ ] v0.2 — AI annotation pipeline (vision LLM + non-destructive JSON)
-- [ ] v0.3 — Agent Q&A panel (Claude Code / Codex backends)
-- [ ] v0.4 — Sharing via S3-compatible storage
-- [ ] v1.0 — Notarized macOS + signed Windows builds
-- [ ] v2.0 — Linux, paid Studio Cloud tier, viewer page
+- [x] Design document (Jarvis Note)
+- [ ] v0.1 — Meeting Mode + transcript only (~2 weeks)
+- [ ] v0.2 — AI summary + Library window (~2 weeks)
+- [ ] v0.3 — Dictation Mode + Sharing (~2 weeks)
+- [ ] v1.0 — All three modes ship together
+- [ ] v1.1+ — Embedding-based semantic search, configurable third-party OpenAI-compat endpoints
+
+## Distribution
+
+Hand-shared binary. **No code signing, no notarization, no auto-update.** First-launch: right-click `.app` → Open to bypass Gatekeeper, or `xattr -d com.apple.quarantine /Applications/JarvisNote.app`. Single-user, personal-tool positioning.
 
 ## Configuration
 
-All settings live in a single `jarvis-studio.config.json`. See §10 of the [design doc](docs/plans/2026-05-01-jarvis-studio-design.md#10-configuration-reference).
+API keys live in macOS Keychain. Other settings in `UserDefaults` + `~/Library/Application Support/JarvisNote/JarvisNote.config.json`. See §13 of the design doc.
 
 ## Contributing
 
-Project is in design phase. Issues and design feedback are welcome. Pull requests for code will open after the v0.1 plan is published.
+Project is in design phase. Pull requests for code will open after v0.1 implementation begins.
+
+## Archive
+
+The Jarvis Studio Rust implementation (Tauri → iced pivot, 9 crates, 37 passing tests, 5 review rounds, audio-only mode, Whisper Cloud transcription, Settings tab, error-banner UX) is preserved at branch `archive/jarvis-studio-rust`. Out of scope for new development; checkout that branch only for historical reference.
 
 ## License
 

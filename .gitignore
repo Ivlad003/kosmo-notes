@@ -1,9 +1,16 @@
 # Build artifacts
-/target/
-/dist/
-/build/
-node_modules/
-*.log
+.build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+build/
+
+# Swift Package Manager
+.swiftpm/
+Packages/
+Package.resolved
 
 # OS files
 .DS_Store
@@ -16,23 +23,19 @@ Thumbs.db
 *.swo
 
 # Recordings / session data — never commit
-sessions/
-JarvisStudio/
-*.mp4
-*.wav
-*.webm
+recordings/
+JarvisNote/
 
 # Config secrets
-jarvis-studio.config.json
+JarvisNote.config.json
 *.local.toml
 .env
 .env.*
 !.env.example
 
-# Tauri
-src-tauri/target/
-src-tauri/Cargo.lock
-
-# Rust
+# Archive branch artifacts (only present on archive/jarvis-studio-rust)
+target/
 Cargo.lock
 **/*.rs.bk
+node_modules/
+*.log
