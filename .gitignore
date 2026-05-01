@@ -1,0 +1,38 @@
+# Build artifacts
+/target/
+/dist/
+/build/
+node_modules/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Recordings / session data — never commit
+sessions/
+JarvisStudio/
+*.mp4
+*.wav
+*.webm
+
+# Config secrets
+jarvis-studio.config.json
+*.local.toml
+.env
+.env.*
+!.env.example
+
+# Tauri
+src-tauri/target/
+src-tauri/Cargo.lock
+
+# Rust
+Cargo.lock
+**/*.rs.bk
