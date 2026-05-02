@@ -1,5 +1,6 @@
 import SwiftUI
 import AIKit
+import StorageKit
 
 // MARK: - ChatView
 
@@ -9,25 +10,41 @@ struct ChatView: View {
     @Bindable var chat: ChatState
     @Bindable var settings: AppSettings
 
+    @State private var showSessionPicker: Bool = false
+    @State private var pickerSelectedIds: Set<String> = []
+    // "standard" or "snapshot" — only shown while recording.
+    @State private var inputMode: InputMode = .standard
+
+    private enum InputMode: String, CaseIterable, Identifiable {
+        case standard = "Standard"
+        case snapshot = "Live snapshot"
+        var id: String { rawValue }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             topBar
+            Divider()
+            attachedSessionsRow
             Divider()
             messageList
             if let error = chat.lastError {
                 errorBanner(error)
             }
             Divider()
-            inputArea
+            bottomInputArea
         }
         .frame(minWidth: 540, minHeight: 600)
+        .sheet(isPresented: $showSessionPicker) {
+            sessionPickerSheet
+        }
     }
 
     // MARK: - Top bar
 
     private var topBar: some View {
-        HStack {
-            // Provider switcher pill — bound to settings so change persists.
+        HStack(spacing: 12) {
+            // Provider pill
             Picker("Provider", selection: $settings.llmProvider) {
                 ForEach(AppSettings.LLMProviderChoice.allCases) { choice in
                     Text(choice.displayName).tag(choice)
@@ -35,27 +52,78 @@ struct ChatView: View {
             }
             .pickerStyle(.segmented)
             .frame(maxWidth: 240)
+            .help("LLM provider used for chat responses")
 
-            Spacer()
+            Divider().frame(height: 20)
 
-            // Context toggle
-            Toggle("Last session", isOn: $chat.includeLastSessionContext)
+            // Auto-find toggle
+            Toggle("Auto-find sessions", isOn: $chat.autoSearchSessions)
                 .toggleStyle(.checkbox)
-                .help("Prepend the last completed recording transcript as context")
                 .font(.callout)
+                .help("Automatically search recorded sessions for context matching your message")
+
+            // Search depth stepper — only useful when auto-find is on.
+            if chat.autoSearchSessions {
+                Stepper(
+                    value: $chat.searchDepth,
+                    in: 1...10,
+                    label: {
+                        Text("Depth: \(chat.searchDepth)")
+                            .font(.callout)
+                            .monospacedDigit()
+                    }
+                )
+                .help("Number of sessions to attach from FTS results (1–10)")
+            }
 
             Spacer()
 
-            Button(action: { chat.clear() }) {
+            Button(action: { Task { await chat.clear() } }) {
                 Label("Clear", systemImage: "trash")
                     .labelStyle(.iconOnly)
             }
             .buttonStyle(.borderless)
-            .help("Clear conversation")
-            .disabled(chat.messages.isEmpty && chat.lastError == nil)
+            .help("Clear conversation and detach all sessions")
+            .disabled(chat.messages.isEmpty && chat.attachedSessions.isEmpty && chat.lastError == nil)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    // MARK: - Attached sessions chips row
+
+    // Always show the sessions row so the "Add session" button is always reachable.
+    @ViewBuilder
+    private var attachedSessionsRow: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(chat.attachedSessions, id: \.self) { attached in
+                        SessionChip(attached: attached) {
+                            chat.detachSession(attached.record.id)
+                        }
+                    }
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 6)
+            }
+
+            Spacer(minLength: 0)
+
+            // Manual attach button
+            Button {
+                pickerSelectedIds = []
+                showSessionPicker = true
+            } label: {
+                Label("Add session", systemImage: "paperclip")
+                    .font(.callout)
+            }
+            .buttonStyle(.borderless)
+            .help("Manually attach a recorded session as context")
+            .padding(.trailing, 12)
+        }
+        .frame(minHeight: 36)
+        .background(Color(NSColor.windowBackgroundColor))
     }
 
     // MARK: - Message list
@@ -65,8 +133,11 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(chat.messages.enumerated()), id: \.offset) { idx, message in
-                        MessageBubble(message: message)
-                            .id(idx)
+                        // Skip system messages — they're injected context, not conversation.
+                        if message.role != .system {
+                            MessageBubble(message: message)
+                                .id(idx)
+                        }
                     }
                     if chat.isSending {
                         thinkingIndicator
@@ -76,7 +147,6 @@ struct ChatView: View {
                 .padding(16)
             }
             .onChange(of: chat.messages.count) { _, _ in
-                // Scroll to bottom when new messages arrive.
                 withAnimation {
                     proxy.scrollTo(chat.messages.count - 1, anchor: .bottom)
                 }
@@ -89,6 +159,8 @@ struct ChatView: View {
         }
         .background(Color(NSColor.textBackgroundColor))
     }
+
+    // MARK: - Thinking indicator
 
     private var thinkingIndicator: some View {
         HStack(spacing: 6) {
@@ -128,15 +200,38 @@ struct ChatView: View {
         .background(Color(NSColor.windowBackgroundColor))
     }
 
-    // MARK: - Input area
+    // MARK: - Bottom input area
 
-    private var inputArea: some View {
+    @ViewBuilder
+    private var bottomInputArea: some View {
+        VStack(spacing: 0) {
+            // Mode switcher only shows when actively recording.
+            if chat.isRecording {
+                Picker("Input mode", selection: $inputMode) {
+                    ForEach(InputMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+            }
+
+            if inputMode == .snapshot, chat.isRecording {
+                snapshotInputArea
+            } else {
+                standardInputArea
+            }
+        }
+    }
+
+    // Standard text → send path.
+    private var standardInputArea: some View {
         HStack(alignment: .bottom, spacing: 8) {
             TextField("Message…", text: $chat.inputDraft, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...6)
                 .onSubmit {
-                    // Cmd+Return sends; plain Return adds a newline (axis:.vertical default).
                     Task { await chat.send() }
                 }
                 .disabled(chat.isSending)
@@ -156,8 +251,147 @@ struct ChatView: View {
         .padding(.vertical, 12)
     }
 
+    // Live snapshot input path — whispers current recording into context.
+    private var snapshotInputArea: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("Ask about the last ~60 seconds…", text: $chat.snapshotQuestion, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...4)
+                    .disabled(chat.isSnapshotting)
+
+                Button {
+                    Task { await chat.sendSnapshot() }
+                } label: {
+                    if chat.isSnapshotting {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                            .progressViewStyle(.circular)
+                            .frame(width: 28, height: 28)
+                    } else {
+                        Image(systemName: "waveform.and.arrow.up")
+                            .font(.title2)
+                            .foregroundStyle(canSendSnapshot ? .blue : .secondary)
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(!canSendSnapshot || chat.isSnapshotting)
+                .help("Transcribe last ~60 s and ask")
+            }
+
+            Text("Transcribes the last ~60 s via Whisper, then asks your question.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    // MARK: - Session picker sheet
+
+    private var sessionPickerSheet: some View {
+        SessionPickerSheet(
+            database: chat.database,
+            selectedIds: $pickerSelectedIds,
+            onConfirm: {
+                showSessionPicker = false
+                let ids = Array(pickerSelectedIds)
+                Task { await chat.attachSessions(ids) }
+            },
+            onCancel: {
+                showSessionPicker = false
+            }
+        )
+    }
+
+    // MARK: - Computed
+
     private var canSend: Bool {
         !chat.inputDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !chat.isSending
+    }
+
+    private var canSendSnapshot: Bool {
+        !chat.snapshotQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+// MARK: - SessionChip
+
+/// Compact chip showing a single attached session. Tapping the (X) detaches it.
+@available(macOS 14.0, *)
+private struct SessionChip: View {
+
+    let attached: ChatState.AttachedSession
+    let onRemove: () -> Void
+
+    @State private var showSnippet: Bool = false
+
+    private static let shortFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .short
+        return f
+    }()
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if case .autoFromSearch = attached {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(Self.shortFormatter.string(from: attached.record.recordedAt))
+                .font(.caption)
+                .lineLimit(1)
+
+            Text(attached.record.mode.rawValue.prefix(3).uppercased())
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Button {
+                onRemove()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("Remove from context")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { showSnippet.toggle() }
+        .popover(isPresented: $showSnippet, arrowEdge: .bottom) {
+            snippetPopover
+        }
+        .help("Tap to preview context snippet")
+    }
+
+    @ViewBuilder
+    private var snippetPopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Context snippet")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if case .autoFromSearch(_, let snippet) = attached {
+                Text(snippet)
+                    .font(.callout)
+                    .textSelection(.enabled)
+            } else {
+                Text("Manually attached — full transcript used as context.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: 320)
     }
 }
 
@@ -184,13 +418,9 @@ private struct MessageBubble: View {
 
     private var bubbleColor: Color {
         switch message.role {
-        case .user:
-            return Color.accentColor
-        case .assistant:
-            return Color(NSColor.controlBackgroundColor)
-        case .system:
-            // System messages are not normally shown but guard the case.
-            return Color(NSColor.windowBackgroundColor)
+        case .user:      return Color.accentColor
+        case .assistant: return Color(NSColor.controlBackgroundColor)
+        case .system:    return Color(NSColor.windowBackgroundColor)
         }
     }
 
