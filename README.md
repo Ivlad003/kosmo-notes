@@ -118,6 +118,10 @@ Project is in design phase. Pull requests for code will open after v0.1 implemen
 
 The Jarvis Studio Rust implementation (Tauri → iced pivot, 9 crates, 37 passing tests, 5 review rounds, audio-only mode, Whisper Cloud transcription, Settings tab, error-banner UX) is preserved at branch `archive/jarvis-studio-rust`. Out of scope for new development; checkout that branch only for historical reference.
 
+## Releasing v1.0
+
+Before tagging v1.0, run the manual Dictation latency measurement: see [docs/manual-smoke/2026-05-02-ac9b-dictation-latency-procedure.md](docs/manual-smoke/2026-05-02-ac9b-dictation-latency-procedure.md). Attach the resulting table to the release notes per AC-9b.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
