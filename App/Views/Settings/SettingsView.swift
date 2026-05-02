@@ -170,6 +170,37 @@ private struct AIProvidersTab: View {
                 }
             }
 
+            Section("Ollama (local)") {
+                HStack {
+                    Text("Endpoint")
+                    Spacer()
+                    TextField("http://localhost:11434", text: $settings.ollamaEndpoint)
+                        .frame(width: 240)
+                        .textFieldStyle(.roundedBorder)
+                }
+                Picker("API mode", selection: $settings.ollamaApiMode) {
+                    ForEach(AppSettings.OllamaAPIMode.allCases) { m in
+                        Text(m.displayName).tag(m)
+                    }
+                }
+                .pickerStyle(.segmented)
+                HStack {
+                    Text("Default model")
+                    Spacer()
+                    TextField("qwen2.5:14b", text: $settings.ollamaModel)
+                        .frame(width: 200)
+                        .textFieldStyle(.roundedBorder)
+                }
+                APIKeyField(
+                    title: "Bearer token (optional)",
+                    text: $settings.ollamaBearer,
+                    onCommit: { settings.commit(.ollama, value: settings.ollamaBearer) }
+                )
+                Text("HTTP only allowed for localhost / 10.x / 172.16-31.x / 192.168.x. Use HTTPS for any other host.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Cost cap") {
                 HStack {
                     Text("Per-session limit")

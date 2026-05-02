@@ -22,6 +22,7 @@ final class AppSettings {
         case deepgram = "deepgram.api_key"
         case openaiWhisper = "openai.api_key"           // shared between Whisper transcription + GPT LLM
         case anthropic = "anthropic.api_key"
+        case ollama = "ollama.bearer_token"             // optional; some self-hosted setups require auth
     }
 
     enum TranscriptionProviderChoice: String, CaseIterable, Identifiable {
@@ -40,12 +41,27 @@ final class AppSettings {
     enum LLMProviderChoice: String, CaseIterable, Identifiable {
         case anthropic
         case openai
+        case ollama
 
         var id: String { rawValue }
         var displayName: String {
             switch self {
             case .anthropic: return "Anthropic Claude"
             case .openai: return "OpenAI"
+            case .ollama: return "Ollama (local)"
+            }
+        }
+    }
+
+    enum OllamaAPIMode: String, CaseIterable, Identifiable {
+        case native
+        case openaiCompat
+
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .native: return "Native (/api/chat)"
+            case .openaiCompat: return "OpenAI-compat (/v1/chat/completions)"
             }
         }
     }
@@ -71,6 +87,11 @@ final class AppSettings {
         static let summaryLanguage = "summaryLanguage"
         static let recordingMode = "recordingMode"
         static let costCapUSD = "costCapUSD"
+        static let ollamaEndpoint = "ollamaEndpoint"
+        static let ollamaApiMode = "ollamaApiMode"
+        static let ollamaModel = "ollamaModel"
+        // ollamaBearer is Keychain-backed; this constant is the account name reference.
+        static let ollamaBearer = "ollamaBearer"
     }
 
     // MARK: Observable state — secrets read on demand from Keychain
@@ -80,6 +101,7 @@ final class AppSettings {
     var deepgramApiKey: String = ""
     var openaiApiKey: String = ""
     var anthropicApiKey: String = ""
+    var ollamaBearer: String = ""   // optional bearer token for self-hosted Ollama frontends
 
     var transcriptionProvider: TranscriptionProviderChoice {
         didSet { UserDefaults.standard.set(transcriptionProvider.rawValue, forKey: Defaults.transcriptionProvider) }
@@ -99,6 +121,19 @@ final class AppSettings {
     /// Per-session AI summary cost cap in USD. Requests estimated above this are silently skipped.
     var costCapUSD: Double {
         didSet { UserDefaults.standard.set(costCapUSD, forKey: Defaults.costCapUSD) }
+    }
+
+    /// Base URL of the Ollama server (default: http://localhost:11434).
+    var ollamaEndpoint: String {
+        didSet { UserDefaults.standard.set(ollamaEndpoint, forKey: Defaults.ollamaEndpoint) }
+    }
+    /// API mode: native /api/chat or OpenAI-compat /v1/chat/completions.
+    var ollamaApiMode: OllamaAPIMode {
+        didSet { UserDefaults.standard.set(ollamaApiMode.rawValue, forKey: Defaults.ollamaApiMode) }
+    }
+    /// Default model name sent to Ollama (e.g. "qwen2.5:14b").
+    var ollamaModel: String {
+        didSet { UserDefaults.standard.set(ollamaModel, forKey: Defaults.ollamaModel) }
     }
 
     // MARK: Init
@@ -126,6 +161,13 @@ final class AppSettings {
         let cap = UserDefaults.standard.double(forKey: Defaults.costCapUSD)
         self.costCapUSD = cap > 0 ? cap : 1.00
 
+        self.ollamaEndpoint = UserDefaults.standard.string(forKey: Defaults.ollamaEndpoint) ?? "http://localhost:11434"
+
+        let apiModeRaw = UserDefaults.standard.string(forKey: Defaults.ollamaApiMode) ?? OllamaAPIMode.native.rawValue
+        self.ollamaApiMode = OllamaAPIMode(rawValue: apiModeRaw) ?? .native
+
+        self.ollamaModel = UserDefaults.standard.string(forKey: Defaults.ollamaModel) ?? "qwen2.5:14b"
+
         loadKeysFromKeychain()
     }
 
@@ -135,6 +177,7 @@ final class AppSettings {
         deepgramApiKey = (try? keychain.get(KeychainAccount.deepgram.rawValue)) ?? ""
         openaiApiKey = (try? keychain.get(KeychainAccount.openaiWhisper.rawValue)) ?? ""
         anthropicApiKey = (try? keychain.get(KeychainAccount.anthropic.rawValue)) ?? ""
+        ollamaBearer = (try? keychain.get(KeychainAccount.ollama.rawValue)) ?? ""
     }
 
     /// Persist all currently-loaded values to Keychain. Empty strings are
@@ -143,6 +186,7 @@ final class AppSettings {
         commit(.deepgram, value: deepgramApiKey)
         commit(.openaiWhisper, value: openaiApiKey)
         commit(.anthropic, value: anthropicApiKey)
+        commit(.ollama, value: ollamaBearer)
     }
 
     func commit(_ account: KeychainAccount, value: String) {
