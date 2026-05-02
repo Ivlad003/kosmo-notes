@@ -175,6 +175,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await database.migrate()
             } catch {
                 presentFatalSetupError("Could not migrate database.", error: error)
+                return
+            }
+
+            // After migration, scan for orphan sessions and offer recovery.
+            let coordinator = RecoveryCoordinator(sessionStore: sessionStore, database: database)
+            let recoveryResult = await coordinator.runAtLaunch(rootDir: recordingsDir)
+            switch recoveryResult {
+            case .noOrphans, .userDeclined:
+                break
+            case .recovered(let n):
+                let alert = NSAlert()
+                alert.messageText = "Recovered \(n) session(s)"
+                alert.informativeText = "Audio files were rebuilt from interrupted recordings. Open the Library to review."
+                alert.alertStyle = .informational
+                alert.runModal()
+            case .partial(let r, let f):
+                let alert = NSAlert()
+                alert.messageText = "Recovery partial"
+                alert.informativeText = "\(r) recovered, \(f) failed. Failed sessions remain on disk under \(recordingsDir.path)."
+                alert.alertStyle = .warning
+                alert.runModal()
             }
         }
     }
