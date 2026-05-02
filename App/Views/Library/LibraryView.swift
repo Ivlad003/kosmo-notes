@@ -167,6 +167,8 @@ private struct SessionDetailView: View {
     @State private var playerModel = PlayerModel()
     @State private var segments: [TranscriptSegment] = []
     @State private var segmentsLoading = true
+    @State private var hasScreenVideo: Bool = false
+    @State private var exportError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -182,7 +184,7 @@ private struct SessionDetailView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 8)
 
-            // ±15s skip buttons sit below the player.
+            // Skip buttons + Export menu + Open in Finder.
             HStack(spacing: 16) {
                 Button {
                     playerModel.skip(by: -15)
@@ -199,6 +201,19 @@ private struct SessionDetailView: View {
                 .buttonStyle(.borderless)
 
                 Spacer()
+
+                Menu {
+                    Button("Markdown bundle (.md)") { Task { await runExport(format: .markdown) } }
+                    Button("Plain transcript (.txt)") { Task { await runExport(format: .plainText) } }
+                    Button("Audio file (.m4a)") { Task { await runExport(format: .audio) } }
+                    if hasScreenVideo {
+                        Button("Screen recording (.mp4)") { Task { await runExport(format: .screenVideo) } }
+                    }
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.borderless)
+                .menuStyle(.button)
 
                 Button {
                     openInFinder()
@@ -229,6 +244,18 @@ private struct SessionDetailView: View {
         .task {
             await loadAudio()
             await loadTranscript()
+            // Check for screen.mp4 sidecar to decide whether to show the export option.
+            let audioURL = await state.audioFileURL(for: session.id)
+            let screenURL = audioURL.deletingLastPathComponent().appendingPathComponent("screen.mp4")
+            hasScreenVideo = FileManager.default.fileExists(atPath: screenURL.path)
+        }
+        .alert("Export Failed", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { exportError = nil }
+        } message: {
+            Text(exportError ?? "")
         }
     }
 
@@ -260,6 +287,15 @@ private struct SessionDetailView: View {
         Task {
             let audioURL = await state.audioFileURL(for: session.id)
             NSWorkspace.shared.activateFileViewerSelecting([audioURL])
+        }
+    }
+
+    private func runExport(format: SessionExporter.Format) async {
+        do {
+            let dir = await state.audioFileURL(for: session.id).deletingLastPathComponent()
+            try await SessionExporter.exportSession(session, sessionDir: dir, format: format)
+        } catch {
+            exportError = error.localizedDescription
         }
     }
 }
