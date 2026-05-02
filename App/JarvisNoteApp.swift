@@ -321,7 +321,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let chatState = ChatState(settings: settings, database: database, sessionStore: sessionStore)
+        guard let recorder = recorderState else {
+            // recorderState is guarded by #available above; this path is unreachable in practice.
+            return
+        }
+
+        let chatState = ChatState(
+            settings: settings,
+            database: database,
+            sessionStore: sessionStore,
+            recorder: recorder
+        )
         self.chatHolder = chatState
 
         let view = ChatView(chat: chatState, settings: settings)
