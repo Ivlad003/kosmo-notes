@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import Foundation
 import Observation
+import AIKit
 import CaptureKit
 import StorageKit
 import TranscriptionKit
@@ -57,6 +58,8 @@ final class RecorderState {
     var status: Status = .idle
     /// 0..1 RMS-based level. Updated only while `status == .recording`.
     var micLevel: Double = 0
+    /// Set after a successful AI summary write; nil when no summary exists yet.
+    var lastSummaryURL: URL? = nil
 
     // MARK: - Dependencies
 
@@ -201,6 +204,14 @@ final class RecorderState {
 
             // FTS index + DB row finalize
             try await sessionStore.indexTranscript(sid: sessionId, text: result.text)
+
+            // Generate AI summary; failures are non-fatal — pipeline continues regardless.
+            lastSummaryURL = await tryGenerateSummary(
+                transcript: result.text,
+                sessionDir: dir,
+                sourceLanguage: result.language
+            )
+
             try await sessionStore.finalize(id: sessionId, status: .complete, durationSecs: duration)
 
             let preview = previewText(result.text)
@@ -209,6 +220,68 @@ final class RecorderState {
             // Mark the session failed in the DB, but don't crash if that fails too.
             try? await sessionStore.finalize(id: sessionId, status: .failed, durationSecs: 0)
             self.status = .failed(message: "Transcription failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - AI Summary
+
+    /// Calls the configured LLM to produce a Markdown summary and atomically
+    /// writes it to `<sessionDir>/summary.md`. Returns the file URL on success,
+    /// nil on any failure (missing key, cost cap exceeded, network error, etc.).
+    private func tryGenerateSummary(
+        transcript: String,
+        sessionDir: URL,
+        sourceLanguage: String?
+    ) async -> URL? {
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Resolve target language: nil means "auto" — let PromptTemplates decide.
+        let target: String? = settings.summaryLanguage == "auto" ? nil : settings.summaryLanguage
+        let system = PromptTemplates.meetingSummary(sourceLanguage: sourceLanguage, targetLanguage: target)
+        let userMsg = PromptTemplates.meetingUserMessage(transcript: trimmed)
+
+        // Select provider and pricing based on user preference.
+        let provider: any AIProvider
+        let pricing: CostEstimator.Pricing
+        let model: String
+
+        switch settings.llmProvider {
+        case .anthropic:
+            let key = settings.anthropicApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { return nil }
+            provider = AnthropicProvider(apiKey: key)
+            model = "claude-sonnet-4-6"
+            pricing = CostEstimator.anthropic_claude_sonnet_4_6
+        case .openai:
+            let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { return nil }
+            provider = OpenAIProvider(apiKey: key)
+            model = "gpt-4o-mini"
+            pricing = CostEstimator.openai_gpt_4o_mini
+        }
+
+        // Estimate cost before sending — skip silently if it exceeds the cap.
+        let inputTokens = CostEstimator.estimateTokens(text: system) + CostEstimator.estimateTokens(text: userMsg)
+        let outputTokensCap = 1500
+        let estimatedCost = CostEstimator.estimate(
+            inputTokens: inputTokens,
+            outputTokens: outputTokensCap,
+            pricing: pricing
+        )
+        guard estimatedCost <= settings.costCapUSD else { return nil }
+
+        let messages: [ChatMessage] = [ChatMessage(role: .user, content: userMsg)]
+        let config = AIConfig(model: model, temperature: 0.3, maxTokens: outputTokensCap, systemPrompt: system)
+
+        do {
+            let summary = try await provider.chat(messages: messages, config: config)
+            let summaryURL = sessionDir.appendingPathComponent("summary.md")
+            try AtomicWriter.write(Data(summary.utf8), to: summaryURL)
+            return summaryURL
+        } catch {
+            // Summary failures are non-fatal; the session is still usable without one.
+            return nil
         }
     }
 
