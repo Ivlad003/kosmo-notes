@@ -1,5 +1,7 @@
 @preconcurrency import AVFoundation
 import Foundation
+import os
+import os.signpost
 import TranscriptionKit
 import AIKit
 
@@ -17,6 +19,50 @@ import AIKit
 public final class DictationPipeline {
 
     public typealias Logger = @Sendable (String) -> Void
+
+    /// Stable signpost-event names emitted by the pipeline. Public so tests
+    /// (and Instruments queries) can match against them without fuzzy strings.
+    public enum Stage: String, Sendable, CaseIterable {
+        case captureStart = "capture-start"
+        case encodeDone = "encode-done"
+        case uploadIssued = "upload-issued"
+        case transcriptFinal = "transcript-final"
+        case llmCleanupFinal = "llm-cleanup-final"
+        case pasteIssued = "paste-issued"
+
+        /// `OSSignposter.emitEvent` needs a `StaticString`, so we precompute
+        /// one `EventName` per case from a literal.
+        var signpostName: StaticString {
+            switch self {
+            case .captureStart:     return "capture-start"
+            case .encodeDone:       return "encode-done"
+            case .uploadIssued:     return "upload-issued"
+            case .transcriptFinal:  return "transcript-final"
+            case .llmCleanupFinal:  return "llm-cleanup-final"
+            case .pasteIssued:      return "paste-issued"
+            }
+        }
+    }
+
+    /// Test/observability hook fired in addition to the real `os_signpost`
+    /// emission. Receives the `Stage` and the absolute timestamp at which
+    /// the pipeline reached it. Default `nil` keeps existing call sites
+    /// (e.g. `App/State/DictationState.swift`) untouched.
+    public typealias EventHook = @Sendable (Stage, ContinuousClock.Instant) -> Void
+
+    /// Test-only paste shim. Defaults to the real `AccessibilityPaster.paste`.
+    public typealias Paster = @Sendable (String) -> AccessibilityPaster.PasteResult
+
+    /// Test-only transcription shim. Defaults to the configured
+    /// `WhisperProvider.transcribe`.
+    public typealias Transcriber = @Sendable (URL, TranscriptionConfig) async throws -> BatchTranscriptResult
+
+    /// `OSSignposter` is the modern API and is `Sendable`-safe; one shared
+    /// instance per process is fine.
+    static let signposter = OSSignposter(
+        subsystem: "dev.jarvisnote.dictation",
+        category: "pipeline"
+    )
 
     // MARK: - Status
 
@@ -36,10 +82,12 @@ public final class DictationPipeline {
 
     // MARK: - Dependencies
 
-    private let whisperProvider: WhisperProvider
     private let llmProvider: (any AIProvider)?
     private let maxDurationSeconds: Int
     private let logger: Logger?
+    let eventHook: EventHook?
+    let transcriber: Transcriber
+    let paster: Paster
 
     // MARK: - Engine state (nonisolated storage via actor-hop-safe box)
 
@@ -47,16 +95,58 @@ public final class DictationPipeline {
 
     // MARK: - Init
 
+    /// Production initializer. Wraps `whisperProvider.transcribe` and the
+    /// real `AccessibilityPaster.paste` in shim closures so the rest of the
+    /// pipeline can run against either real or mocked stages without
+    /// branching.
     public init(
         whisperProvider: WhisperProvider,
         llmProvider: (any AIProvider)?,
         maxDurationSeconds: Int,
-        logger: Logger? = nil
+        logger: Logger? = nil,
+        eventHook: EventHook? = nil
     ) {
-        self.whisperProvider = whisperProvider
         self.llmProvider = llmProvider
         self.maxDurationSeconds = maxDurationSeconds
         self.logger = logger
+        self.eventHook = eventHook
+        self.transcriber = { url, cfg in
+            try await whisperProvider.transcribe(audioFile: url, config: cfg)
+        }
+        self.paster = { text in
+            AccessibilityPaster.paste(text)
+        }
+    }
+
+    /// Test-only initializer that injects custom transcription / paste shims
+    /// so the pipeline can be exercised end-to-end without touching the
+    /// network or the AX subsystem. Marked `internal` so production code
+    /// can't accidentally rely on it.
+    init(
+        transcriber: @escaping Transcriber,
+        paster: @escaping Paster,
+        llmProvider: (any AIProvider)?,
+        maxDurationSeconds: Int,
+        logger: Logger? = nil,
+        eventHook: EventHook? = nil
+    ) {
+        self.llmProvider = llmProvider
+        self.maxDurationSeconds = maxDurationSeconds
+        self.logger = logger
+        self.eventHook = eventHook
+        self.transcriber = transcriber
+        self.paster = paster
+    }
+
+    // MARK: - Signpost helpers
+
+    /// Emit an `os_signpost` `.event` for the given stage and notify the
+    /// optional in-process `EventHook`. Both fire synchronously so the test
+    /// hook's timestamp matches the signpost timestamp within nanoseconds.
+    func emit(_ stage: Stage) {
+        let now = ContinuousClock.now
+        Self.signposter.emitEvent(stage.signpostName)
+        eventHook?(stage, now)
     }
 
     // MARK: - Public API
@@ -67,6 +157,7 @@ public final class DictationPipeline {
             if case .failed = status { return true } else { return false }
         }() else { return }
 
+        emit(.captureStart)
         let box = EngineBox()
         try await box.start(maxSeconds: maxDurationSeconds)
         engineBox = box
@@ -92,6 +183,7 @@ public final class DictationPipeline {
             status = .failed("Could not encode audio")
             return
         }
+        emit(.encodeDone)
         defer { try? FileManager.default.removeItem(at: wavURL) }
 
         // Transcribe
@@ -99,10 +191,12 @@ public final class DictationPipeline {
         logger?("[DictationPipeline] transcribing")
         let transcript: String
         do {
-            let result = try await whisperProvider.transcribe(
-                audioFile: wavURL,
-                config: TranscriptionConfig(language: nil, sampleRate: Int(sampleRate))
+            emit(.uploadIssued)
+            let result = try await transcriber(
+                wavURL,
+                TranscriptionConfig(language: nil, sampleRate: Int(sampleRate))
             )
+            emit(.transcriptFinal)
             transcript = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             status = .failed("Transcription failed: \(error.localizedDescription)")
@@ -138,12 +232,16 @@ public final class DictationPipeline {
                 // LLM cleanup failure is non-fatal — fall back to raw transcript
                 logger?("[DictationPipeline] LLM cleanup failed (non-fatal): \(error)")
             }
+            // Emit even on non-fatal cleanup failure so per-run signpost
+            // counts stay stable when cleanup is enabled.
+            emit(.llmCleanupFinal)
         }
 
         // Paste
         status = .pasting
         logger?("[DictationPipeline] pasting")
-        let pasteResult = AccessibilityPaster.paste(finalText)
+        emit(.pasteIssued)
+        let pasteResult = paster(finalText)
         switch pasteResult {
         case .axInserted, .clipboardSimulatedV:
             status = .completed
