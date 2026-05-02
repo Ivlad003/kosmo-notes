@@ -29,6 +29,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var databaseHolder: AnyObject?       // AppDatabase
     private var sessionStoreHolder: AnyObject?   // SessionStore
 
+    // Library window controller. Stored as AnyObject to avoid @available on
+    // a stored property (Swift disallows that). Cast at use-site with #available.
+    private var libraryControllerHolder: AnyObject?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureStatusItem()
         configureMenu()
@@ -76,6 +80,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openLastSessionItem.target = self
         openLastSessionItem.identifier = NSUserInterfaceItemIdentifier("openLastSession")
         menu.addItem(openLastSessionItem)
+
+        let libraryItem = NSMenuItem(title: "Library…",
+                                     action: #selector(openLibraryAction),
+                                     keyEquivalent: "l")
+        libraryItem.target = self
+        menu.addItem(libraryItem)
 
         menu.addItem(.separator())
 
@@ -176,6 +186,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sharedSettings as? AppSettings
     }
 
+    // Returns the shared LibraryWindowController, creating it on first access.
+    @available(macOS 14.0, *)
+    private var libraryWindowController: LibraryWindowController {
+        if let existing = libraryControllerHolder as? LibraryWindowController {
+            return existing
+        }
+        let controller = LibraryWindowController()
+        libraryControllerHolder = controller
+        return controller
+    }
+
     // MARK: - Menu actions
 
     @objc private func recordToggleAction() {
@@ -213,6 +234,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if case .complete(_, let audioFile, _) = recorder.status {
             NSWorkspace.shared.activateFileViewerSelecting([audioFile])
         }
+    }
+
+    @MainActor
+    @objc private func openLibraryAction() {
+        guard #available(macOS 14.0, *) else {
+            let alert = NSAlert()
+            alert.messageText = "Library requires macOS 14.0+"
+            alert.runModal()
+            return
+        }
+        guard let database = databaseHolder as? AppDatabase,
+              let sessionStore = sessionStoreHolder as? SessionStore else { return }
+        libraryWindowController.open(database: database, sessionStore: sessionStore, windowDelegate: self)
     }
 
     @MainActor
@@ -330,6 +364,14 @@ extension AppDelegate: NSWindowDelegate {
         case "settings":
             settingsWindow = nil
             if onboardingWindow == nil {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        case "library":
+            if #available(macOS 14.0, *) {
+                // Only call didClose if the controller was actually created.
+                (libraryControllerHolder as? LibraryWindowController)?.didClose()
+            }
+            if settingsWindow == nil, onboardingWindow == nil {
                 NSApp.setActivationPolicy(.accessory)
             }
         case "onboarding":
