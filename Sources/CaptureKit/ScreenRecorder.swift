@@ -166,7 +166,11 @@ public actor ScreenRecorder: NSObject {
 
     /// Routes a sample buffer from the stream delegate into the correct writer input.
     nonisolated func handleSampleBuffer(_ sampleBuffer: CMSampleBuffer, ofType type: SCStreamOutputType) {
-        Task { await self._handleSampleBuffer(sampleBuffer, ofType: type) }
+        // CMSampleBuffer is not Sendable; wrap in an unchecked-Sendable box.
+        // The delegate callback owns the buffer for the duration of the closure
+        // call, so the cross-actor hop is safe in practice.
+        let box = SBBox(buffer: sampleBuffer, type: type)
+        Task { await self._handleSampleBuffer(box.buffer, ofType: box.type) }
     }
 
     private func _handleSampleBuffer(_ sampleBuffer: CMSampleBuffer, ofType type: SCStreamOutputType) {
@@ -198,6 +202,22 @@ public actor ScreenRecorder: NSObject {
         @unknown default:
             break
         }
+    }
+}
+
+// MARK: - SBBox
+
+/// Sendable wrapper for `CMSampleBuffer` + `SCStreamOutputType`.
+/// CMSampleBuffer is not Sendable; the box lets us hop the buffer across
+/// the actor boundary. SCStream owns the buffer for the duration of the
+/// delegate call, so the unchecked-sendability is safe in practice.
+@available(macOS 12.3, *)
+private final class SBBox: @unchecked Sendable {
+    let buffer: CMSampleBuffer
+    let type: SCStreamOutputType
+    init(buffer: CMSampleBuffer, type: SCStreamOutputType) {
+        self.buffer = buffer
+        self.type = type
     }
 }
 
