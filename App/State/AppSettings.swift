@@ -1,4 +1,5 @@
 import Foundation
+import AIKit
 @preconcurrency import KeychainAccess
 import Observation
 
@@ -23,6 +24,9 @@ final class AppSettings {
         case openaiWhisper = "openai.api_key"           // shared between Whisper transcription + GPT LLM
         case anthropic = "anthropic.api_key"
         case ollama = "ollama.bearer_token"             // optional; some self-hosted setups require auth
+        case openrouter = "openrouter.api_key"
+        case s3AccessKey = "s3.access_key_id"
+        case s3SecretKey = "s3.secret_access_key"
     }
 
     enum TranscriptionProviderChoice: String, CaseIterable, Identifiable {
@@ -41,6 +45,7 @@ final class AppSettings {
     enum LLMProviderChoice: String, CaseIterable, Identifiable {
         case anthropic
         case openai
+        case openrouter
         case ollama
 
         var id: String { rawValue }
@@ -48,6 +53,7 @@ final class AppSettings {
             switch self {
             case .anthropic: return "Anthropic Claude"
             case .openai: return "OpenAI"
+            case .openrouter: return "OpenRouter"
             case .ollama: return "Ollama (local)"
             }
         }
@@ -95,6 +101,19 @@ final class AppSettings {
         static let systemAudioEnabled = "systemAudioEnabled"
         static let dictationLLMCleanup = "dictationLLMCleanup"
         static let dictationMaxSeconds = "dictationMaxSeconds"
+        static let voiceNoteKind = "voiceNoteKind"
+        static let openrouterModel = "openrouterModel"
+        static let semanticSearchEnabled = "semanticSearchEnabled"
+        // Per-process Core Audio Tap source (14.4+ only). When false (or on <14.4),
+        // SCKit whole-system mixdown is used. When true on 14.4+, only the configured
+        // bundle IDs are captured.
+        static let useProcessTap = "useProcessTap"
+        static let processTapBundleIDs = "processTapBundleIDs"
+        // S3 sharing
+        static let s3Endpoint = "s3Endpoint"
+        static let s3Region = "s3Region"
+        static let s3Bucket = "s3Bucket"
+        static let s3PresignTTLHours = "s3PresignTTLHours"
     }
 
     // MARK: Observable state — secrets read on demand from Keychain
@@ -105,6 +124,9 @@ final class AppSettings {
     var openaiApiKey: String = ""
     var anthropicApiKey: String = ""
     var ollamaBearer: String = ""   // optional bearer token for self-hosted Ollama frontends
+    var openrouterApiKey: String = ""
+    var s3AccessKey: String = ""
+    var s3SecretKey: String = ""
 
     var transcriptionProvider: TranscriptionProviderChoice {
         didSet { UserDefaults.standard.set(transcriptionProvider.rawValue, forKey: Defaults.transcriptionProvider) }
@@ -154,6 +176,52 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(dictationMaxSeconds, forKey: Defaults.dictationMaxSeconds) }
     }
 
+    /// Default Voice Note kind. The user can override per session.
+    var voiceNoteKind: PromptTemplates.VoiceNoteKind {
+        didSet { UserDefaults.standard.set(voiceNoteKind.rawValue, forKey: Defaults.voiceNoteKind) }
+    }
+
+    /// Default OpenRouter model. Free-text — OpenRouter accepts vendor/model strings like
+    /// `anthropic/claude-3.5-sonnet` or `openai/gpt-4o-mini`.
+    var openrouterModel: String {
+        didSet { UserDefaults.standard.set(openrouterModel, forKey: Defaults.openrouterModel) }
+    }
+
+    /// Enable embedding-based semantic search alongside FTS5. Off by default — requires an
+    /// OpenAI API key (uses text-embedding-3-small).
+    var semanticSearchEnabled: Bool {
+        didSet { UserDefaults.standard.set(semanticSearchEnabled, forKey: Defaults.semanticSearchEnabled) }
+    }
+
+    /// Use per-process Core Audio Tap (macOS 14.4+) instead of SCKit whole-system mixdown.
+    /// Off by default; turning it on requires picking bundle IDs in `processTapBundleIDs`.
+    var useProcessTap: Bool {
+        didSet { UserDefaults.standard.set(useProcessTap, forKey: Defaults.useProcessTap) }
+    }
+
+    /// Comma-separated list of bundle IDs to capture when `useProcessTap` is on.
+    /// Default common targets: Zoom, Meet (via Chrome/Safari), Teams, Slack.
+    var processTapBundleIDs: String {
+        didSet { UserDefaults.standard.set(processTapBundleIDs, forKey: Defaults.processTapBundleIDs) }
+    }
+
+    /// S3 endpoint URL (e.g. https://s3.amazonaws.com or https://<account>.r2.cloudflarestorage.com).
+    var s3Endpoint: String {
+        didSet { UserDefaults.standard.set(s3Endpoint, forKey: Defaults.s3Endpoint) }
+    }
+    /// S3 region (e.g. us-east-1, auto for R2).
+    var s3Region: String {
+        didSet { UserDefaults.standard.set(s3Region, forKey: Defaults.s3Region) }
+    }
+    /// S3 bucket name.
+    var s3Bucket: String {
+        didSet { UserDefaults.standard.set(s3Bucket, forKey: Defaults.s3Bucket) }
+    }
+    /// Presigned URL TTL in hours. Default 168 (7 days, the S3 max for sigv4).
+    var s3PresignTTLHours: Int {
+        didSet { UserDefaults.standard.set(s3PresignTTLHours, forKey: Defaults.s3PresignTTLHours) }
+    }
+
     // MARK: Init
 
     private let keychain: Keychain
@@ -192,6 +260,22 @@ final class AppSettings {
         let maxSecs = UserDefaults.standard.integer(forKey: Defaults.dictationMaxSeconds)
         self.dictationMaxSeconds = maxSecs > 0 ? maxSecs : 60
 
+        let kindRaw = UserDefaults.standard.string(forKey: Defaults.voiceNoteKind) ?? PromptTemplates.VoiceNoteKind.freeform.rawValue
+        self.voiceNoteKind = PromptTemplates.VoiceNoteKind(rawValue: kindRaw) ?? .freeform
+
+        self.openrouterModel = UserDefaults.standard.string(forKey: Defaults.openrouterModel) ?? "anthropic/claude-3.5-sonnet"
+        self.semanticSearchEnabled = UserDefaults.standard.bool(forKey: Defaults.semanticSearchEnabled)
+
+        self.useProcessTap = UserDefaults.standard.bool(forKey: Defaults.useProcessTap)
+        self.processTapBundleIDs = UserDefaults.standard.string(forKey: Defaults.processTapBundleIDs)
+            ?? "us.zoom.xos,com.microsoft.teams2,com.tinyspeck.slackmacgap,com.google.Chrome,com.apple.Safari"
+
+        self.s3Endpoint = UserDefaults.standard.string(forKey: Defaults.s3Endpoint) ?? ""
+        self.s3Region = UserDefaults.standard.string(forKey: Defaults.s3Region) ?? "us-east-1"
+        self.s3Bucket = UserDefaults.standard.string(forKey: Defaults.s3Bucket) ?? ""
+        let ttl = UserDefaults.standard.integer(forKey: Defaults.s3PresignTTLHours)
+        self.s3PresignTTLHours = ttl > 0 ? ttl : 168
+
         loadKeysFromKeychain()
     }
 
@@ -202,6 +286,9 @@ final class AppSettings {
         openaiApiKey = (try? keychain.get(KeychainAccount.openaiWhisper.rawValue)) ?? ""
         anthropicApiKey = (try? keychain.get(KeychainAccount.anthropic.rawValue)) ?? ""
         ollamaBearer = (try? keychain.get(KeychainAccount.ollama.rawValue)) ?? ""
+        openrouterApiKey = (try? keychain.get(KeychainAccount.openrouter.rawValue)) ?? ""
+        s3AccessKey = (try? keychain.get(KeychainAccount.s3AccessKey.rawValue)) ?? ""
+        s3SecretKey = (try? keychain.get(KeychainAccount.s3SecretKey.rawValue)) ?? ""
     }
 
     /// Persist all currently-loaded values to Keychain. Empty strings are
@@ -211,6 +298,9 @@ final class AppSettings {
         commit(.openaiWhisper, value: openaiApiKey)
         commit(.anthropic, value: anthropicApiKey)
         commit(.ollama, value: ollamaBearer)
+        commit(.openrouter, value: openrouterApiKey)
+        commit(.s3AccessKey, value: s3AccessKey)
+        commit(.s3SecretKey, value: s3SecretKey)
     }
 
     func commit(_ account: KeychainAccount, value: String) {

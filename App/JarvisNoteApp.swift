@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import KeyboardShortcuts
 import StorageKit
 
 @main
@@ -37,16 +38,94 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var libraryControllerHolder: AnyObject?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // AC-6: minimum-OS gate. Deployment target is 12.3+; Recording / Library / Settings
+        // require 14.0+. Anything older surfaces a single explanatory modal then quits.
+        if !checkMinimumOS() {
+            return
+        }
+
         configureStatusItem()
         configureMenu()
 
         if #available(macOS 14.0, *) {
             bootstrapAppState()
+            bootstrapHotkeys()
         }
 
         if !UserDefaults.standard.bool(forKey: "didOnboard") {
             showOnboarding()
         }
+    }
+
+    /// Register global hotkeys for Meeting / Voice Note record + Library open.
+    /// Defaults: ⌘⇧R / ⌘⇧N / ⌘⇧L. Users can rebind via System Settings (Wallop's
+    /// approach — KeyboardShortcuts persists overrides in UserDefaults under the
+    /// shortcut's name).
+    @available(macOS 14.0, *)
+    private func bootstrapHotkeys() {
+        KeyboardShortcuts.onKeyDown(for: .toggleMeeting) { [weak self] in
+            Task { @MainActor in self?.recordToggleAction() }
+        }
+        KeyboardShortcuts.onKeyDown(for: .toggleVoiceNote) { [weak self] in
+            Task { @MainActor in self?.voiceNoteToggleAction() }
+        }
+        KeyboardShortcuts.onKeyDown(for: .openLibrary) { [weak self] in
+            Task { @MainActor in self?.openLibraryAction() }
+        }
+    }
+
+    @MainActor
+    func applicationWillTerminate(_ notification: Notification) {
+        // Best-effort: stop any active recording so segments are flushed and
+        // SleepAssertion is released. Avoids "always recovering on next launch"
+        // when user quits cleanly via Cmd+Q with a recording in progress.
+        if #available(macOS 14.0, *), let recorder = recorderState, recorder.status.isBusy {
+            // Synchronous best-effort. We're inside applicationWillTerminate;
+            // long async work is risky. Fire-and-forget.
+            Task { await recorder.stop() }
+        }
+    }
+
+    /// Returns true when the OS is supported. On unsupported OS, surfaces a
+    /// modal and terminates the app.
+    @MainActor
+    private func checkMinimumOS() -> Bool {
+        let info = ProcessInfo.processInfo.operatingSystemVersion
+        let major = info.majorVersion
+        let minor = info.minorVersion
+
+        // <12.3 — strictly unsupported (binary is built for 12.3+, but defensive).
+        let isBelow12_3 = (major < 12) || (major == 12 && minor < 3)
+        // 12.3-13.x — "best-effort" but the recorder/library/settings gate on 14.0+,
+        // so the app is functionally inert. Tell the user clearly.
+        let isBelow14 = major < 14
+
+        if isBelow12_3 {
+            let alert = NSAlert()
+            alert.messageText = "macOS 12.3 or newer required"
+            alert.informativeText = "Jarvis Note needs macOS 12.3 or newer for system audio capture. The recorder, Library, and Settings additionally require macOS 14.0 — please upgrade to use this build."
+            alert.alertStyle = .critical
+            alert.addButton(withTitle: "Quit")
+            alert.runModal()
+            NSApp.terminate(nil)
+            return false
+        }
+
+        if isBelow14 {
+            let alert = NSAlert()
+            alert.messageText = "macOS 14.0 or newer recommended"
+            alert.informativeText = "You're on macOS \(major).\(minor). Recording, Library, and Settings require macOS 14.0+. The menu-bar icon will appear, but core features will be disabled. [Quit] to upgrade, [Continue] to inspect a stub UI."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Continue")
+            alert.addButton(withTitle: "Quit")
+            let response = alert.runModal()
+            if response == .alertSecondButtonReturn {
+                NSApp.terminate(nil)
+                return false
+            }
+        }
+
+        return true
     }
 
     // MARK: - Status item + menu
@@ -74,6 +153,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordItem.target = self
         recordItem.identifier = NSUserInterfaceItemIdentifier("recordToggle")
         menu.addItem(recordItem)
+
+        let voiceNoteItem = NSMenuItem(title: "Start Voice Note",
+                                       action: #selector(voiceNoteToggleAction),
+                                       keyEquivalent: "n")
+        voiceNoteItem.keyEquivalentModifierMask = [.command, .shift]
+        voiceNoteItem.target = self
+        voiceNoteItem.identifier = NSUserInterfaceItemIdentifier("voiceNoteToggle")
+        menu.addItem(voiceNoteItem)
 
         menu.addItem(.separator())
 
@@ -285,6 +372,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Toggle Voice Note Mode recording (⌘⇧N). Same lifecycle as Meeting toggle,
+    /// but starts the recorder in `.voiceNote` mode so the post-process pipeline
+    /// uses the voice-note prompt template.
+    @MainActor
+    @objc private func voiceNoteToggleAction() {
+        guard #available(macOS 14.0, *) else { return }
+        guard let recorder = recorderState else { return }
+        Task { @MainActor in
+            switch recorder.status {
+            case .idle, .complete, .failed:
+                await recorder.start(mode: .voiceNote)
+            case .recording:
+                await recorder.stop()
+            case .transcribing:
+                break
+            }
+        }
+    }
+
     @MainActor
     @objc private func openLibraryAction() {
         guard #available(macOS 14.0, *) else {
@@ -295,7 +401,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let database = databaseHolder as? AppDatabase,
               let sessionStore = sessionStoreHolder as? SessionStore else { return }
-        libraryWindowController.open(database: database, sessionStore: sessionStore, windowDelegate: self)
+        libraryWindowController.open(
+            database: database,
+            sessionStore: sessionStore,
+            settings: appSettings,
+            windowDelegate: self
+        )
     }
 
     @MainActor
@@ -419,6 +530,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 extension AppDelegate: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard let recordItem = menu.items.first(where: { $0.identifier?.rawValue == "recordToggle" }) else { return }
+        let voiceNoteItem = menu.items.first(where: { $0.identifier?.rawValue == "voiceNoteToggle" })
         guard let openLastItem = menu.items.first(where: { $0.identifier?.rawValue == "openLastSession" }) else { return }
 
         if #available(macOS 14.0, *), let recorder = recorderState {
@@ -426,18 +538,27 @@ extension AppDelegate: NSMenuDelegate {
             case .idle:
                 recordItem.title = "Start Recording"
                 recordItem.isEnabled = true
+                voiceNoteItem?.title = "Start Voice Note"
+                voiceNoteItem?.isEnabled = true
             case .recording:
                 recordItem.title = "Stop Recording"
                 recordItem.isEnabled = true
+                voiceNoteItem?.title = "Stop Voice Note"
+                voiceNoteItem?.isEnabled = true
             case .transcribing:
                 recordItem.title = "Transcribing…"
                 recordItem.isEnabled = false
+                voiceNoteItem?.isEnabled = false
             case .complete:
                 recordItem.title = "Start Recording"
                 recordItem.isEnabled = true
+                voiceNoteItem?.title = "Start Voice Note"
+                voiceNoteItem?.isEnabled = true
             case .failed:
                 recordItem.title = "Start Recording (last failed — see Settings)"
                 recordItem.isEnabled = true
+                voiceNoteItem?.title = "Start Voice Note"
+                voiceNoteItem?.isEnabled = true
             }
 
             if case .complete = recorder.status {
@@ -448,6 +569,7 @@ extension AppDelegate: NSMenuDelegate {
         } else {
             recordItem.title = "Recording (macOS 14+ required)"
             recordItem.isEnabled = false
+            voiceNoteItem?.isEnabled = false
             openLastItem.isEnabled = false
         }
     }

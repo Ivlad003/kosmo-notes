@@ -134,6 +134,10 @@ final class DictationState {
             let k = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !k.isEmpty else { return nil }
             return OpenAIProvider(apiKey: k)
+        case .openrouter:
+            let k = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !k.isEmpty else { return nil }
+            return OpenRouterProvider(apiKey: k)
         case .ollama:
             let endpoint = URL(string: settings.ollamaEndpoint) ?? URL(string: "http://localhost:11434")!
             let mode: OllamaProvider.APIMode = settings.ollamaApiMode == .native ? .native : .openaiCompat

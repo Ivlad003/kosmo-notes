@@ -6,6 +6,25 @@ import GRDB
 public enum SessionMode: String, Sendable, Codable, Equatable {
     case meeting
     case dictation
+    case voiceNote
+
+    /// Human-friendly display name for UI.
+    public var displayName: String {
+        switch self {
+        case .meeting: return "Meeting"
+        case .dictation: return "Dictation"
+        case .voiceNote: return "Voice Note"
+        }
+    }
+
+    /// SF Symbol name for menus / library list / details. Stable strings.
+    public var iconName: String {
+        switch self {
+        case .meeting: return "person.2"
+        case .dictation: return "keyboard"
+        case .voiceNote: return "note.text"
+        }
+    }
 }
 
 public enum SessionStatus: String, Sendable, Codable, Equatable {
@@ -92,6 +111,21 @@ public actor AppDatabase {
                 );
                 """)
         }
+        // v2: per-session embeddings for semantic search. One row per session,
+        // packed as a Float32 LE blob. We deliberately avoid sqlite-vec / sqlite-vss
+        // for v1.0 to keep the deps light — cosine similarity in Swift is plenty
+        // fast under the hundreds-of-sessions ceiling we expect on a single Mac.
+        migrator.registerMigration("v2_embeddings") { db in
+            try db.execute(sql: """
+                CREATE TABLE session_embeddings (
+                    sid         TEXT    PRIMARY KEY,
+                    vector      BLOB    NOT NULL,
+                    model       TEXT    NOT NULL,
+                    indexed_at  REAL    NOT NULL,
+                    FOREIGN KEY(sid) REFERENCES sessions(id) ON DELETE CASCADE
+                );
+                """)
+        }
         try migrator.migrate(pool)
     }
 
@@ -173,6 +207,52 @@ public actor AppDatabase {
                 arguments: [pattern.rawPattern, limit]
             )
             return rows.map { SearchHit(sid: $0["sid"], snippet: $0["snip"]) }
+        }
+    }
+
+    // MARK: - Embeddings
+
+    /// Insert or replace the embedding vector for a session.
+    public func upsertEmbedding(sid: String, vector: Data, model: String) async throws {
+        try await pool.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO session_embeddings (sid, vector, model, indexed_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(sid) DO UPDATE SET
+                        vector = excluded.vector,
+                        model = excluded.model,
+                        indexed_at = excluded.indexed_at
+                    """,
+                arguments: [sid, vector, model, Date().timeIntervalSince1970]
+            )
+        }
+    }
+
+    /// Read all stored embeddings as `(sid, vectorData, model)` tuples. The caller
+    /// unpacks vectorData via `EmbeddingMath.unpack` and computes cosine similarity.
+    /// Returns rows in undefined order.
+    public func allEmbeddings() async throws -> [(sid: String, vector: Data, model: String)] {
+        try await pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: "SELECT sid, vector, model FROM session_embeddings"
+            )
+            return rows.map { row -> (sid: String, vector: Data, model: String) in
+                (sid: row["sid"], vector: row["vector"], model: row["model"])
+            }
+        }
+    }
+
+    /// Returns true when an embedding exists for `sid`. Used to skip re-indexing.
+    public func hasEmbedding(sid: String) async throws -> Bool {
+        try await pool.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT 1 FROM session_embeddings WHERE sid = ? LIMIT 1",
+                arguments: [sid]
+            )
+            return row != nil
         }
     }
 

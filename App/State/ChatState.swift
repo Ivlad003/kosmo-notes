@@ -231,6 +231,10 @@ final class ChatState {
             let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty else { throw AIError.authenticationFailed }
             return OpenAIProvider(apiKey: key)
+        case .openrouter:
+            let key = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { throw AIError.authenticationFailed }
+            return OpenRouterProvider(apiKey: key)
         case .ollama:
             let endpoint = URL(string: settings.ollamaEndpoint) ?? URL(string: "http://localhost:11434")!
             let mode: OllamaProvider.APIMode = settings.ollamaApiMode == .native ? .native : .openaiCompat
@@ -246,9 +250,10 @@ final class ChatState {
     private func makeConfig(systemPrompt: String?) -> AIConfig {
         let model: String
         switch settings.llmProvider {
-        case .anthropic: model = AnthropicProvider.defaultModel
-        case .openai:    model = OpenAIProvider.defaultModel
-        case .ollama:    model = settings.ollamaModel
+        case .anthropic:  model = AnthropicProvider.defaultModel
+        case .openai:     model = OpenAIProvider.defaultModel
+        case .openrouter: model = settings.openrouterModel
+        case .ollama:     model = settings.ollamaModel
         }
         return AIConfig(model: model, systemPrompt: systemPrompt)
     }
