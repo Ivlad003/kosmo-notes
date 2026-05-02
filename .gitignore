@@ -3,8 +3,7 @@
 DerivedData/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
-*.xcodeproj/xcuserdata/
-*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/
 build/
 
 # Swift Package Manager
@@ -39,3 +38,9 @@ Cargo.lock
 **/*.rs.bk
 node_modules/
 *.log
+
+# Agent harness transient state — never commit
+.claude/
+.omc/state/
+.omc/project-memory.json
+# Keep .omc/plans/ committed — it's part of the design trail.

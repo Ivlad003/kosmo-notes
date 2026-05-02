@@ -1,0 +1,73 @@
+import Foundation
+
+public enum AtomicWriterError: Error {
+    case writeFailed(underlying: Error)
+    case fsyncFailed(errno: Int32)
+    case renameFailed(underlying: Error)
+    case parentDirOpenFailed(errno: Int32)
+}
+
+public enum AtomicWriter {
+    /// Atomically write `data` to `url` using the tmp+fsync+rename pattern.
+    ///
+    /// The file is first written to `<url>.tmp.<pid>`, fsync'd, then renamed
+    /// over `url`. The parent directory is also fsync'd to ensure the rename
+    /// is durable across crashes / power loss.
+    ///
+    /// - Throws: `AtomicWriterError` on filesystem errors. The temp file is
+    ///   removed on any error path (best effort; tolerates EBUSY).
+    public static func write(_ data: Data, to url: URL) throws {
+        let tmpURL = url.appendingPathExtension("tmp.\(ProcessInfo.processInfo.processIdentifier)")
+
+        // Write to temp file
+        do {
+            try data.write(to: tmpURL)
+        } catch {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw AtomicWriterError.writeFailed(underlying: error)
+        }
+
+        // fsync the temp file
+        do {
+            let fh = try FileHandle(forWritingTo: tmpURL)
+            defer { try? fh.close() }
+            try fh.synchronize()
+        } catch let e as AtomicWriterError {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw e
+        } catch {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw AtomicWriterError.fsyncFailed(errno: Foundation.errno)
+        }
+
+        // fsync the parent directory to durably record the future rename
+        let parentPath = url.deletingLastPathComponent().path
+        let dirFd = Darwin.open(parentPath, O_RDONLY)
+        if dirFd == -1 {
+            let e = Foundation.errno
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw AtomicWriterError.parentDirOpenFailed(errno: e)
+        }
+        let fsyncResult = Darwin.fsync(dirFd)
+        Darwin.close(dirFd)
+        if fsyncResult != 0 {
+            let e = Foundation.errno
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw AtomicWriterError.fsyncFailed(errno: e)
+        }
+
+        // Atomic rename over destination
+        do {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
+        } catch {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw AtomicWriterError.renameFailed(underlying: error)
+        }
+    }
+
+    /// JSON-encode and atomically write a Codable value.
+    public static func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {
+        let data = try JSONEncoder().encode(value)
+        try write(data, to: url)
+    }
+}

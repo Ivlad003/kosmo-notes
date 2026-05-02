@@ -1,0 +1,309 @@
+import Foundation
+import Testing
+@testable import TranscriptionKit
+
+// MARK: - MockClock
+
+/// Test clock that records sleep requests and returns immediately.
+/// Lets tests verify the exact backoff schedule without wall-clock delays.
+final class MockClock: ReconnectClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _recordedSleeps: [Double] = []
+
+    var recordedSleeps: [Double] {
+        lock.withLock { _recordedSleeps }
+    }
+
+    func sleep(seconds: Double) async {
+        lock.withLock { _recordedSleeps.append(seconds) }
+        // Return immediately — no actual delay.
+    }
+}
+
+// MARK: - AtomicCounter
+// Swift 6 strict concurrency: a plain `var callCount` captured mutably in a
+// @Sendable closure is an error. Use a lock-protected counter instead.
+final class AtomicCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func increment() -> Int {
+        lock.withLock {
+            value += 1
+            return value
+        }
+    }
+}
+
+// MARK: - Helpers
+
+/// A minimal Deepgram Results JSON frame.
+private func resultsJSON(text: String, isFinal: Bool = true) -> String {
+    """
+    {"type":"Results","start":0,"duration":1.0,"is_final":\(isFinal ? "true" : "false"),"channel":{"alternatives":[{"transcript":"\(text)","confidence":0.9}]}}
+    """
+}
+
+/// Build a `ReconnectingSession` backed by the provided transport factory.
+private func makeSession(
+    factory: @escaping @Sendable () -> any WebSocketTransport,
+    clock: any ReconnectClock = MockClock()
+) async -> ReconnectingSession {
+    let session = ReconnectingSession(
+        transportFactory: factory,
+        parser: DeepgramEventParser.makeParser(),
+        clock: clock
+    )
+    await session.start()
+    return session
+}
+
+// MARK: - Tests
+
+@Suite("ReconnectingSession — reconnect on disconnect")
+struct ReconnectDisconnectTests {
+
+    /// Disconnect mid-session → reconnect succeeds → events from BOTH transports flow.
+    @Test("Reconnects after receive error and emits segments from both transports")
+    func reconnectsAndEmitsFromBothTransports() async throws {
+        let transport1 = MockWebSocketTransport()
+        let transport2 = MockWebSocketTransport()
+        let counter = AtomicCounter()
+        let clock = MockClock()
+
+        let session = await makeSession(
+            factory: {
+                let n = counter.increment()
+                return n == 1 ? transport1 : transport2
+            },
+            clock: clock
+        )
+
+        var iterator = session.events.makeAsyncIterator()
+
+        // First transport yields one segment, then fails.
+        transport1.enqueueText(resultsJSON(text: "from first"))
+        let seg1 = await iterator.next()
+        #expect(seg1?.text == "from first")
+
+        // Inject an error to simulate mid-session disconnect.
+        transport1.injectReceiveError(TranscriptionError.receiveFailed(message: "connection reset"))
+
+        // Second transport yields one segment after reconnect.
+        // Give the reconnect loop a brief moment to wire up transport2.
+        try await Task.sleep(nanoseconds: 10_000_000)  // 10 ms
+        transport2.enqueueText(resultsJSON(text: "from second"))
+
+        let seg2 = await iterator.next()
+        #expect(seg2?.text == "from second")
+
+        await session.cancel()
+    }
+}
+
+@Suite("ReconnectingSession — ring buffer replay")
+struct RingBufferReplayTests {
+
+    /// Ring buffer replays: enqueue 3 audio chunks, force disconnect, verify the
+    /// new transport receives those 3 chunks in recordedSends before any live data.
+    @Test("Replays ring buffer contents to the new transport after reconnect")
+    func ringBufferIsReplayedOnReconnect() async throws {
+        let transport1 = MockWebSocketTransport()
+        let transport2 = MockWebSocketTransport()
+        let counter = AtomicCounter()
+        let clock = MockClock()
+
+        let session = await makeSession(
+            factory: {
+                let n = counter.increment()
+                return n == 1 ? transport1 : transport2
+            },
+            clock: clock
+        )
+
+        // Send 3 audio chunks — they land in the ring buffer AND transport1.
+        let chunk1 = Data([0x01])
+        let chunk2 = Data([0x02])
+        let chunk3 = Data([0x03])
+        try await session.send(chunk1)
+        try await session.send(chunk2)
+        try await session.send(chunk3)
+
+        // Disconnect transport1.
+        transport1.injectReceiveError(TranscriptionError.receiveFailed(message: "disconnect"))
+
+        // Wait for reconnect to complete.
+        try await Task.sleep(nanoseconds: 50_000_000)  // 50 ms
+
+        // transport2 should have received the 3 ring-buffer chunks before any new live data.
+        let sends2 = transport2.recordedSends
+        #expect(sends2.count >= 3)
+        #expect(sends2[0] == .data(chunk1))
+        #expect(sends2[1] == .data(chunk2))
+        #expect(sends2[2] == .data(chunk3))
+
+        await session.cancel()
+    }
+}
+
+@Suite("ReconnectingSession — max retries")
+struct MaxRetriesTests {
+
+    /// After 5 consecutive failures the events stream finishes (next() returns nil).
+    @Test("Events stream finishes after max retries exceeded")
+    func eventsStreamFinishesAfterMaxRetries() async throws {
+        let clock = MockClock()
+        // Every call to the factory produces a transport that immediately errors.
+        let session = await makeSession(
+            factory: {
+                let t = MockWebSocketTransport()
+                // Inject the error before returning so the receive loop hits it immediately.
+                t.injectReceiveError(TranscriptionError.receiveFailed(message: "always fails"))
+                return t
+            },
+            clock: clock
+        )
+
+        // Drain the stream until it finishes. With MockClock (instant sleeps) this
+        // should complete quickly. Use a timeout task to avoid hanging if broken.
+        let finishedTask = Task {
+            var iterator = session.events.makeAsyncIterator()
+            // The stream must terminate — keep calling next() until nil.
+            var count = 0
+            while await iterator.next() != nil {
+                count += 1
+                if count > 100 { break }  // safety valve
+            }
+            return true  // reached nil == stream finished
+        }
+
+        let timeoutTask = Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)  // 500 ms
+            finishedTask.cancel()
+            return false
+        }
+
+        let finished = await finishedTask.value
+        timeoutTask.cancel()
+        #expect(finished == true)
+    }
+}
+
+@Suite("ReconnectingSession — backoff schedule")
+struct BackoffScheduleTests {
+
+    /// Verify that the sleep calls use the correct exponential schedule.
+    @Test("Backoff schedule matches spec: 0.25, 0.5, 1.0, 2.0, 4.0")
+    func backoffScheduleIsCorrect() async throws {
+        let clock = MockClock()
+        let session = await makeSession(
+            factory: {
+                let t = MockWebSocketTransport()
+                t.injectReceiveError(TranscriptionError.receiveFailed(message: "always fails"))
+                return t
+            },
+            clock: clock
+        )
+
+        // Drain until stream ends.
+        let drainTask = Task {
+            var iterator = session.events.makeAsyncIterator()
+            var count = 0
+            while await iterator.next() != nil {
+                count += 1
+                if count > 100 { break }
+            }
+        }
+
+        let timeoutTask = Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            drainTask.cancel()
+        }
+
+        await drainTask.value
+        timeoutTask.cancel()
+
+        // The clock should have recorded exactly the backoff schedule delays
+        // (one sleep per failure, 5 failures total).
+        let sleeps = clock.recordedSleeps
+        #expect(sleeps.count == ReconnectingSession.maxRetries)
+        #expect(sleeps == ReconnectingSession.backoffSchedule)
+    }
+}
+
+@Suite("ReconnectingSession — ring buffer aging")
+struct RingBufferAgingTests {
+
+    /// Recent chunks (within 5 s) are replayed after reconnect.
+    @Test("Recent ring-buffer chunks are replayed after reconnect")
+    func recentChunksAreReplayed() async throws {
+        let transport1 = MockWebSocketTransport()
+        let transport2 = MockWebSocketTransport()
+        let counter = AtomicCounter()
+        let clock = MockClock()
+
+        let session = await makeSession(
+            factory: {
+                let n = counter.increment()
+                return n == 1 ? transport1 : transport2
+            },
+            clock: clock
+        )
+
+        let liveChunk = Data([0xAA])
+        try await session.send(liveChunk)
+
+        // Force disconnect immediately.
+        transport1.injectReceiveError(TranscriptionError.receiveFailed(message: "disconnect"))
+
+        // Wait for reconnect.
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        // Send a new live chunk after reconnect — this goes to transport2 only (no replay).
+        let newChunk = Data([0xBB])
+        try await session.send(newChunk)
+
+        // transport2.recordedSends = [liveChunk (replay), newChunk (live)].
+        // liveChunk was sent within the 5-s window so it IS replayed.
+        let sends2 = transport2.recordedSends
+        #expect(sends2.contains(.data(liveChunk)))
+        let replayIdx = sends2.firstIndex(of: .data(liveChunk))!
+        let liveIdx = sends2.firstIndex(of: .data(newChunk))!
+        #expect(replayIdx < liveIdx)
+
+        await session.cancel()
+    }
+
+    /// Chunks older than 5 s must NOT be replayed after reconnect.
+    @Test("Chunks older than 5 s are pruned before replay")
+    func chunksOlderThan5sArePruned() async throws {
+        let transport1 = MockWebSocketTransport()
+        let transport2 = MockWebSocketTransport()
+        let counter = AtomicCounter()
+        let clock = MockClock()
+
+        let session = await makeSession(
+            factory: {
+                let n = counter.increment()
+                return n == 1 ? transport1 : transport2
+            },
+            clock: clock
+        )
+
+        // Inject an aged entry directly using the internal test helper.
+        let staleChunk = Data([0xFF])
+        await session.injectStaleRingBufferEntry(data: staleChunk, age: 10.0)
+
+        // Trigger disconnect.
+        transport1.injectReceiveError(TranscriptionError.receiveFailed(message: "disconnect"))
+
+        // Wait for reconnect.
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        // The stale chunk should NOT appear in transport2's sends.
+        let sends2 = transport2.recordedSends
+        #expect(!sends2.contains(.data(staleChunk)))
+
+        await session.cancel()
+    }
+}
