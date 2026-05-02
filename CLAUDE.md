@@ -4,7 +4,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-**v0 — design phase. No code, no Xcode project, no Swift Package, no Cargo workspace.** The repository contains design documentation only. Read `docs/plans/2026-05-02-jarvis-note-design.md` first — it is the canonical source of truth for all architectural decisions.
+**v0 — Phase A Weeks 2–3 storage + transcription complete.** The Swift Package exists, **96 tests pass across 19 suites**, and `xcodebuild` produces a `.app`. Read `docs/plans/2026-05-02-jarvis-note-design.md` first — it is the canonical source of truth for all architectural decisions, and `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` for the phase-by-phase plan.
+
+Phase A Week 2 (TranscriptionKit + recovery):
+- `Sources/StorageKit/RecoveryService.swift` — orphan-segment scanner + `AVMutableComposition` + `AVAssetExportSession` (`AppleM4A` preset) concat. Replaces the design-doc's bundled-ffmpeg approach (AAC-in-`.m4a` is natively concatenable).
+- `Sources/TranscriptionKit/{Models,WebSocketTransport,Provider,DeepgramProvider,TranscriptStore}.swift` — happy-path Deepgram pipeline: typed config / segments / errors, transport abstraction (`URLSessionWebSocketTransport` + injectable mock), `TranscriptionSession` actor with `events: AsyncStream<TranscriptSegment>`, Deepgram URL builder + JSON `Results` parser, `TranscriptStore` actor writing JSONL + atomic TXT.
+- `Sources/TranscriptionKit/ReconnectingSession.swift` — resilient layer on top of the happy-path session: 5-s audio ring buffer, exponential backoff (0.25→0.5→1→2→4 s, capped, max 5 retries), stable `events` stream across reconnects, injectable `ReconnectClock` for tests. `DeepgramProvider.openResilientSession(config:clock:)` is the production entry point; `openSession(config:)` remains for tests/single-shot use.
+
+Phase A Week 3 (StorageKit DB + session store):
+- `Sources/StorageKit/Database.swift` — GRDB-backed schema v1: `sessions` (id, recorded_at, duration_secs, mode, language, status) + `transcripts_fts` FTS5 virtual table. WAL journal mode. Idempotent migration via `DatabaseMigrator`.
+- `Sources/StorageKit/SessionStore.swift` — actor that creates `<root>/<sid>/`, writes `session.json` atomically via `AtomicWriter`, inserts/updates DB rows, indexes transcript text into FTS.
+
+**Still to land in Phase A:** `RecorderState` actor wiring CaptureKit → TranscriptionKit → SessionStore, popover Record button, mic level meter (Phase A Week 3 finish), Settings → Transcription panel + Test connection (Phase A Week 4).
+
+Phase A Week 1 deliverables implemented (CaptureKit):
+- `Sources/CaptureKit/AudioEngine.swift` — `AVAudioEngine` mic input, mono Float32 PCM @ 48 kHz, ~100 ms buffers via `AsyncStream`
+- `Sources/CaptureKit/ScreenCaptureKitAudio.swift` — `SCStream`-backed whole-system mixdown, `AsyncStream<AVAudioPCMBuffer>` (TCC required at runtime; CI tests gated)
+- `Sources/CaptureKit/AACEncoder.swift` — `AVAudioConverter` PCM→AAC encoder, 96 kbps mono. **See "Encoder deviation" below.**
+- `Sources/CaptureKit/SegmentWriter.swift` — 5 s rolling 2-track `.m4a` segments via `AVAssetWriter` (track 0 = mic, track 1 = system audio per AC-5). Crash bound: ≤5 s on SIGKILL
+- `Sources/CaptureKit/CaptureSession.swift` — actor coordinating mic + SCKit feeds into a single `SegmentWriter`; public API `start / pause / resume / stop`
+
+Phase 0 deliverables (still in place):
+- `.github/workflows/ci.yml` — GitHub Actions CI on push/PR (xcodegen + swift build + swift test + xcodebuild)
+- `App/Views/Onboarding/OnboardingView.swift` + `App/JarvisNoteApp.swift` — first-launch permission-education modal
+- `Sources/StorageKit/` — `AtomicWriter` + `KeychainStore`
+- `Sources/DependencyLifecycle/` — state machine + `StatePersistence` actor
+
+**Empty / next:** `Sources/TranscriptionKit/`, `Sources/AIKit/`, `Sources/DictationKit/` are stubs (`lib.swift` only). `Sources/StorageKit/` still needs `Database.swift`, `SessionStore.swift`, `RecoveryService.swift`. Phase A Week 2 (Deepgram + RecoveryService) is next.
+
+### Encoder deviation: AAC, not Opus
+
+The plan and design doc originally specified Opus 96 kbps mono in an Ogg or `.opus` container. Implementation pivoted to **AAC 96 kbps mono in `.m4a`** because `AVAudioConverter` Opus output requires macOS 14+ and the deployment target is macOS 12.3+. AAC is universally supported, plays in QuickTime/Safari natively, requires zero extra dependencies. File size is roughly 2× larger than equivalent Opus — acceptable for v1.0.
+
+Knock-on effect: **`RecoveryService` no longer needs a bundled `ffmpeg` subprocess.** AAC segments in `.m4a` can be concatenated losslessly via `AVMutableComposition` + `AVAssetExportSession` with `AVAssetExportPresetPassthrough` — no re-encode, no 30 MB ffmpeg static binary. The §8 boundary item ("ffmpeg vs Ogg-stdlib concat") is retired. Bundle stays well under the 15 MB AC-16 budget.
+
+If Opus is required in a future version, raise the deployment target to macOS 14+ and switch `AVAudioFormat` settings to `kAudioFormatOpus`.
 
 Open the design doc before answering any "how do I implement X" question. Every concrete decision (capture API, transcription provider, encoding format, IPC shape, file layout, dependency lifecycle) is recorded there. Open questions are listed in §16; everything else is decided.
 
@@ -25,7 +59,7 @@ These come from §3 of the Jarvis Note design doc.
 
 - **Pure Swift / SwiftUI / AppKit.** No Rust, no FFI, no webview, no Tauri / iced / Electron. Native frameworks only: `AVAudioEngine`, `AVPlayer` / `AVPlayerView`, `URLSession`, `GRDB.swift`, Swift concurrency. Bundle target: 5–15 MB. Single `.app`.
 - **Cloud-only transcription.** No local Whisper, no WhisperKit, no on-device CoreML model. The privacy posture is partial; see §12 — every recorded second leaves the machine. Ollama covers the LLM stage only.
-- **Filesystem sidecars are source of truth, SQLite is rebuildable index.** Sessions live in `~/Library/Application Support/JarvisNote/recordings/<sid>/` with `audio.opus`, `transcript.jsonl`, `summary.md`, `actions.json`. SQLite (`sessions.sqlite`) backs FTS5 + filtering and must be rebuildable from sidecars.
+- **Filesystem sidecars are source of truth, SQLite is rebuildable index.** Sessions live in `~/Library/Application Support/JarvisNote/recordings/<sid>/` with `audio.m4a` (AAC; was `audio.opus` in design — see "Encoder deviation"), `transcript.jsonl`, `summary.md`, `actions.json`. SQLite (`sessions.sqlite`) backs FTS5 + filtering and must be rebuildable from sidecars.
 - **macOS 12.3+ supported, 14.4+ preferred.** `<12.3` blocked at startup. Core Audio Tap on 14.4+, ScreenCaptureKit audio fallback on 12.3–14.3.
 - **No code signing, no notarization, no auto-update.** Single-user product positioning. Document Gatekeeper bypass (`xattr -d com.apple.quarantine`) for hand-shared binaries.
 - **Secrets in macOS Keychain.** Configuration JSON stores only Keychain account references; never plain-text secrets.
@@ -35,14 +69,19 @@ These come from §3 of the Jarvis Note design doc.
 
 ## Build and run
 
-The build system does not exist yet. When it lands it will be a standard macOS Xcode / SwiftPM project:
+**Toolchain requirement:** `swift test` requires Xcode's toolchain, not Command Line Tools. Plain `swift test` with the CLT active will run zero tests (the `__swift5_tests` section that Swift Testing needs is only emitted by Xcode's toolchain). Always prefix with `DEVELOPER_DIR`:
 
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+```
+
+Both exit 0. All 96 tests pass in ~0.6 s.
+
+Other commands:
 - `xed .` — open in Xcode
-- `swift build` — SwiftPM build (for the library targets, before the `.app` is bundled)
-- `xcodebuild -scheme JarvisNote -configuration Release` — release build
+- `xcodebuild -scheme JarvisNote -configuration Release` — release build (once `.app` target exists)
 - Distribution: `.app` produced by Xcode → `ditto -c -k --keepParent JarvisNote.app JarvisNote.zip` → hand-share.
-
-Until the project is scaffolded, treat any "run it" / "test it" request as a sign that bootstrapping is the actual task.
 
 ## Editing the design doc
 

@@ -2,9 +2,64 @@
 
 macOS menu-bar voice-first AI capture tool. Records audio (mic + system), transcribes via cloud APIs, runs AI processing for summaries / action items / dictation.
 
-> **Status:** v0 — design phase. No code yet. See the [design doc](docs/plans/2026-05-02-jarvis-note-design.md).
+> **Status:** Phase 0 Day 1 complete — repo scaffold, SwiftPM manifest, and XcodeGen spec are in place. Xcode.app required to build. See the [design doc](docs/plans/2026-05-02-jarvis-note-design.md).
 >
 > **Pivot history:** This project started as **Jarvis Studio** — a cross-platform Tauri/iced screen recorder. After ~5 weeks of build (37 passing tests, working v0.1.1) the scope was pivoted to a smaller voice-first product. The complete Rust workspace is preserved on the `archive/jarvis-studio-rust` branch.
+
+## Building
+
+### Prerequisites
+
+- macOS 14+ (to run the build toolchain; the built app targets macOS 12.3+)
+- Xcode 15.4+ (download from [developer.apple.com](https://developer.apple.com/xcode/))
+- `xcodegen` (generates `JarvisNote.xcodeproj` from `project.yml`)
+
+### One-time setup
+
+```bash
+brew install xcodegen
+```
+
+### Generate project and build
+
+```bash
+# Generate JarvisNote.xcodeproj from project.yml (re-run whenever project.yml changes)
+xcodegen generate
+
+# Debug build
+xcodebuild -scheme JarvisNote -configuration Debug build
+
+# Release build
+xcodebuild -scheme JarvisNote -configuration Release build
+```
+
+### Run
+
+After a successful build, locate and open the app:
+
+```bash
+find ~/Library/Developer/Xcode/DerivedData -name "JarvisNote.app" -type d | head -1
+```
+
+Open the resulting path in Finder or run `open <path>`. The app shows a menu-bar icon (waveform.circle); no Dock icon (it is an `LSUIElement` app).
+
+### Distribution
+
+```bash
+ditto -c -k --keepParent JarvisNote.app JarvisNote.app.zip
+```
+
+Recipients who receive the zip via file share must bypass Gatekeeper:
+
+```bash
+xattr -d com.apple.quarantine /Applications/JarvisNote.app
+```
+
+### Notes
+
+- `JarvisNote.xcodeproj` is **gitignored** — only `project.yml` is committed. Run `xcodegen generate` after cloning.
+- App Sandbox is **off** (required for Accessibility paste in Dictation Mode).
+- Hardened Runtime is **off** (unsigned binary; hand-shared distribution only).
 
 ## What it does
 

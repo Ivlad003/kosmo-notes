@@ -1,10 +1,12 @@
 # Jarvis Note — Voice-First AI Capture for macOS
 
 **Date:** 2026-05-02
-**Status:** Draft (post-Jarvis-Studio pivot)
+**Status:** Draft (post-Jarvis-Studio pivot) · **v1.0 scope-reduced 2026-05-02 after Critic round-2** (see §15 D12)
 **Author:** ivlad003@gmail.com
 **Working title:** Jarvis Note (final name TBD — see §16)
 **Reference:** This document supersedes `docs/plans/2026-05-01-jarvis-studio-design.md` for new development. Jarvis Studio's recording-pipeline learnings (audio fragmentation, atomic writes, External Dependency Lifecycle pattern) carry forward; the implementation stack does not.
+
+> **v1.0 scope reduction (post-Critic round-2):** Per-process Core Audio Tap, Voice Note Mode, and S3 Sharing are **deferred to v1.1**. v1.0 ships ScreenCaptureKit-mixdown audio for all macOS 12.3+, Meeting + Dictation modes only, Save-dialog export only. See §15 D12. The implementation plan at `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` is canonical for what actually ships in v1.0; this design doc describes the broader v1 vision.
 
 ---
 
@@ -1060,6 +1062,7 @@ On version bump, run a migration function. v1 ships with `schema_version: 1`; fu
 | D9 | Sharing via S3-compatible presigned URLs. No hosted viewer page. | Same Jarvis Studio §8 reasoning — no revisit. |
 | D10 | Filesystem sidecars are source of truth; SQLite is rebuildable index. | Index becomes too expensive to rebuild (e.g., embeddings fully managed externally) — not v1. |
 | D11 | Accessibility-API paste with clipboard fallback. | macOS deprecates `kAXSelectedTextAttribute` (no signal that this is happening). |
+| **D12** | **v1.0 ships with ScreenCaptureKit-mixdown audio for ALL macOS 12.3+. Per-process Core Audio Tap is deferred to v1.1. Voice Note Mode and S3 Sharing also deferred to v1.1.** Decision applied 2026-05-02 after Critic round-2 review. v1.0 captures whole-system audio (Spotify and notifications too) — user mutes those manually before recording. Trade-off accepted to make Phase A timeline realistic for a Swift first-timer. | v1.1 evaluation reaches go-decision: per-process Tap can ship if 14.4+ Tap API quirks are well-understood; sharing can ship if a clear export channel is needed beyond Save-dialog. **Until then, design references in §5 (per-process Tap), §10 (S3 sharing), and §12 (Voice Note in mode list) describe the broader v1 vision, NOT what v1.0 ships. Implementation plan at `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` is canonical for v1.0.** |
 
 ### Brainstorm-recorded — do not relitigate
 
