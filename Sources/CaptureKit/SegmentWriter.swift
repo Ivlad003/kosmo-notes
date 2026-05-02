@@ -40,6 +40,8 @@ public actor SegmentWriter {
     private let segmentsDir: URL
     private let segmentDuration: Double
     private let sampleRate: Double
+    private let audioFormatID: AudioFormatID
+    private let audioBitrate: Int
 
     private var segmentIndex: Int = 0
     private var segmentPaths: [URL] = []
@@ -52,10 +54,25 @@ public actor SegmentWriter {
 
     // MARK: Init
 
-    public init(sessionDir: URL, segmentDurationSeconds: Double = 5.0, sampleRate: Double = 48_000) throws {
+    public init(
+        sessionDir: URL,
+        segmentDurationSeconds: Double = 5.0,
+        sampleRate: Double = 48_000,
+        audioFormatID: AudioFormatID = kAudioFormatMPEG4AAC,
+        audioBitrate: Int = 96_000
+    ) throws {
         self.sessionDir = sessionDir
         self.segmentDuration = segmentDurationSeconds
         self.sampleRate = sampleRate
+        // .m4a container only carries AAC-family codecs (kAudioFormatMPEG4AAC,
+        // kAudioFormatMPEG4AAC_HE, kAudioFormatMPEG4AAC_HE_V2). Opus would need
+        // a different container — silently substitute HE-AAC if requested.
+        if audioFormatID == kAudioFormatOpus {
+            self.audioFormatID = kAudioFormatMPEG4AAC_HE
+        } else {
+            self.audioFormatID = audioFormatID
+        }
+        self.audioBitrate = audioBitrate
         self.segmentsDir = sessionDir.appendingPathComponent("segments")
 
         do {
@@ -117,10 +134,10 @@ public actor SegmentWriter {
         }
 
         let aacSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVFormatIDKey: audioFormatID,
             AVSampleRateKey: sampleRate,
             AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 96_000,
+            AVEncoderBitRateKey: audioBitrate,
         ]
 
         // Track 0 — mic

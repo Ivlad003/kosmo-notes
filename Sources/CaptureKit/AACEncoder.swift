@@ -14,25 +14,49 @@
 // If Opus is required in a future version, upgrade the deployment target to
 // macOS 14+ and switch AVAudioFormat settings to kAudioFormatOpus.
 
-/// Encodes mono Float32 PCM buffers to AAC using AVAudioConverter.
-/// Output is raw AAC frames suitable for writing into an .m4a container via AVAssetWriter.
+/// Encodes mono Float32 PCM buffers to AAC / HE-AAC / Opus using AVAudioConverter.
+/// Output is raw frames suitable for writing into an .m4a container via AVAssetWriter.
 ///
 /// `AACEncoder` is `Sendable` and can be used across concurrency domains.
 /// Each `encode(_:)` call is synchronous — run on a background actor if needed.
 public final class AACEncoder: Sendable {
+
+    /// Audio codec choices. AAC-LC is the universal-compatibility default.
+    /// HE-AAC v1 is ~50% smaller at equivalent voice quality. Opus is ~30%
+    /// smaller still but requires macOS 14+ via AVAudioConverter.
+    public enum Codec: Sendable {
+        case aacLC
+        case heAAC
+        case opus
+
+        var formatID: AudioFormatID {
+            switch self {
+            case .aacLC: return kAudioFormatMPEG4AAC
+            case .heAAC: return kAudioFormatMPEG4AAC_HE
+            case .opus:  return kAudioFormatOpus
+            }
+        }
+    }
 
     // MARK: Private state (all immutable after init — Sendable safe)
 
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
     private let inputFormat: AVAudioFormat
+    private let codec: Codec
 
     // MARK: Init
 
     /// - Parameters:
     ///   - sampleRate: Input PCM sample rate (must match buffers passed to `encode`).
-    ///   - bitrate: AAC bitrate in bits/sec. Default 96_000 (96 kbps mono).
-    public init(sampleRate: Double = 48_000, bitrate: Int = 96_000) throws {
+    ///   - bitrate: Output bitrate in bits/sec. Default 96_000.
+    ///   - codec: Output codec. Default `.aacLC` for back-compat.
+    public init(
+        sampleRate: Double = 48_000,
+        bitrate: Int = 96_000,
+        codec: Codec = .aacLC
+    ) throws {
+        self.codec = codec
         guard let inputFmt = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: sampleRate,
@@ -42,9 +66,8 @@ public final class AACEncoder: Sendable {
             throw AACEncoderError.inputFormatCreationFailed
         }
 
-        // AAC output format settings
         let outputSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVFormatIDKey: codec.formatID,
             AVSampleRateKey: sampleRate,
             AVNumberOfChannelsKey: 1,
             AVEncoderBitRateKey: bitrate,
@@ -141,7 +164,7 @@ public final class AACEncoder: Sendable {
     /// Returns the stream basic description for use with AVAssetWriter wiring.
     public var outputAudioSettings: [String: Any] {
         [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVFormatIDKey: codec.formatID,
             AVSampleRateKey: inputFormat.sampleRate,
             AVNumberOfChannelsKey: 1,
         ]

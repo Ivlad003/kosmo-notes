@@ -85,6 +85,54 @@ final class AppSettings {
         }
     }
 
+    /// Audio + video codec preset for new recordings. Each profile picks the
+    /// codec, sample rate, and bitrate; the screen recorder reads `videoCodec`
+    /// + `videoBitrate`, the audio capture stack reads `audioCodec` +
+    /// `audioBitrate` + `audioSampleRate`.
+    ///
+    /// Storage savings (vs Quality, per hour of meeting + screen):
+    ///   - Quality:   ~1.74 GB (H.264 4 Mbps + AAC-LC 96k @ 48 kHz)
+    ///   - Balanced:  ~870 MB (HEVC 2 Mbps + HE-AAC 48k @ 48 kHz)  default
+    ///   - Compact:   ~430 MB (HEVC 1.5 Mbps + Opus 32k @ 24 kHz)
+    enum StorageProfile: String, CaseIterable, Identifiable {
+        case quality
+        case balanced
+        case compact
+
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .quality:  return "Quality"
+            case .balanced: return "Balanced"
+            case .compact:  return "Compact"
+            }
+        }
+        var summary: String {
+            switch self {
+            case .quality:  return "H.264 4 Mbps + AAC-LC 96 kbps @ 48 kHz · ~1.74 GB/h"
+            case .balanced: return "HEVC 2 Mbps + HE-AAC 48 kbps @ 48 kHz · ~870 MB/h (-50%)"
+            case .compact:  return "HEVC 1.5 Mbps + Opus 32 kbps @ 24 kHz · ~430 MB/h (-75%)"
+            }
+        }
+    }
+
+    /// Audio codec — derived from StorageProfile but overridable.
+    /// `aac` = AAC-LC (legacy default), `heAAC` = HE-AAC v1, `opus` = Opus (14+).
+    enum AudioCodec: String, CaseIterable, Identifiable {
+        case aac
+        case heAAC
+        case opus
+
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .aac:   return "AAC-LC"
+            case .heAAC: return "HE-AAC v1"
+            case .opus:  return "Opus"
+            }
+        }
+    }
+
     // MARK: UserDefaults-backed prefs (non-secret)
 
     private enum Defaults {
@@ -114,6 +162,13 @@ final class AppSettings {
         static let s3Region = "s3Region"
         static let s3Bucket = "s3Bucket"
         static let s3PresignTTLHours = "s3PresignTTLHours"
+        // Storage profile + codec overrides
+        static let storageProfile = "storageProfile"
+        static let audioCodec = "audioCodec"
+        static let audioBitrate = "audioBitrate"
+        static let audioSampleRate = "audioSampleRate"
+        static let videoUseHEVC = "videoUseHEVC"
+        static let videoBitrate = "videoBitrate"
     }
 
     // MARK: Observable state — secrets read on demand from Keychain
@@ -222,6 +277,64 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(s3PresignTTLHours, forKey: Defaults.s3PresignTTLHours) }
     }
 
+    // MARK: Storage profile + codec overrides
+
+    /// User-facing preset that picks codec + bitrate combos. Setting this also
+    /// rewrites the individual codec fields below — they remain user-editable
+    /// after a preset is picked, the preset is just the starting point.
+    var storageProfile: StorageProfile {
+        didSet {
+            UserDefaults.standard.set(storageProfile.rawValue, forKey: Defaults.storageProfile)
+            applyStorageProfile()
+        }
+    }
+
+    /// Audio codec for new recordings. AAC-LC is the universal-compatibility default.
+    var audioCodec: AudioCodec {
+        didSet { UserDefaults.standard.set(audioCodec.rawValue, forKey: Defaults.audioCodec) }
+    }
+    /// Audio bitrate in bits/sec. AAC-LC: 96k default. HE-AAC: 48k. Opus: 32k.
+    var audioBitrate: Int {
+        didSet { UserDefaults.standard.set(audioBitrate, forKey: Defaults.audioBitrate) }
+    }
+    /// Audio sample rate Hz. 48000 captures full-band, 24000 is voice-only and ~⅔ size.
+    var audioSampleRate: Int {
+        didSet { UserDefaults.standard.set(audioSampleRate, forKey: Defaults.audioSampleRate) }
+    }
+    /// Use HEVC instead of H.264 for screen.mp4 video stream. ~50% smaller at same quality.
+    /// Hardware-accelerated on all Apple Silicon Macs.
+    var videoUseHEVC: Bool {
+        didSet { UserDefaults.standard.set(videoUseHEVC, forKey: Defaults.videoUseHEVC) }
+    }
+    /// Video bitrate in bits/sec. Default 4_000_000 (H.264). HEVC defaults to 2_000_000.
+    var videoBitrate: Int {
+        didSet { UserDefaults.standard.set(videoBitrate, forKey: Defaults.videoBitrate) }
+    }
+
+    /// Rewrite codec fields to match the active StorageProfile.
+    private func applyStorageProfile() {
+        switch storageProfile {
+        case .quality:
+            audioCodec = .aac
+            audioBitrate = 96_000
+            audioSampleRate = 48_000
+            videoUseHEVC = false
+            videoBitrate = 4_000_000
+        case .balanced:
+            audioCodec = .heAAC
+            audioBitrate = 48_000
+            audioSampleRate = 48_000
+            videoUseHEVC = true
+            videoBitrate = 2_000_000
+        case .compact:
+            audioCodec = .opus
+            audioBitrate = 32_000
+            audioSampleRate = 24_000
+            videoUseHEVC = true
+            videoBitrate = 1_500_000
+        }
+    }
+
     // MARK: Init
 
     private let keychain: Keychain
@@ -275,6 +388,26 @@ final class AppSettings {
         self.s3Bucket = UserDefaults.standard.string(forKey: Defaults.s3Bucket) ?? ""
         let ttl = UserDefaults.standard.integer(forKey: Defaults.s3PresignTTLHours)
         self.s3PresignTTLHours = ttl > 0 ? ttl : 168
+
+        // Storage profile defaults to .balanced for new installs (50 % smaller than
+        // the legacy "Quality" default). Existing installs that have no UserDefaults
+        // entry get .balanced too — but their per-field overrides (audioCodec etc)
+        // also have no entry so applyStorageProfile-equivalent values are loaded.
+        let profileRaw = UserDefaults.standard.string(forKey: Defaults.storageProfile) ?? StorageProfile.balanced.rawValue
+        self.storageProfile = StorageProfile(rawValue: profileRaw) ?? .balanced
+
+        let codecRaw = UserDefaults.standard.string(forKey: Defaults.audioCodec) ?? AudioCodec.heAAC.rawValue
+        self.audioCodec = AudioCodec(rawValue: codecRaw) ?? .heAAC
+
+        let abr = UserDefaults.standard.integer(forKey: Defaults.audioBitrate)
+        self.audioBitrate = abr > 0 ? abr : 48_000
+        let asr = UserDefaults.standard.integer(forKey: Defaults.audioSampleRate)
+        self.audioSampleRate = asr > 0 ? asr : 48_000
+
+        // HEVC default true on a fresh install — well-supported on macOS 14+.
+        self.videoUseHEVC = (UserDefaults.standard.object(forKey: Defaults.videoUseHEVC) as? Bool) ?? true
+        let vbr = UserDefaults.standard.integer(forKey: Defaults.videoBitrate)
+        self.videoBitrate = vbr > 0 ? vbr : 2_000_000
 
         loadKeysFromKeychain()
     }

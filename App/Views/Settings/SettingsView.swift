@@ -86,6 +86,71 @@ private struct TranscriptionTab: View {
                 }
             }
 
+            Section("Storage profile") {
+                Picker("Profile", selection: $settings.storageProfile) {
+                    ForEach(AppSettings.StorageProfile.allCases) { p in
+                        Text(p.displayName).tag(p)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.storageProfile.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Picking a profile rewrites the codec and bitrate fields below. Tweak them after if you need finer control.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Section("Audio codec") {
+                Picker("Codec", selection: $settings.audioCodec) {
+                    ForEach(AppSettings.AudioCodec.allCases) { c in
+                        Text(c.displayName).tag(c)
+                    }
+                }
+                .pickerStyle(.segmented)
+                HStack {
+                    Text("Bitrate (kbps)")
+                    Spacer()
+                    TextField("kbps", value: Binding(
+                        get: { settings.audioBitrate / 1000 },
+                        set: { settings.audioBitrate = $0 * 1000 }
+                    ), format: .number)
+                        .frame(width: 80)
+                        .textFieldStyle(.roundedBorder)
+                }
+                HStack {
+                    Text("Sample rate")
+                    Spacer()
+                    Picker("", selection: $settings.audioSampleRate) {
+                        Text("48 kHz").tag(48_000)
+                        Text("24 kHz (voice)").tag(24_000)
+                        Text("16 kHz (voice, very compact)").tag(16_000)
+                    }
+                    .frame(width: 240)
+                    .labelsHidden()
+                }
+                Text("Opus falls back to HE-AAC inside .m4a containers (Opus muxing requires a different container).")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Section("Video codec (when Audio + Screen mode)") {
+                Toggle("Use HEVC (H.265)", isOn: $settings.videoUseHEVC)
+                HStack {
+                    Text("Bitrate (Mbps)")
+                    Spacer()
+                    TextField("Mbps", value: Binding(
+                        get: { Double(settings.videoBitrate) / 1_000_000 },
+                        set: { settings.videoBitrate = Int($0 * 1_000_000) }
+                    ), format: .number.precision(.fractionLength(1)))
+                        .frame(width: 80)
+                        .textFieldStyle(.roundedBorder)
+                }
+                Text("HEVC is hardware-accelerated on all Apple Silicon Macs and is roughly 50% smaller than H.264 at equivalent visual quality.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
             Section("Default provider") {
                 Picker("Provider", selection: $settings.transcriptionProvider) {
                     ForEach(AppSettings.TranscriptionProviderChoice.allCases) { choice in

@@ -24,17 +24,34 @@ public actor ScreenRecorder: NSObject {
         public let captureSystemAudio: Bool
         public let frameRate: Int
         public let scaleFactor: CGFloat
+        /// Use HEVC (H.265) instead of H.264. ~50 % smaller at the same quality;
+        /// hardware-accelerated on Apple Silicon.
+        public let useHEVC: Bool
+        /// Video bitrate in bits/sec. H.264 typically 4_000_000; HEVC 2_000_000.
+        public let videoBitrate: Int
+        /// Audio bitrate in bits/sec.
+        public let audioBitrate: Int
+        /// Audio sample rate Hz.
+        public let audioSampleRate: Int
 
         public init(
             outputURL: URL,
             captureSystemAudio: Bool = true,
             frameRate: Int = 24,
-            scaleFactor: CGFloat = 1.0
+            scaleFactor: CGFloat = 1.0,
+            useHEVC: Bool = true,
+            videoBitrate: Int = 2_000_000,
+            audioBitrate: Int = 48_000,
+            audioSampleRate: Int = 48_000
         ) {
             self.outputURL = outputURL
             self.captureSystemAudio = captureSystemAudio
             self.frameRate = frameRate
             self.scaleFactor = scaleFactor
+            self.useHEVC = useHEVC
+            self.videoBitrate = videoBitrate
+            self.audioBitrate = audioBitrate
+            self.audioSampleRate = audioSampleRate
         }
     }
 
@@ -77,7 +94,7 @@ public actor ScreenRecorder: NSObject {
         streamConfig.pixelFormat = kCVPixelFormatType_32BGRA
         streamConfig.capturesAudio = config.captureSystemAudio
         streamConfig.excludesCurrentProcessAudio = true  // may be ignored on macOS 26+
-        streamConfig.sampleRate = 48_000
+        streamConfig.sampleRate = config.audioSampleRate
         streamConfig.channelCount = 1
 
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
@@ -89,12 +106,14 @@ public actor ScreenRecorder: NSObject {
         let assetWriter = try AVAssetWriter(outputURL: config.outputURL, fileType: .mp4)
         self.writer = assetWriter
 
-        // Video input: H.264, real-time.
+        // Video input: H.264 or HEVC, real-time. HEVC is ~50% more efficient at
+        // the same visual quality and hardware-accelerated on Apple Silicon.
+        let codec: AVVideoCodecType = config.useHEVC ? .hevc : .h264
         let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoCodecKey: codec,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
-            AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 4_000_000],
+            AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: config.videoBitrate],
         ]
         let vInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         vInput.expectsMediaDataInRealTime = true
@@ -111,13 +130,18 @@ public actor ScreenRecorder: NSObject {
         self.pixelBufferAdaptor = adaptor
         assetWriter.add(vInput)
 
-        // Audio input: AAC 48 kHz mono, real-time (only when captureSystemAudio).
+        // Audio input: AAC mono, real-time (only when captureSystemAudio).
+        // We always write AAC into the .mp4 container regardless of the
+        // user-selected codec for the standalone audio.m4a file — MP4-in-Opus
+        // playback support is uneven (Safari yes, QuickTime no), and the screen
+        // file is meant to be playable in QuickTime out of the box. The user's
+        // codec preference applies to audio.m4a (segmented capture path).
         if config.captureSystemAudio {
             let audioSettings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 48_000,
+                AVSampleRateKey: config.audioSampleRate,
                 AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: 96_000,
+                AVEncoderBitRateKey: config.audioBitrate,
             ]
             let aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
             aInput.expectsMediaDataInRealTime = true

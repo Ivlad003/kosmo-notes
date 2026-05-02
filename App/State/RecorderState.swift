@@ -7,6 +7,20 @@ import CaptureKit
 import StorageKit
 import TranscriptionKit
 
+// MARK: - Codec mapping
+
+/// Maps AppSettings.AudioCodec → CaptureKit.AudioCodecChoice. Kept inline so
+/// AppSettings doesn't need to import CaptureKit.
+private extension AppSettings.AudioCodec {
+    var captureChoice: AudioCodecChoice {
+        switch self {
+        case .aac:   return .aac
+        case .heAAC: return .heAAC
+        case .opus:  return .opus
+        }
+    }
+}
+
 // MARK: - RecorderState
 
 /// The single mutable record-time state object for the app.
@@ -165,7 +179,12 @@ final class RecorderState {
                 screenRecordingEnabled: screenEnabled,
                 screenOutputURL: screenEnabled ? dir.appendingPathComponent("screen.mp4") : nil,
                 useProcessTap: settings.useProcessTap,
-                processTapBundleIDs: bundleIDs
+                processTapBundleIDs: bundleIDs,
+                videoUseHEVC: settings.videoUseHEVC,
+                videoBitrate: settings.videoBitrate,
+                audioBitrate: settings.audioBitrate,
+                audioSampleRate: settings.audioSampleRate,
+                audioCodec: settings.audioCodec.captureChoice
             )
             let capture = CaptureSession(config: config)
             try await capture.start()

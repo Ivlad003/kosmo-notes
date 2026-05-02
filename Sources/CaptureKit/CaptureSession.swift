@@ -1,6 +1,25 @@
 @preconcurrency import AVFoundation
 import Foundation
 
+// MARK: - AudioCodecChoice
+
+/// Public codec choice for capture configuration. Mirror of the user's
+/// AppSettings.AudioCodec but kept inside CaptureKit so library consumers
+/// (tests, callers from other targets) don't need to import App-level types.
+public enum AudioCodecChoice: String, Sendable {
+    case aac        // AAC-LC (kAudioFormatMPEG4AAC)
+    case heAAC      // HE-AAC v1 (kAudioFormatMPEG4AAC_HE) — ~50% smaller for voice
+    case opus       // Opus — silently downgraded to HE-AAC in .m4a containers
+
+    var formatID: AudioFormatID {
+        switch self {
+        case .aac:   return kAudioFormatMPEG4AAC
+        case .heAAC: return kAudioFormatMPEG4AAC_HE
+        case .opus:  return kAudioFormatOpus
+        }
+    }
+}
+
 // MARK: - CaptureSession
 
 /// Top-level coordinator for audio capture.
@@ -28,6 +47,17 @@ public actor CaptureSession {
         /// Bundle IDs to capture when `useProcessTap` is on. Only running apps
         /// match — apps launched after `start()` are not added retroactively.
         public let processTapBundleIDs: [String]
+        /// Use HEVC for screen.mp4. ~50 % smaller at same quality.
+        public let videoUseHEVC: Bool
+        /// Video bitrate in bits/sec.
+        public let videoBitrate: Int
+        /// Audio bitrate in bits/sec for both audio.m4a (segmented) and screen.mp4.
+        public let audioBitrate: Int
+        /// Audio sample rate Hz.
+        public let audioSampleRate: Int
+        /// Audio codec (`aac` / `heAAC` / `opus`). Opus falls back to HE-AAC when
+        /// the .m4a container can't carry it. Only AAC-family codecs work in .m4a.
+        public let audioCodec: AudioCodecChoice
 
         public init(
             micEnabled: Bool = true,
@@ -37,7 +67,12 @@ public actor CaptureSession {
             screenRecordingEnabled: Bool = false,
             screenOutputURL: URL? = nil,
             useProcessTap: Bool = false,
-            processTapBundleIDs: [String] = []
+            processTapBundleIDs: [String] = [],
+            videoUseHEVC: Bool = true,
+            videoBitrate: Int = 2_000_000,
+            audioBitrate: Int = 48_000,
+            audioSampleRate: Int = 48_000,
+            audioCodec: AudioCodecChoice = .heAAC
         ) {
             self.micEnabled = micEnabled
             self.systemAudioEnabled = systemAudioEnabled
@@ -47,7 +82,18 @@ public actor CaptureSession {
             self.screenOutputURL = screenOutputURL
             self.useProcessTap = useProcessTap
             self.processTapBundleIDs = processTapBundleIDs
+            self.videoUseHEVC = videoUseHEVC
+            self.videoBitrate = videoBitrate
+            self.audioBitrate = audioBitrate
+            self.audioSampleRate = audioSampleRate
+            self.audioCodec = audioCodec
         }
+    }
+
+    /// Helper used at SegmentWriter construction time. Pulled out to keep the
+    /// `try` site short.
+    private static func formatIDForCodec(config: Config) -> AudioFormatID {
+        config.audioCodec.formatID
     }
 
     // MARK: - Private state
@@ -80,7 +126,10 @@ public actor CaptureSession {
 
         let writer = try SegmentWriter(
             sessionDir: config.sessionDir,
-            segmentDurationSeconds: config.segmentDurationSeconds
+            segmentDurationSeconds: config.segmentDurationSeconds,
+            sampleRate: Double(config.audioSampleRate),
+            audioFormatID: Self.formatIDForCodec(config: config),
+            audioBitrate: config.audioBitrate
         )
         self.segmentWriter = writer
 
@@ -117,7 +166,13 @@ public actor CaptureSession {
         if config.screenRecordingEnabled, let outputURL = config.screenOutputURL {
             if #available(macOS 12.3, *) {
                 let recorder = ScreenRecorder()
-                let srConfig = ScreenRecorder.Config(outputURL: outputURL)
+                let srConfig = ScreenRecorder.Config(
+                    outputURL: outputURL,
+                    useHEVC: config.videoUseHEVC,
+                    videoBitrate: config.videoBitrate,
+                    audioBitrate: config.audioBitrate,
+                    audioSampleRate: config.audioSampleRate
+                )
                 try await recorder.start(config: srConfig)
                 self.screenRecorder = recorder
             }
@@ -139,7 +194,10 @@ public actor CaptureSession {
 
         let writer = try SegmentWriter(
             sessionDir: config.sessionDir,
-            segmentDurationSeconds: config.segmentDurationSeconds
+            segmentDurationSeconds: config.segmentDurationSeconds,
+            sampleRate: Double(config.audioSampleRate),
+            audioFormatID: Self.formatIDForCodec(config: config),
+            audioBitrate: config.audioBitrate
         )
         self.segmentWriter = writer
 
