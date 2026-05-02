@@ -1,5 +1,6 @@
 import SwiftUI
 import AIKit
+import DictationKit
 import KeyboardShortcuts
 
 // MARK: - SettingsView

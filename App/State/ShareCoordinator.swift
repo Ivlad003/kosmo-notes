@@ -10,18 +10,18 @@ import StorageKit
 /// sidecars. Surfaces a result modal with copy-to-pasteboard buttons.
 @available(macOS 14.0, *)
 @MainActor
-public final class ShareCoordinator {
+final class ShareCoordinator {
 
     private let settings: AppSettings
     private let sessionStore: SessionStore
 
-    public init(settings: AppSettings, sessionStore: SessionStore) {
+    init(settings: AppSettings, sessionStore: SessionStore) {
         self.settings = settings
         self.sessionStore = sessionStore
     }
 
     /// Validate config + upload + present URLs. Surfaces an alert on success or failure.
-    public func share(sessionId: String) async {
+    func share(sessionId: String) async {
         // Validate required fields up front so users see a clear error before we
         // try to encode an empty endpoint into a URL.
         guard let url = URL(string: settings.s3Endpoint), !settings.s3Endpoint.isEmpty else {

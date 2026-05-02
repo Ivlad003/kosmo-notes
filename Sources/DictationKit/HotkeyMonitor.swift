@@ -3,8 +3,9 @@ import KeyboardShortcuts
 // MARK: - Hotkey name registration
 
 extension KeyboardShortcuts.Name {
-    // Default: Cmd+Shift+D
-    static let dictation = Self("dictation", default: .init(.d, modifiers: [.command, .shift]))
+    // Default: Cmd+Shift+D. Public so the Settings → Hotkeys tab in the App
+    // target can render a Recorder for it.
+    public static let dictation = Self("dictation", default: .init(.d, modifiers: [.command, .shift]))
 }
 
 // MARK: - HotkeyMonitor

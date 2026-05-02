@@ -43,26 +43,28 @@ struct ChatView: View {
     // MARK: - Top bar
 
     private var topBar: some View {
-        HStack(spacing: 12) {
-            // Provider pill
+        HStack(spacing: 10) {
+            // Provider — menu picker so the row stays compact regardless of how
+            // many providers are configured. Segmented overflows past 3 items
+            // in this width.
             Picker("Provider", selection: $settings.llmProvider) {
                 ForEach(AppSettings.LLMProviderChoice.allCases) { choice in
                     Text(choice.displayName).tag(choice)
                 }
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 240)
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(width: 160)
             .help("LLM provider used for chat responses")
 
             Divider().frame(height: 20)
 
-            // Auto-find toggle
-            Toggle("Auto-find sessions", isOn: $chat.autoSearchSessions)
+            Toggle("Auto-find", isOn: $chat.autoSearchSessions)
                 .toggleStyle(.checkbox)
                 .font(.callout)
                 .help("Automatically search recorded sessions for context matching your message")
+                .fixedSize()
 
-            // Search depth stepper — only useful when auto-find is on.
             if chat.autoSearchSessions {
                 Stepper(
                     value: $chat.searchDepth,
@@ -73,10 +75,11 @@ struct ChatView: View {
                             .monospacedDigit()
                     }
                 )
+                .fixedSize()
                 .help("Number of sessions to attach from FTS results (1–10)")
             }
 
-            Spacer()
+            Spacer(minLength: 8)
 
             Button(action: { Task { await chat.clear() } }) {
                 Label("Clear", systemImage: "trash")
