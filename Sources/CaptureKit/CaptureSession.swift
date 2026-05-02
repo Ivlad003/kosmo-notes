@@ -62,7 +62,10 @@ public actor CaptureSession {
     private var systemTask: Task<Void, Never>?
     private var scKitBox: SCKitBox?
     private var screenRecorder: ScreenRecorder?
-    private var tapBox: TapBox?
+    /// Stored as `AnyObject?` because `TapBox` is `@available(macOS 14.4, *)` —
+    /// stricter than the package's macOS 14.0 deployment target. Cast at the
+    /// use site under `#available(macOS 14.4, *)`.
+    private var tapBoxAny: AnyObject?
 
     // MARK: - Init
 
@@ -96,11 +99,11 @@ public actor CaptureSession {
             if config.useProcessTap, #available(macOS 14.4, *) {
                 do {
                     let box = TapBox()
-                    self.tapBox = box
+                    self.tapBoxAny = box
                     systemTask = try await makeTapTask(box: box, bundleIDs: config.processTapBundleIDs, writer: writer)
                     tapStarted = true
                 } catch {
-                    self.tapBox = nil
+                    self.tapBoxAny = nil
                     // Fall through to SCKit fallback.
                 }
             }
@@ -161,8 +164,8 @@ public actor CaptureSession {
         if #available(macOS 12.3, *) {
             await scKitBox?.capture.stop()
         }
-        if #available(macOS 14.4, *) {
-            await tapBox?.tap.stop()
+        if #available(macOS 14.4, *), let box = tapBoxAny as? TapBox {
+            await box.tap.stop()
         }
         cancelFeedTasks()
 
@@ -175,7 +178,7 @@ public actor CaptureSession {
         let paths = try await segmentWriter?.close() ?? []
         audioEngine = nil
         scKitBox = nil
-        tapBox = nil
+        tapBoxAny = nil
         segmentWriter = nil
         recordingState = .stopped
         return paths

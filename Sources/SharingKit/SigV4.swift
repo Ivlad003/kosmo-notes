@@ -142,11 +142,18 @@ public enum SigV4 {
         let canonicalURI = path.isEmpty ? "/" : awsEncode(path, encodeSlash: false)
 
         // Sort query alphabetically by AWS-encoded key; AWS-encode key+value.
-        let canonicalQuery = query
-            .map { (awsEncode($0.0, encodeSlash: true), awsEncode($0.1, encodeSlash: true)) }
-            .sorted { $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0 }
-            .map { "\($0.0)=\($0.1)" }
-            .joined(separator: "&")
+        // Break the chain up: the type-checker times out trying to infer through
+        // the tuple-with-string-interpolation path in one pass.
+        let encodedPairs: [(String, String)] = query.map { pair in
+            (awsEncode(pair.0, encodeSlash: true), awsEncode(pair.1, encodeSlash: true))
+        }
+        let sortedPairs = encodedPairs.sorted { lhs, rhs in
+            lhs.0 == rhs.0 ? lhs.1 < rhs.1 : lhs.0 < rhs.0
+        }
+        let joined = sortedPairs.map { pair -> String in
+            pair.0 + "=" + pair.1
+        }
+        let canonicalQuery = joined.joined(separator: "&")
 
         // Lowercase header keys, trim values, join with newlines, append trailing newline.
         let lowered = headers.map { (k, v) -> (String, String) in

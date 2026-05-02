@@ -168,9 +168,12 @@ public struct S3Client: Sendable {
         var allQuery = baseQuery
         allQuery.append(("X-Amz-Signature", sig))
 
-        let queryString = allQuery
-            .map { "\(SigV4.awsEncode($0.0, encodeSlash: true))=\(SigV4.awsEncode($0.1, encodeSlash: true))" }
-            .joined(separator: "&")
+        let encodedPairs = allQuery.map { pair -> String in
+            let k = SigV4.awsEncode(pair.0, encodeSlash: true)
+            let v = SigV4.awsEncode(pair.1, encodeSlash: true)
+            return k + "=" + v
+        }
+        let queryString = encodedPairs.joined(separator: "&")
 
         guard let presigned = URL(string: "\(url.absoluteString)?\(queryString)") else {
             throw S3Error.invalidEndpoint

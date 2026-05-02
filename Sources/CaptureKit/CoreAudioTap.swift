@@ -44,12 +44,18 @@ public actor CoreAudioTap {
         let pids = Self.resolvePIDs(for: bundleIDs)
         guard !pids.isEmpty else { throw CoreAudioTapError.noMatchingProcesses }
 
-        // Create tap description targeting the resolved PIDs as a stereo mixdown.
+        // CATapDescription takes Core Audio process-object IDs (AudioObjectID),
+        // not Unix PIDs. Translate via kAudioHardwarePropertyTranslatePIDToProcessObject.
+        // PIDs that don't map to an audio-producing process are dropped silently.
+        let processObjectIDs: [AudioObjectID] = pids.compactMap { Self.processObjectID(forPID: $0) }
+        guard !processObjectIDs.isEmpty else { throw CoreAudioTapError.noMatchingProcesses }
+
         // `stereoMixdownOfProcesses` is the simplest variant — the system picks
-        // a sensible left/right pair and downsamples to a stable rate.
-        let description = CATapDescription(stereoMixdownOfProcesses: pids.map { NSNumber(value: $0) })
-        description.muteBehavior = .unmuted     // capture audio while still letting it play
-        description.isPrivate = true            // not visible to other apps
+        // a sensible left/right pair and downsamples to a stable rate. We stick
+        // to the published init only and avoid the optional properties
+        // (`muteBehavior`, `isPrivate`) since their availability shape varies
+        // across macOS 14.2 → 14.4 → 15.x point releases.
+        let description = CATapDescription(stereoMixdownOfProcesses: processObjectIDs)
 
         var tap: AUAudioObjectID = kAudioObjectUnknown
         let tapStatus = AudioHardwareCreateProcessTap(description, &tap)
@@ -149,6 +155,29 @@ public actor CoreAudioTap {
             AudioHardwareDestroyProcessTap(tapID)
             tapID = kAudioObjectUnknown
         }
+    }
+
+    /// Translate a Unix PID to a Core Audio process object ID via the HAL property
+    /// `kAudioHardwarePropertyTranslatePIDToProcessObject`. Returns nil when the
+    /// process has no audio object (apps that never opened an audio device).
+    static func processObjectID(forPID pid: pid_t) -> AudioObjectID? {
+        var pidValue = pid
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var objectID: AudioObjectID = kAudioObjectUnknown
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            UInt32(MemoryLayout<pid_t>.size),
+            &pidValue,
+            &size,
+            &objectID
+        )
+        return (status == noErr && objectID != kAudioObjectUnknown) ? objectID : nil
     }
 
     /// Resolve bundle IDs to running pids via NSWorkspace.
