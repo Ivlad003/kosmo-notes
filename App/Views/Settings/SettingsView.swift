@@ -33,6 +33,20 @@ private struct TranscriptionTab: View {
 
     var body: some View {
         Form {
+            Section("Recording mode") {
+                Picker("Mode", selection: $settings.recordingMode) {
+                    ForEach(AppSettings.RecordingMode.allCases) { m in
+                        Text(m.displayName).tag(m)
+                    }
+                }
+                .pickerStyle(.segmented)
+                if settings.recordingMode == .audioAndScreen {
+                    Text("Records the entire screen + system audio at 24 fps. Requires Screen Recording permission. The first time you start a recording, macOS will prompt you to grant access.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Default provider") {
                 Picker("Provider", selection: $settings.transcriptionProvider) {
                     ForEach(AppSettings.TranscriptionProviderChoice.allCases) { choice in
@@ -153,6 +167,19 @@ private struct PrivacyTab: View {
                 in v1.0.
 
                 If you do not want a recording leaving your machine, do not start it.
+                """)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+            }
+
+            Section("Screen recording") {
+                Text("""
+                When "Audio + Screen" mode is enabled, Jarvis Note captures your \
+                entire display alongside audio and saves a screen.mp4 sidecar next \
+                to the audio file. Screen content is used locally for vision-chat \
+                frame extraction — it is never uploaded to any cloud service. \
+                macOS will request Screen Recording permission on the first recording.
                 """)
                 .font(.callout)
                 .foregroundStyle(.secondary)

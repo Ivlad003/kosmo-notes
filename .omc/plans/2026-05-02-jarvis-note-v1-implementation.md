@@ -37,13 +37,13 @@ A user can:
 7. Export a session via Save dialog: Markdown bundle, plain transcript, or audio file. **No S3 / cloud sharing in v1.0.**
 8. Recordings survive app crash and ungraceful exit (≤5 s loss bound, per design §5). Recover dialog at next launch surfaces incomplete sessions.
 
-Out of scope for v1.0:
+Out of scope for v1.0 (original list):
 - Voice Note Mode (v1.1)
 - S3 / cloud sharing with presigned URLs (v1.1)
 - Per-process Core Audio Tap (v1.1 — SCKit mixdown only in v1.0)
 - Embedding-based semantic search (v1.1+)
 - Live captions during recording (v2)
-- Screen recording (deferred, month 6+)
+- ~~Screen recording (deferred, month 6+)~~ → **reinstated in Phase D** (see below)
 - Code signing, notarization, auto-update, App Store
 
 ---
@@ -533,4 +533,42 @@ Day 2 starts with Storage primitives (`AtomicWriter`, `KeychainStore`); CI yaml 
 - **Scope cut:** Voice Note Mode → v1.1
 - **Scope cut:** S3 Sharing → v1.1
 - **Scope cut:** Per-process Core Audio Tap → v1.1
+
+---
+
+## Phase D — Screen recording + vision chat (UNVERIFIED, shipped retroactively 2026-05-02 evening)
+
+> **Status:** Written by a remote sandboxed agent without Xcode/macOS toolchain. Local verification required before treating as complete.
+
+Owner reversed the design-doc's "no-screen-recording" decision after using the audio-only build. See design doc D14 and CLAUDE.md "Pivot reversals".
+
+### Deliverables
+
+| File | Change |
+|---|---|
+| `Sources/CaptureKit/ScreenRecorder.swift` | New `actor ScreenRecorder` — SCStream `.screen` + `.audio` → `screen.mp4` via AVAssetWriter (H.264 video + AAC audio, 24 fps, 4 Mbps). Separate `ScreenStreamOutput: NSObject, SCStreamOutput, @unchecked Sendable` delegate (matches existing pattern in `ScreenCaptureKitAudio.swift`). |
+| `Sources/CaptureKit/CaptureSession.swift` | `Config` gains `screenRecordingEnabled: Bool` and `screenOutputURL: URL?`. `start()` spawns `ScreenRecorder` when enabled; `stop()` stops it (best-effort). Audio-only flow unchanged. |
+| `App/State/AppSettings.swift` | `RecordingMode` enum (`audioOnly` / `audioAndScreen`), `recordingMode` `@Observable` property, UserDefaults persistence. Default: `audioOnly`. |
+| `App/State/RecorderState.swift` | `start(mode:)` reads `settings.recordingMode` to set `screenRecordingEnabled` + `screenOutputURL` in `CaptureSession.Config`. |
+| `App/State/FrameExtractor.swift` | New `struct FrameExtractor` — `AVAssetImageGenerator` single-frame extraction at `TimeInterval` → JPEG `Data`. macOS 14.0+ async API. |
+| `App/State/ChatState.swift` | `send()` parses timestamp patterns (`m:ss`, `h:mm:ss`, `at minute N`, `на N хвилині`) via `NSRegularExpression`, extracts ≤3 JPEG frames from attached sessions' `screen.mp4` via `FrameExtractor`, appends `.image` parts to the user `ChatMessage` + a footer noting what was attached. Falls back to text-only when no screen.mp4 found. |
+| `Sources/AIKit/Models.swift` | `ChatMessage.content: String` → `parts: [Part]` with `Part` enum (`.text(String)` / `.image(jpegData: Data, mimeType: String)`). `text` computed property preserves display compatibility. Convenience `init(role:content:)` retained. |
+| `Sources/AIKit/AnthropicProvider.swift` | Serializes parts as Anthropic content-block array (`{"type":"text"}` / `{"type":"image","source":{"type":"base64",...}}`). Single text-only part falls back to plain string. |
+| `Sources/AIKit/OpenAIProvider.swift` | Serializes parts as OpenAI content-part array (`{"type":"text"}` / `{"type":"image_url","image_url":{"url":"data:..."}}}`). Same plain-string fallback. |
+| `App/Views/Settings/SettingsView.swift` | Recording mode segmented picker added to Transcription tab. Conditional note about Screen Recording permission when `audioAndScreen` is selected. Privacy tab gains a "Screen recording" section. |
+| `App/Views/Library/LibraryView.swift` | `loadAudio()` prefers `screen.mp4` over `audio.m4a` when both exist (screen.mp4 has its own audio track). `SessionRowView` shows `video.fill` icon badge when `screen.mp4` sidecar is present. |
+| `App/Views/Chat/ChatView.swift` | `MessageBubble` uses `message.text` instead of `message.content` (single-line breaking-change migration). |
+| `Tests/AIKitTests/AnthropicProviderTests.swift` | New test: multipart body shape (text + image block). New suite: `ChatMessage.text` accessor. Existing tests migrated (`.content` → `.text`). |
+| `Tests/AIKitTests/OpenAIProviderTests.swift` | New test: multipart body shape (text + image_url block). E2E round-trip with image. Existing tests migrated. |
+| `CLAUDE.md` | Pivot history section + stack invariants updated. |
+| `docs/plans/2026-05-02-jarvis-note-design.md` | Deferred item updated; D13 + D14 added to Decision Log §15. |
+
+### Verification checklist (owner must run locally)
+
+- [ ] `xcodegen generate && xcodebuild -scheme JarvisNote -configuration Debug build` exits 0
+- [ ] `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` shows ≥14 passing (all existing tests) + new AIKit multipart tests
+- [ ] Settings → Transcription → Recording mode picker appears and persists between launches
+- [ ] Start a recording in Audio + Screen mode → macOS prompts for Screen Recording permission → grant + relaunch → record → verify `<sessionDir>/screen.mp4` exists and plays in QuickTime
+- [ ] In Chat with that session attached, type "what was on screen at 0:30?" → frame extracted, vision model responds about visual content
+- [ ] Recordings without `screen.mp4` (audio-only sessions) still work in Chat with no errors
 - **Timeline:** 6 weeks → 11 calendar weeks honestly
