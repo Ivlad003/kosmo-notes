@@ -259,6 +259,21 @@ final class RecorderState {
             provider = OpenAIProvider(apiKey: key)
             model = "gpt-4o-mini"
             pricing = CostEstimator.openai_gpt_4o_mini
+        case .ollama:
+            let endpoint = URL(string: settings.ollamaEndpoint) ?? URL(string: "http://localhost:11434")!
+            let mode: OllamaProvider.APIMode = settings.ollamaApiMode == .native ? .native : .openaiCompat
+            let bearer = settings.ollamaBearer.trimmingCharacters(in: .whitespacesAndNewlines)
+            do {
+                provider = try OllamaProvider(
+                    endpoint: endpoint,
+                    apiMode: mode,
+                    bearerToken: bearer.isEmpty ? nil : bearer
+                )
+            } catch {
+                return nil
+            }
+            model = settings.ollamaModel
+            pricing = CostEstimator.Pricing(inputPerMillion: 0, outputPerMillion: 0)  // local, free
         }
 
         // Estimate cost before sending — skip silently if it exceeds the cap.
