@@ -55,4 +55,11 @@ final class LibraryWindowController {
     func didClose() {
         window = nil
     }
+
+    /// True when the Library window is open and visible. Used by AppDelegate's
+    /// activation-policy bookkeeping so closing Settings or Chat doesn't demote
+    /// the app while the Library is still on screen.
+    var isVisible: Bool {
+        window?.isVisible == true
+    }
 }

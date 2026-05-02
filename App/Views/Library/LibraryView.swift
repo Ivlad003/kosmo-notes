@@ -11,6 +11,7 @@ import TranscriptionKit
 struct LibraryView: View {
 
     @Bindable var state: LibraryState
+    @State private var confirmClearAll: Bool = false
 
     var body: some View {
         NavigationSplitView {
@@ -31,6 +32,29 @@ struct LibraryView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 500)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(role: .destructive) {
+                    confirmClearAll = true
+                } label: {
+                    Label("Clear All", systemImage: "trash.slash")
+                }
+                .help("Delete every recording, transcript, and screen capture from disk")
+                .disabled(state.sessions.isEmpty)
+            }
+        }
+        .confirmationDialog(
+            "Delete every session?",
+            isPresented: $confirmClearAll,
+            titleVisibility: .visible
+        ) {
+            Button("Delete All", role: .destructive) {
+                Task { await state.clearAllSessions() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("All audio, transcripts, summaries, and screen recordings will be removed permanently. The database will also be cleared. This cannot be undone.")
+        }
         .task {
             // Initial load when window opens.
             await state.refresh()
@@ -201,6 +225,7 @@ private struct SessionDetailView: View {
     @State private var segmentsLoading = true
     @State private var hasScreenVideo: Bool = false
     @State private var exportError: String?
+    @State private var confirmDelete: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -210,9 +235,10 @@ private struct SessionDetailView: View {
 
             Divider()
 
-            // Audio player
+            // Player. Tall enough to show the screen.mp4 frame at a usable
+            // size when one exists; collapsed to the audio scrubber bar otherwise.
             AVPlayerRepresentable(model: playerModel)
-                .frame(height: 44)
+                .frame(height: hasScreenVideo ? 280 : 44)
                 .padding(.horizontal)
                 .padding(.vertical, 8)
 
@@ -263,6 +289,14 @@ private struct SessionDetailView: View {
                     Label("Open in Finder", systemImage: "folder")
                 }
                 .buttonStyle(.borderless)
+
+                Button(role: .destructive) {
+                    confirmDelete = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Delete this session and its files")
             }
             .padding(.horizontal)
             .padding(.bottom, 8)
@@ -284,12 +318,8 @@ private struct SessionDetailView: View {
             }
         }
         .task {
-            await loadAudio()
+            await loadAudio()  // also sets hasScreenVideo
             await loadTranscript()
-            // Check for screen.mp4 sidecar to decide whether to show the export option.
-            let audioURL = await state.audioFileURL(for: session.id)
-            let screenURL = audioURL.deletingLastPathComponent().appendingPathComponent("screen.mp4")
-            hasScreenVideo = FileManager.default.fileExists(atPath: screenURL.path)
         }
         .alert("Export Failed", isPresented: Binding(
             get: { exportError != nil },
@@ -298,6 +328,18 @@ private struct SessionDetailView: View {
             Button("OK", role: .cancel) { exportError = nil }
         } message: {
             Text(exportError ?? "")
+        }
+        .confirmationDialog(
+            "Delete this session?",
+            isPresented: $confirmDelete,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                Task { await state.deleteSession(id: session.id) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the audio, transcript, summary, and any screen recording from disk. The action cannot be undone.")
         }
     }
 
@@ -308,12 +350,20 @@ private struct SessionDetailView: View {
         let urlToLoad: URL
         if FileManager.default.fileExists(atPath: screenURL.path) {
             urlToLoad = screenURL
+            // Toggle the video-sized panel BEFORE loading the asset so AVPlayerView
+            // is built with enough room to host the video layer instead of falling
+            // back to the audio-scrubber chrome and never re-laying out.
+            hasScreenVideo = true
         } else if FileManager.default.fileExists(atPath: audioURL.path) {
             urlToLoad = audioURL
+            hasScreenVideo = false
         } else {
             return
         }
         playerModel.load(url: urlToLoad)
+        // Force a seek to t=0 so the player paints the first frame as a poster
+        // image instead of staying blank until the user presses play.
+        playerModel.seek(to: 0)
     }
 
     private func loadTranscript() async {

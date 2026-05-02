@@ -1,8 +1,15 @@
 @preconcurrency import AVFoundation
 import Foundation
+import os
 
 #if canImport(ScreenCaptureKit)
 import ScreenCaptureKit
+
+/// Diagnostics channel for screen recording. Until this was added, ScreenRecorder
+/// failed completely silently — start could "succeed" but no frames ever wrote,
+/// and the stop path's `try?` in CaptureSession swallowed the writer-failed
+/// error. The user sees no screen.mp4 with no explanation.
+private let screenRecorderLog = Logger(subsystem: "dev.jarvisnote.studio", category: "ScreenRecorder")
 
 // MARK: - ScreenRecorder
 
@@ -74,17 +81,26 @@ public actor ScreenRecorder: NSObject {
 
     public func start(config: Config) async throws {
         self.config = config
+        screenRecorderLog.info("ScreenRecorder.start: outputURL=\(config.outputURL.path, privacy: .public) hevc=\(config.useHEVC, privacy: .public) videoBitrate=\(config.videoBitrate, privacy: .public) audio=\(config.captureSystemAudio, privacy: .public) fps=\(config.frameRate, privacy: .public)")
 
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            false,
-            onScreenWindowsOnly: true
-        )
+        let content: SCShareableContent
+        do {
+            content = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: true
+            )
+        } catch {
+            screenRecorderLog.error("ScreenRecorder.start: SCShareableContent failed — \(error.localizedDescription, privacy: .public). Likely Screen Recording TCC denied; reset with `tccutil reset ScreenCapture dev.jarvisnote.studio` and re-grant.")
+            throw error
+        }
         guard let display = content.displays.first else {
+            screenRecorderLog.error("ScreenRecorder.start: no displays available")
             throw ScreenRecorderError.noDisplayAvailable
         }
 
         let width = Int(CGFloat(display.width) * config.scaleFactor)
         let height = Int(CGFloat(display.height) * config.scaleFactor)
+        screenRecorderLog.info("ScreenRecorder.start: display \(display.width, privacy: .public)×\(display.height, privacy: .public) → output \(width, privacy: .public)×\(height, privacy: .public)")
 
         // Configure SCStream for video + optional audio.
         let streamConfig = SCStreamConfiguration()
@@ -149,26 +165,43 @@ public actor ScreenRecorder: NSObject {
             assetWriter.add(aInput)
         }
 
-        assetWriter.startWriting()
+        let started = assetWriter.startWriting()
+        if !started || assetWriter.status != .writing {
+            screenRecorderLog.error("ScreenRecorder.start: AVAssetWriter.startWriting returned \(started, privacy: .public) status=\(assetWriter.status.rawValue, privacy: .public) error=\(assetWriter.error?.localizedDescription ?? "nil", privacy: .public)")
+            throw ScreenRecorderError.writeFailed(underlying: assetWriter.error ?? NSError(domain: "ScreenRecorder", code: -1))
+        }
 
         // Wire stream output delegate (separate @unchecked Sendable class per codebase pattern).
         let output = ScreenStreamOutput(recorder: self)
         self.streamOutput = output
 
         let scStream = SCStream(filter: filter, configuration: streamConfig, delegate: nil)
-        try scStream.addStreamOutput(output, type: .screen, sampleHandlerQueue: .global(qos: .userInitiated))
-        if config.captureSystemAudio {
-            try scStream.addStreamOutput(output, type: .audio, sampleHandlerQueue: .global(qos: .userInitiated))
+        do {
+            try scStream.addStreamOutput(output, type: .screen, sampleHandlerQueue: .global(qos: .userInitiated))
+            if config.captureSystemAudio {
+                try scStream.addStreamOutput(output, type: .audio, sampleHandlerQueue: .global(qos: .userInitiated))
+            }
+            try await scStream.startCapture()
+        } catch {
+            screenRecorderLog.error("ScreenRecorder.start: SCStream.startCapture failed — \(error.localizedDescription, privacy: .public)")
+            throw error
         }
-        try await scStream.startCapture()
         self.stream = scStream
+        screenRecorderLog.info("ScreenRecorder.start: SCStream capturing, awaiting first frame")
     }
 
     /// Stop capture, finalize the MP4, and return the output URL.
     @discardableResult
     public func stop() async throws -> URL {
-        guard let scStream = stream else { throw ScreenRecorderError.notStarted }
-        try? await scStream.stopCapture()
+        guard let scStream = stream else {
+            screenRecorderLog.error("ScreenRecorder.stop: not started")
+            throw ScreenRecorderError.notStarted
+        }
+        do {
+            try await scStream.stopCapture()
+        } catch {
+            screenRecorderLog.error("ScreenRecorder.stop: SCStream.stopCapture threw — \(error.localizedDescription, privacy: .public) (continuing to finalize writer)")
+        }
         stream = nil
         streamOutput = nil
 
@@ -178,9 +211,14 @@ public actor ScreenRecorder: NSObject {
         audioInput?.markAsFinished()
 
         await w.finishWriting()
+        screenRecorderLog.info("ScreenRecorder.stop: framesWritten=\(self.screenFrameCount, privacy: .public) framesDropped=\(self.screenFrameDropped, privacy: .public) writerStatus=\(w.status.rawValue, privacy: .public)")
 
         if w.status == .failed, let err = w.error {
+            screenRecorderLog.error("ScreenRecorder.stop: writer failed — \(err.localizedDescription, privacy: .public)")
             throw ScreenRecorderError.writeFailed(underlying: err)
+        }
+        if screenFrameCount == 0 {
+            screenRecorderLog.error("ScreenRecorder.stop: zero video frames written — screen.mp4 will be missing or unplayable. SCStream may not have delivered any .complete frames; check Screen Recording TCC trust against the running binary's hash.")
         }
 
         return cfg.outputURL
@@ -197,28 +235,63 @@ public actor ScreenRecorder: NSObject {
         Task { await self._handleSampleBuffer(box.buffer, ofType: box.type) }
     }
 
+    private var screenFrameCount: Int = 0
+    private var screenFrameDropped: Int = 0
+
     private func _handleSampleBuffer(_ sampleBuffer: CMSampleBuffer, ofType type: SCStreamOutputType) {
         guard let w = writer else { return }
+
+        // Drop SCStream frames flagged with status != .complete (e.g. .idle when
+        // no on-screen change since last frame) BEFORE we anchor the timeline,
+        // otherwise firstSampleTime locks to a non-image frame and downstream
+        // appends silently produce a malformed file.
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+           let info = attachments.first,
+           let statusRaw = info[.status] as? Int,
+           let status = SCFrameStatus(rawValue: statusRaw),
+           status != .complete {
+            screenFrameDropped += 1
+            return
+        }
 
         // Start the writer session on the very first sample to anchor PTS at .zero.
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         if firstSampleTime == nil {
             firstSampleTime = pts
-            w.startSession(atSourceTime: pts)
+            // Anchor the writer's session at .zero, NOT at the first sample's
+            // mach-time PTS. Both video frames (via offsetPTS) and audio samples
+            // (via copyWithAdjustedPTS) are rebased to start at 0; if the session
+            // were anchored at the original mach-time the rebased samples would
+            // sit *before* the session window and the .mp4 would report
+            // duration=0 — playable as one frozen frame, but Play does nothing.
+            w.startSession(atSourceTime: .zero)
+            screenRecorderLog.info("ScreenRecorder: first sample (type=\(type == .screen ? "screen" : "audio", privacy: .public)) — writer session started at .zero (machPTS=\(pts.seconds, privacy: .public))")
         }
 
         switch type {
         case .screen:
-            guard let vInput = videoInput, vInput.isReadyForMoreMediaData else { return }
-            // Extract pixel buffer and append with offset PTS.
-            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+            guard let vInput = videoInput, vInput.isReadyForMoreMediaData else {
+                screenFrameDropped += 1
+                return
+            }
+            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+                screenFrameDropped += 1
+                return
+            }
             let offsetPTS = CMTimeSubtract(pts, firstSampleTime!)
-            pixelBufferAdaptor?.append(pixelBuffer, withPresentationTime: offsetPTS)
+            let appended = pixelBufferAdaptor?.append(pixelBuffer, withPresentationTime: offsetPTS) ?? false
+            if appended {
+                screenFrameCount += 1
+                if screenFrameCount == 1 || screenFrameCount % 120 == 0 {
+                    screenRecorderLog.info("ScreenRecorder: video frame #\(self.screenFrameCount, privacy: .public) appended (dropped so far=\(self.screenFrameDropped, privacy: .public))")
+                }
+            } else {
+                screenRecorderLog.error("ScreenRecorder: pixelBufferAdaptor.append returned false — writerStatus=\(w.status.rawValue, privacy: .public) error=\(w.error?.localizedDescription ?? "nil", privacy: .public)")
+            }
 
         case .audio:
             guard let aInput = audioInput, aInput.isReadyForMoreMediaData else { return }
-            // For audio we copy with adjusted PTS to match video timeline origin.
             if let adjusted = sampleBuffer.copyWithAdjustedPTS(offset: firstSampleTime!) {
                 aInput.append(adjusted)
             }

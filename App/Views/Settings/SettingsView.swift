@@ -1,5 +1,6 @@
 import SwiftUI
 import AIKit
+import CaptureKit
 import DictationKit
 import KeyboardShortcuts
 
@@ -68,8 +69,12 @@ private struct TranscriptionTab: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("System audio source") {
+                SystemAudioSourcePicker(settings: settings)
+            }
+
             if isMacOS14_4OrLater() {
-                Section("System audio source (macOS 14.4+)") {
+                Section("System audio source — per-process tap (macOS 14.4+)") {
                     Toggle("Capture only specific apps (per-process Core Audio Tap)", isOn: $settings.useProcessTap)
                     if settings.useProcessTap {
                         TextField("Bundle IDs (comma-separated)", text: $settings.processTapBundleIDs, axis: .vertical)
@@ -683,8 +688,62 @@ private struct SharingTab: View {
 
 @available(macOS 14.0, *)
 private struct PrivacyTab: View {
+    /// Bumped on every appear and after each "Refresh" tap so the cached
+    /// permission badges re-read CGPreflightScreenCaptureAccess /
+    /// AVCaptureDevice.authorizationStatus / AXIsProcessTrusted.
+    @State private var refreshTick: Int = 0
+
     var body: some View {
         Form {
+            Section("Permissions") {
+                PermissionRow(
+                    title: "Microphone",
+                    systemImage: "mic.fill",
+                    detail: "Required for every recording — captures your voice.",
+                    status: micStatusText,
+                    granted: micGranted,
+                    requestLabel: "Request",
+                    onRequest: { Task { _ = await PermissionsHelper.requestMicAccess(); refreshTick &+= 1 } },
+                    onOpen: { PermissionsHelper.openMicSettings() }
+                )
+
+                PermissionRow(
+                    title: "Screen Recording",
+                    systemImage: "rectangle.dashed.badge.record",
+                    detail: "Required for Audio + Screen mode and for system-audio capture (e.g. recording call participants).",
+                    status: screenStatusText,
+                    granted: PermissionsHelper.screenRecordingGranted(),
+                    requestLabel: "Request",
+                    onRequest: {
+                        PermissionsHelper.requestScreenRecordingAccess()
+                        refreshTick &+= 1
+                    },
+                    onOpen: { PermissionsHelper.openScreenRecordingSettings() }
+                )
+
+                PermissionRow(
+                    title: "Accessibility",
+                    systemImage: "accessibility",
+                    detail: "Only needed for Dictation Mode — pastes the cleaned transcript into the focused text field.",
+                    status: axStatusText,
+                    granted: PermissionsHelper.accessibilityGranted(),
+                    requestLabel: "Open Settings",
+                    onRequest: { PermissionsHelper.openAccessibilitySettings() },
+                    onOpen: { PermissionsHelper.openAccessibilitySettings() }
+                )
+
+                HStack {
+                    Spacer()
+                    Button("Refresh status") { refreshTick &+= 1 }
+                        .buttonStyle(.borderless)
+                }
+
+                Text("Tip: ad-hoc-signed dev builds change their code-signature hash on every rebuild, which can leave a stale TCC entry that shows as granted in System Settings but isn't honored at runtime. Toggle the row off then on, or run `tccutil reset Microphone dev.jarvisnote.studio` (replace `Microphone` with `ScreenCapture` for screen recording) and re-grant.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .id(refreshTick)
+
             Section("How Jarvis Note handles your audio") {
                 Text("""
                 Recordings stay on your Mac at:
@@ -717,6 +776,86 @@ private struct PrivacyTab: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { refreshTick &+= 1 }
+    }
+
+    // MARK: - Status helpers
+
+    private var micGranted: Bool {
+        PermissionsHelper.micAuthStatus() == .authorized
+    }
+
+    private var micStatusText: String {
+        switch PermissionsHelper.micAuthStatus() {
+        case .authorized: return "Granted"
+        case .denied: return "Denied"
+        case .restricted: return "Restricted"
+        case .notDetermined: return "Not requested"
+        @unknown default: return "Unknown"
+        }
+    }
+
+    private var screenStatusText: String {
+        PermissionsHelper.screenRecordingGranted() ? "Granted" : "Not granted"
+    }
+
+    private var axStatusText: String {
+        PermissionsHelper.accessibilityGranted() ? "Granted" : "Not granted"
+    }
+}
+
+/// One row per TCC permission. Status badge + Request + Open System Settings.
+@available(macOS 14.0, *)
+private struct PermissionRow: View {
+    let title: String
+    let systemImage: String
+    let detail: String
+    let status: String
+    let granted: Bool
+    let requestLabel: String
+    let onRequest: () -> Void
+    let onOpen: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .frame(width: 22)
+                    .foregroundStyle(.secondary)
+                Text(title)
+                    .font(.body.weight(.medium))
+                Spacer()
+                StatusBadge(text: status, granted: granted)
+            }
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button(requestLabel, action: onRequest)
+                    .buttonStyle(.bordered)
+                Button("Open System Settings", action: onOpen)
+                    .buttonStyle(.bordered)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+@available(macOS 14.0, *)
+private struct StatusBadge: View {
+    let text: String
+    let granted: Bool
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule().fill(granted ? Color.green.opacity(0.18) : Color.orange.opacity(0.18))
+            )
+            .foregroundStyle(granted ? Color.green : Color.orange)
     }
 }
 
@@ -754,5 +893,88 @@ private struct APIKeyField: View {
             Button("Save", action: onCommit)
                 .keyboardShortcut(.defaultAction)
         }
+    }
+}
+
+// MARK: - SystemAudioSourcePicker
+
+/// Picker for the system-audio source (Settings → Transcription).
+///
+/// "Default (ScreenCaptureKit)" reads system audio via SCStream — captures
+/// whatever speakers play. The downside: if you record without headphones,
+/// the mic picks up the speakers' output, doubling the recorded audio.
+///
+/// Picking a virtual loopback device (BlackHole 2ch / Loopback) lets the user
+/// route system audio through a software cable that the mic doesn't hear.
+/// Setup: install BlackHole (`brew install blackhole-2ch`), in Audio MIDI Setup
+/// create a Multi-Output Device (BlackHole + headphones), set system output
+/// to it, then pick BlackHole here. Echo gone.
+@available(macOS 14.0, *)
+private struct SystemAudioSourcePicker: View {
+    @Bindable var settings: AppSettings
+    @State private var devices: [AudioInputDevice] = []
+    @State private var refreshTick: Int = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Source", selection: $settings.systemAudioDeviceUID) {
+                Text("Default (ScreenCaptureKit)").tag("")
+                if !devices.isEmpty {
+                    Divider()
+                    ForEach(devices) { device in
+                        HStack {
+                            Image(systemName: device.isVirtualLoopback ? "waveform.path.ecg" : "mic")
+                                .foregroundStyle(device.isVirtualLoopback ? .green : .secondary)
+                            Text(device.name)
+                            if device.isVirtualLoopback {
+                                Text("loopback").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .tag(device.uid)
+                    }
+                }
+            }
+            .id(refreshTick)
+
+            HStack(spacing: 8) {
+                Button("Refresh device list") {
+                    devices = AudioInputDevice.fresh()
+                    refreshTick &+= 1
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+
+                if !settings.systemAudioDeviceUID.isEmpty,
+                   !devices.contains(where: { $0.uid == settings.systemAudioDeviceUID }) {
+                    Label("Selected device not connected", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Default route is ScreenCaptureKit's whole-system mixdown — captures whatever your speakers play. Without headphones, the mic picks up that audio too, doubling voices in the recording.")
+                Text("Pick a virtual loopback device (BlackHole 2ch, Loopback) to route system audio through a software cable the mic doesn't hear. Setup:")
+                Text("1. brew install blackhole-2ch")
+                    .font(.system(.caption2, design: .monospaced))
+                Text("2. Audio MIDI Setup → Create Multi-Output Device with BlackHole + your real output (speakers/headphones)")
+                Text("3. System Settings → Sound → Output: pick the Multi-Output Device")
+                Text("4. Refresh this list and pick BlackHole below.")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .onAppear {
+            devices = AudioInputDevice.fresh()
+        }
+    }
+}
+
+@available(macOS 14.0, *)
+private extension AudioInputDevice {
+    /// Tiny convenience wrapper so the view can call `.fresh()` instead of
+    /// touching the enumerator directly.
+    static func fresh() -> [AudioInputDevice] {
+        AudioDeviceEnumerator.inputDevices()
     }
 }

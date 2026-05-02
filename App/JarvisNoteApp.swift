@@ -75,15 +75,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    func applicationWillTerminate(_ notification: Notification) {
-        // Best-effort: stop any active recording so segments are flushed and
-        // SleepAssertion is released. Avoids "always recovering on next launch"
-        // when user quits cleanly via Cmd+Q with a recording in progress.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // If a recording is in progress, defer termination until stop() finishes
+        // so segments are finalized and SleepAssertion is released. Returning
+        // .terminateLater suspends the quit until we call NSApp.reply(...).
         if #available(macOS 14.0, *), let recorder = recorderState, recorder.status.isBusy {
-            // Synchronous best-effort. We're inside applicationWillTerminate;
-            // long async work is risky. Fire-and-forget.
-            Task { await recorder.stop() }
+            Task { @MainActor in
+                await recorder.stop()
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
         }
+        return .terminateNow
     }
 
     /// Returns true when the OS is supported. On unsupported OS, surfaces a
@@ -241,7 +244,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             presentFatalSetupError("Could not open database at \(dbPath.path).", error: error)
             return
         }
-        self.databaseHolder = database
 
         let sessionStore: SessionStore
         do {
@@ -250,20 +252,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             presentFatalSetupError("Could not create session store at \(recordingsDir.path).", error: error)
             return
         }
-        self.sessionStoreHolder = sessionStore
 
+        // Settings load from UserDefaults / Keychain — pure read, safe to do
+        // before migration. Stored on the side so the migration Task can pick
+        // it up without recapturing.
         let settings = AppSettings()
         self.sharedSettings = settings
 
-        let recorder = RecorderState(database: database, sessionStore: sessionStore, settings: settings)
-        self.recorderHolder = recorder
-
-        // Dictation: register the global hotkey monitor. The pipeline itself is
-        // built lazily on first hotkey press (no API call until then).
-        let dictation = DictationState(settings: settings)
-        dictation.install()
-        self.dictationHolder = dictation
-
+        // CRITICAL: do NOT publish recorder/dictation/database/sessionStore until
+        // database.migrate() finishes. menuNeedsUpdate, hotkeys, and UI all read
+        // recorderState; the moment that returns non-nil, an INSERT INTO sessions
+        // can race the schema migration. Holding back the assignment is the only
+        // reliable way to gate that path.
         Task { @MainActor in
             do {
                 try await database.migrate()
@@ -271,6 +271,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 presentFatalSetupError("Could not migrate database.", error: error)
                 return
             }
+
+            // Migration complete — publish everything.
+            self.databaseHolder = database
+            self.sessionStoreHolder = sessionStore
+
+            let recorder = RecorderState(database: database, sessionStore: sessionStore, settings: settings)
+            self.recorderHolder = recorder
+
+            // Dictation: register the global hotkey monitor. The pipeline itself
+            // is rebuilt on every press so settings changes apply without relaunch.
+            let dictation = DictationState(settings: settings)
+            dictation.install()
+            self.dictationHolder = dictation
+
+            // Force a menu refresh so any stale "Recording requires macOS 14+"
+            // labels flip to the real recorder-ready titles.
+            statusItem?.menu?.update()
 
             // After migration, scan for orphan sessions and offer recovery.
             let coordinator = RecoveryCoordinator(sessionStore: sessionStore, database: database)
@@ -583,27 +600,41 @@ extension AppDelegate: NSWindowDelegate {
         switch window.identifier?.rawValue {
         case "settings":
             settingsWindow = nil
-            if onboardingWindow == nil && chatWindow == nil {
-                NSApp.setActivationPolicy(.accessory)
-            }
         case "library":
             if #available(macOS 14.0, *) {
                 // Only call didClose if the controller was actually created.
                 (libraryControllerHolder as? LibraryWindowController)?.didClose()
-            }
-            if settingsWindow == nil, onboardingWindow == nil {
-                NSApp.setActivationPolicy(.accessory)
             }
         case "onboarding":
             onboardingWindow = nil
         case "chat":
             chatWindow = nil
             chatHolder = nil
-            if settingsWindow == nil && onboardingWindow == nil {
-                NSApp.setActivationPolicy(.accessory)
-            }
         default:
             break
+        }
+        maybeDemoteToAccessory()
+    }
+
+    /// Demote the app to .accessory only when no app-owned window is still on
+    /// screen. The previous per-case checks each only knew about a subset of the
+    /// other windows, so closing Settings while the Library was open would
+    /// demote and yank the Library out of the foreground.
+    @MainActor
+    private func maybeDemoteToAccessory() {
+        let libraryVisible: Bool = {
+            if #available(macOS 14.0, *),
+               let controller = libraryControllerHolder as? LibraryWindowController {
+                return controller.isVisible
+            }
+            return false
+        }()
+        let anyVisible = settingsWindow != nil
+            || onboardingWindow != nil
+            || chatWindow != nil
+            || libraryVisible
+        if !anyVisible {
+            NSApp.setActivationPolicy(.accessory)
         }
     }
 }

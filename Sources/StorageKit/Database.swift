@@ -178,6 +178,17 @@ public actor AppDatabase {
         }
     }
 
+    /// Delete a session and its transcript / embedding rows by id. Idempotent —
+    /// rows that don't exist are silently skipped. Caller is responsible for
+    /// removing the on-disk session directory.
+    public func deleteSession(id: String) async throws {
+        try await pool.write { db in
+            try db.execute(sql: "DELETE FROM transcripts_fts WHERE sid = ?", arguments: [id])
+            try db.execute(sql: "DELETE FROM session_embeddings WHERE sid = ?", arguments: [id])
+            try db.execute(sql: "DELETE FROM sessions WHERE id = ?", arguments: [id])
+        }
+    }
+
     // MARK: - FTS
 
     public func indexTranscript(sid: String, text: String) async throws {

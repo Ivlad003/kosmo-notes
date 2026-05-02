@@ -83,6 +83,7 @@ public final class DictationPipeline {
     // MARK: - Dependencies
 
     private let llmProvider: (any AIProvider)?
+    private let llmModel: String
     private let maxDurationSeconds: Int
     private let logger: Logger?
     let eventHook: EventHook?
@@ -102,11 +103,13 @@ public final class DictationPipeline {
     public init(
         whisperProvider: WhisperProvider,
         llmProvider: (any AIProvider)?,
+        llmModel: String = "claude-sonnet-4-6",
         maxDurationSeconds: Int,
         logger: Logger? = nil,
         eventHook: EventHook? = nil
     ) {
         self.llmProvider = llmProvider
+        self.llmModel = llmModel
         self.maxDurationSeconds = maxDurationSeconds
         self.logger = logger
         self.eventHook = eventHook
@@ -126,11 +129,13 @@ public final class DictationPipeline {
         transcriber: @escaping Transcriber,
         paster: @escaping Paster,
         llmProvider: (any AIProvider)?,
+        llmModel: String = "claude-sonnet-4-6",
         maxDurationSeconds: Int,
         logger: Logger? = nil,
         eventHook: EventHook? = nil
     ) {
         self.llmProvider = llmProvider
+        self.llmModel = llmModel
         self.maxDurationSeconds = maxDurationSeconds
         self.logger = logger
         self.eventHook = eventHook
@@ -216,7 +221,7 @@ public final class DictationPipeline {
             let context = AppContextDetector.detect()
             let prompt = cleanupPrompt(transcript: transcript, context: context)
             let config = AIConfig(
-                model: "claude-sonnet-4-6",
+                model: llmModel,
                 temperature: 0.2,
                 maxTokens: 1024,
                 systemPrompt: nil

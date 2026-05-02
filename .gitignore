@@ -45,3 +45,6 @@ node_modules/
 .omc/project-memory.json
 .omc/sessions/
 # Keep .omc/plans/ committed — it's part of the design trail.
+
+# Production release artifacts (built locally; not versioned)
+dist/

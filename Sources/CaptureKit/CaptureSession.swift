@@ -1,5 +1,8 @@
 @preconcurrency import AVFoundation
 import Foundation
+import os
+
+private let captureSessionLog = Logger(subsystem: "dev.jarvisnote.studio", category: "CaptureSession")
 
 // MARK: - AudioCodecChoice
 
@@ -58,6 +61,11 @@ public actor CaptureSession {
         /// Audio codec (`aac` / `heAAC` / `opus`). Opus falls back to HE-AAC when
         /// the .m4a container can't carry it. Only AAC-family codecs work in .m4a.
         public let audioCodec: AudioCodecChoice
+        /// When set, system audio is captured from this Core Audio input device
+        /// (e.g. BlackHole 2ch loopback) instead of SCKit's whole-system mixdown.
+        /// Lets users avoid the speaker → mic echo loop by routing system audio
+        /// through a virtual device that the mic doesn't pick up.
+        public let systemAudioDeviceUID: String?
 
         public init(
             micEnabled: Bool = true,
@@ -72,7 +80,8 @@ public actor CaptureSession {
             videoBitrate: Int = 2_000_000,
             audioBitrate: Int = 48_000,
             audioSampleRate: Int = 48_000,
-            audioCodec: AudioCodecChoice = .heAAC
+            audioCodec: AudioCodecChoice = .heAAC,
+            systemAudioDeviceUID: String? = nil
         ) {
             self.micEnabled = micEnabled
             self.systemAudioEnabled = systemAudioEnabled
@@ -87,6 +96,7 @@ public actor CaptureSession {
             self.audioBitrate = audioBitrate
             self.audioSampleRate = audioSampleRate
             self.audioCodec = audioCodec
+            self.systemAudioDeviceUID = systemAudioDeviceUID
         }
     }
 
@@ -112,6 +122,10 @@ public actor CaptureSession {
     /// stricter than the package's macOS 14.0 deployment target. Cast at the
     /// use site under `#available(macOS 14.4, *)`.
     private var tapBoxAny: AnyObject?
+    /// Capture for the user-selected loopback device (BlackHole etc).
+    /// Mutually exclusive with `scKitBox` / `tapBoxAny` — when set, system
+    /// audio comes from this device instead of SCKit's whole-system mixdown.
+    private var deviceAudioCapture: DeviceAudioCapture?
 
     // MARK: - Init
 
@@ -140,23 +154,39 @@ public actor CaptureSession {
         }
 
         if config.systemAudioEnabled {
-            // Try the per-process Core Audio Tap path first when configured + 14.4+.
-            // On any failure (no matching processes, kernel errors, etc.) we fall back
-            // to SCKit's whole-system mixdown so a misconfigured tap never hard-fails
-            // the entire recording.
-            var tapStarted = false
-            if config.useProcessTap, #available(macOS 14.4, *) {
+            // Three system-audio source paths, picked in order of preference:
+            //   1. Custom loopback device (BlackHole etc) — set explicitly via
+            //      Settings, eliminates speaker → mic echo.
+            //   2. Per-process Core Audio Tap (14.4+) — captures audio from
+            //      specific bundle IDs.
+            //   3. SCKit whole-system mixdown — captures everything that's
+            //      currently playing, including from speakers (echo-prone).
+            var systemStarted = false
+
+            if let deviceUID = config.systemAudioDeviceUID, !deviceUID.isEmpty {
+                do {
+                    let capture = DeviceAudioCapture(config: .init(deviceUID: deviceUID))
+                    self.deviceAudioCapture = capture
+                    systemTask = try await makeDeviceCaptureTask(capture: capture, writer: writer)
+                    systemStarted = true
+                    captureSessionLog.info("CaptureSession.start: system audio via custom device UID=\(deviceUID, privacy: .public)")
+                } catch {
+                    captureSessionLog.error("CaptureSession.start: device capture failed (\(error.localizedDescription, privacy: .public)) — falling back to SCKit")
+                    self.deviceAudioCapture = nil
+                }
+            }
+
+            if !systemStarted, config.useProcessTap, #available(macOS 14.4, *) {
                 do {
                     let box = TapBox()
                     self.tapBoxAny = box
                     systemTask = try await makeTapTask(box: box, bundleIDs: config.processTapBundleIDs, writer: writer)
-                    tapStarted = true
+                    systemStarted = true
                 } catch {
                     self.tapBoxAny = nil
-                    // Fall through to SCKit fallback.
                 }
             }
-            if !tapStarted, #available(macOS 12.3, *) {
+            if !systemStarted, #available(macOS 12.3, *) {
                 let box = SCKitBox()
                 self.scKitBox = box
                 systemTask = try await makeSystemTask(box: box, writer: writer)
@@ -205,8 +235,13 @@ public actor CaptureSession {
             micTask = try await makeMicTask(engine: engine, writer: writer)
         }
 
-        if config.systemAudioEnabled, let box = scKitBox {
-            if #available(macOS 12.3, *) {
+        if config.systemAudioEnabled {
+            // Restart whichever system-audio path was originally chosen.
+            if let capture = deviceAudioCapture {
+                systemTask = try await makeDeviceCaptureTask(capture: capture, writer: writer)
+            } else if #available(macOS 14.4, *), let box = tapBoxAny as? TapBox {
+                systemTask = try await makeTapTask(box: box, bundleIDs: config.processTapBundleIDs, writer: writer)
+            } else if let box = scKitBox, #available(macOS 12.3, *) {
                 systemTask = try await makeSystemTask(box: box, writer: writer)
             }
         }
@@ -225,11 +260,18 @@ public actor CaptureSession {
         if #available(macOS 14.4, *), let box = tapBoxAny as? TapBox {
             await box.tap.stop()
         }
+        await deviceAudioCapture?.stop()
         cancelFeedTasks()
 
-        // Stop screen recorder (best-effort; don't let it block audio finalization).
+        // Stop screen recorder. Best-effort in the sense that we don't surface
+        // its error to the caller (audio finalization must complete regardless),
+        // but we DO log it so silent failures stop being invisible.
         if #available(macOS 12.3, *) {
-            try? await screenRecorder?.stop()
+            do {
+                _ = try await screenRecorder?.stop()
+            } catch {
+                captureSessionLog.error("CaptureSession.stop: screenRecorder.stop threw — \(error.localizedDescription, privacy: .public)")
+            }
         }
         screenRecorder = nil
 
@@ -237,6 +279,7 @@ public actor CaptureSession {
         audioEngine = nil
         scKitBox = nil
         tapBoxAny = nil
+        deviceAudioCapture = nil
         segmentWriter = nil
         recordingState = .stopped
         return paths
@@ -260,9 +303,19 @@ public actor CaptureSession {
         // AVAudioPCMBuffer is not Sendable; we assert single-consumer ownership here.
         let box = UncheckedSendableBox(stream)
         return Task.detached {
+            var bufferIndex = 0
             for await buffer in box.value {
-                try? await writer.append(buffer, source: .mic)
+                bufferIndex += 1
+                do {
+                    try await writer.append(buffer, source: .mic)
+                    if bufferIndex == 1 || bufferIndex % 50 == 0 {
+                        captureSessionLog.info("CaptureSession.mic: appended buffer #\(bufferIndex, privacy: .public) frames=\(buffer.frameLength, privacy: .public)")
+                    }
+                } catch {
+                    captureSessionLog.error("CaptureSession.mic: writer.append threw — \(error.localizedDescription, privacy: .public) (buffer #\(bufferIndex, privacy: .public))")
+                }
             }
+            captureSessionLog.info("CaptureSession.mic: stream ended after \(bufferIndex, privacy: .public) buffers")
         }
     }
 
@@ -271,9 +324,39 @@ public actor CaptureSession {
         let stream = try await box.capture.start()
         let streamBox = UncheckedSendableBox(stream)
         return Task.detached {
+            var bufferIndex = 0
             for await buffer in streamBox.value {
-                try? await writer.append(buffer, source: .system)
+                bufferIndex += 1
+                do {
+                    try await writer.append(buffer, source: .system)
+                } catch {
+                    captureSessionLog.error("CaptureSession.system(SCKit): writer.append threw — \(error.localizedDescription, privacy: .public)")
+                }
             }
+            captureSessionLog.info("CaptureSession.system(SCKit): stream ended after \(bufferIndex, privacy: .public) buffers")
+        }
+    }
+
+    /// Drain DeviceAudioCapture's PCM stream into the segment writer as the
+    /// system-audio source. nonisolated mirrors the other makeXTask helpers
+    /// so the AsyncStream never crosses CaptureSession's actor boundary.
+    private nonisolated func makeDeviceCaptureTask(capture: DeviceAudioCapture, writer: SegmentWriter) async throws -> Task<Void, Never> {
+        let stream = try await capture.start()
+        let streamBox = UncheckedSendableBox(stream)
+        return Task.detached {
+            var bufferIndex = 0
+            for await buffer in streamBox.value {
+                bufferIndex += 1
+                do {
+                    try await writer.append(buffer, source: .system)
+                    if bufferIndex == 1 || bufferIndex % 50 == 0 {
+                        captureSessionLog.info("CaptureSession.system(Device): appended buffer #\(bufferIndex, privacy: .public)")
+                    }
+                } catch {
+                    captureSessionLog.error("CaptureSession.system(Device): writer.append threw — \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            captureSessionLog.info("CaptureSession.system(Device): stream ended after \(bufferIndex, privacy: .public) buffers")
         }
     }
 
@@ -282,9 +365,16 @@ public actor CaptureSession {
         let stream = try await box.tap.start(bundleIDs: bundleIDs)
         let streamBox = UncheckedSendableBox(stream)
         return Task.detached {
+            var bufferIndex = 0
             for await buffer in streamBox.value {
-                try? await writer.append(buffer, source: .system)
+                bufferIndex += 1
+                do {
+                    try await writer.append(buffer, source: .system)
+                } catch {
+                    captureSessionLog.error("CaptureSession.system(Tap): writer.append threw — \(error.localizedDescription, privacy: .public)")
+                }
             }
+            captureSessionLog.info("CaptureSession.system(Tap): stream ended after \(bufferIndex, privacy: .public) buffers")
         }
     }
 }

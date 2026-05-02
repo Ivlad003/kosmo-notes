@@ -121,11 +121,23 @@ final class RecorderState {
         // Idempotent: only proceed when not already mid-session.
         guard !status.isBusy else { return }
 
-        // Pre-flight: API key
-        let openaiKey = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if openaiKey.isEmpty {
-            status = .failed(message: "Set your OpenAI API key in Settings → Transcription before recording.")
-            return
+        // Pre-flight: API key for the configured transcription provider. The
+        // selection in Settings → Transcription was previously decorative — the
+        // record path always required an OpenAI key and always used Whisper.
+        // Now we honor the choice and check the right key.
+        switch settings.transcriptionProvider {
+        case .openaiWhisper:
+            let openaiKey = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if openaiKey.isEmpty {
+                status = .failed(message: "Set your OpenAI API key in Settings → Transcription before recording.")
+                return
+            }
+        case .deepgram:
+            let deepgramKey = settings.deepgramApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if deepgramKey.isEmpty {
+                status = .failed(message: "Set your Deepgram API key in Settings → Transcription before recording.")
+                return
+            }
         }
 
         // Pre-flight: Microphone permission. First call triggers the macOS prompt;
@@ -141,18 +153,25 @@ final class RecorderState {
         let screenEnabled = settings.recordingMode == .audioAndScreen
         let systemAudioEnabled = settings.systemAudioEnabled
 
-        // Pre-flight: Screen Recording permission, when either Audio + Screen mode
-        // is enabled (writes screen.mp4) or the system-audio toggle is on (SCKit
-        // mixdown also requires this entitlement). Calling CGRequest... triggers
-        // the prompt on first run; the granted state often only takes effect after
-        // a relaunch, so we surface a modal explaining that.
+        // Screen Recording permission is intentionally NOT pre-flighted here.
+        // CGPreflightScreenCaptureAccess() reads TCC, which keys grants by the
+        // binary's mach-o cdhash for ad-hoc-signed apps. Every rebuild changes
+        // that hash, so even a freshly-granted "Allow" reads as denied on the
+        // very next build. The preflight gate that lived here would loop the
+        // user through "Open System Settings → toggle is already on → press
+        // Record → denied" forever.
+        //
+        // Instead, we let SCKit handle permission natively: SCShareableContent /
+        // SCStream.startCapture pop the system prompt themselves on first use
+        // and bind the grant to the running binary's cdhash. If access is
+        // truly denied, ScreenRecorder.start throws and the catch below surfaces
+        // a clear "Could not start recording: …" message rather than our own
+        // (now-redundant) modal.
+        //
+        // Best-effort nudge: still call CGRequest... so the row appears in
+        // System Settings before anything else fails. No-op when already granted.
         if screenEnabled || systemAudioEnabled {
-            if !PermissionsHelper.screenRecordingGranted() {
-                PermissionsHelper.requestScreenRecordingAccess()
-                PermissionsHelper.showMissingAlert(.screenRecording)
-                status = .failed(message: "Screen Recording access required. Grant in System Settings, then quit and relaunch Jarvis Note.")
-                return
-            }
+            _ = PermissionsHelper.requestScreenRecordingAccess()
         }
 
         let language: String? = {
@@ -184,7 +203,8 @@ final class RecorderState {
                 videoBitrate: settings.videoBitrate,
                 audioBitrate: settings.audioBitrate,
                 audioSampleRate: settings.audioSampleRate,
-                audioCodec: settings.audioCodec.captureChoice
+                audioCodec: settings.audioCodec.captureChoice,
+                systemAudioDeviceUID: settings.systemAudioDeviceUID.isEmpty ? nil : settings.systemAudioDeviceUID
             )
             let capture = CaptureSession(config: config)
             try await capture.start()
@@ -244,18 +264,48 @@ final class RecorderState {
             )
             let audioFile = try await recoveryService.finalize(orphan)
 
+            // Fold the mic track from audio.m4a into screen.mp4 so playback gives
+            // you BOTH your voice and the system audio in the video file. Runs
+            // concurrently with transcription — the mix is non-essential and
+            // we don't want to block the transcript path on it. On failure the
+            // existing screen.mp4 (system audio only) stays in place.
+            let screenURL = dir.appendingPathComponent("screen.mp4")
+            let mixTask: Task<Void, Never>?
+            if FileManager.default.fileExists(atPath: screenURL.path) {
+                mixTask = Task.detached {
+                    do {
+                        try await ScreenAudioMixer.mixMicInto(screenMP4: screenURL, audioM4A: audioFile)
+                    } catch {
+                        // Logged inside the mixer via os.Logger; nothing else to do.
+                    }
+                }
+            } else {
+                mixTask = nil
+            }
+
             let asset = AVURLAsset(url: audioFile)
             let cmDuration = try await asset.load(.duration)
             let duration = CMTimeGetSeconds(cmDuration)
+            _ = mixTask  // silence "unused" — task lifetime is tied to the recording cleanup path
 
-            // Pick the configured transcription provider. v0 wires Whisper only;
-            // Deepgram lands when capture exposes a PCM tee (v1.1).
-            let openaiKey = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Pick the configured transcription provider. Whisper uses OpenAI's
+            // batch endpoint; Deepgram uses its REST batch (`/v1/listen`) since
+            // we don't yet expose a PCM tee for streaming. The streaming
+            // DeepgramProvider remains for v1.1.
             let language: String? = {
                 let s = settings.summaryLanguage
                 return (s == "auto" || s.isEmpty) ? nil : s
             }()
-            let provider = WhisperProvider(apiKey: openaiKey)
+            let provider: any BatchTranscriptionProvider = {
+                switch settings.transcriptionProvider {
+                case .deepgram:
+                    let key = settings.deepgramApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return DeepgramBatchProvider(apiKey: key)
+                case .openaiWhisper:
+                    let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return WhisperProvider(apiKey: key)
+                }
+            }()
             let result = try await provider.transcribe(
                 audioFile: audioFile,
                 config: TranscriptionConfig(language: language)

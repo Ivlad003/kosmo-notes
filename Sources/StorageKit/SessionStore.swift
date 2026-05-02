@@ -79,6 +79,13 @@ public actor SessionStore {
         rootDir.appendingPathComponent(id)
     }
 
+    /// Root directory holding all session subdirectories. Exposed so callers
+    /// (e.g. Library "Clear All") can sweep entries that were never indexed
+    /// in the DB — typically aborted-mid-record sessions.
+    public var recordingsRoot: URL {
+        rootDir
+    }
+
     // MARK: - Private helpers
 
     private func writeSessionJSON(_ record: SessionRecord, to dir: URL) throws {

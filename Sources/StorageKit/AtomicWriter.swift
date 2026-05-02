@@ -63,6 +63,18 @@ public enum AtomicWriter {
             try? FileManager.default.removeItem(at: tmpURL)
             throw AtomicWriterError.renameFailed(underlying: error)
         }
+
+        // Re-fsync the parent directory AFTER the rename. The pre-rename fsync
+        // covers the temp-file's existence; the rename itself is a directory
+        // mutation that needs its own fsync to be durable across power loss.
+        // Skipping this is the previous bug — a crash between rename and the
+        // next OS-driven flush could roll back to the old file (or no file at
+        // all on first write), undoing what callers thought was committed.
+        let dirFd2 = Darwin.open(parentPath, O_RDONLY)
+        if dirFd2 != -1 {
+            _ = Darwin.fsync(dirFd2)
+            Darwin.close(dirFd2)
+        }
     }
 
     /// JSON-encode and atomically write a Codable value.

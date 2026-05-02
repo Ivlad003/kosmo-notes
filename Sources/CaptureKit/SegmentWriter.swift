@@ -1,5 +1,8 @@
 import AVFoundation
 import Foundation
+import os
+
+private let segmentWriterLog = Logger(subsystem: "dev.jarvisnote.studio", category: "SegmentWriter")
 
 // MARK: - AudioSource
 
@@ -50,7 +53,13 @@ public actor SegmentWriter {
     private var assetWriter: AVAssetWriter?
     private var micInput: AVAssetWriterInput?
     private var systemInput: AVAssetWriterInput?
-    private var segmentSampleCount: Int64 = 0
+    /// Per-source sample counters. Each track in the .m4a needs its own
+    /// monotonic PTS starting at 0. Sharing one counter for both sources
+    /// (the previous bug) compressed system PTS into mic's accumulating
+    /// offset, which de-synced the two tracks and rolled segments at
+    /// roughly half the configured duration when both sources were active.
+    private var micSampleCount: Int64 = 0
+    private var systemSampleCount: Int64 = 0
 
     // MARK: Init
 
@@ -102,13 +111,18 @@ public actor SegmentWriter {
 
         switch source {
         case .mic:
-            appendBuffer(pcmBuffer, to: micInput, sampleOffset: segmentSampleCount)
+            appendBuffer(pcmBuffer, to: micInput, sampleOffset: micSampleCount)
+            micSampleCount += Int64(pcmBuffer.frameLength)
         case .system:
-            appendBuffer(pcmBuffer, to: systemInput, sampleOffset: segmentSampleCount)
+            appendBuffer(pcmBuffer, to: systemInput, sampleOffset: systemSampleCount)
+            systemSampleCount += Int64(pcmBuffer.frameLength)
         }
 
-        segmentSampleCount += Int64(pcmBuffer.frameLength)
-        let elapsed = Double(segmentSampleCount) / sampleRate
+        // Roll on the leading source's elapsed time. For mic-only sessions this
+        // is mic's count; for dual-source it's whichever has accumulated more.
+        // Either way the segment's wall-clock duration ≈ segmentDuration.
+        let leadingFrames = max(micSampleCount, systemSampleCount)
+        let elapsed = Double(leadingFrames) / sampleRate
 
         if elapsed >= segmentDuration {
             try await rollSegment()
@@ -125,11 +139,13 @@ public actor SegmentWriter {
 
     private func openNewSegment() throws {
         let url = segmentsDir.appendingPathComponent("\(segmentIndex).m4a")
+        segmentWriterLog.info("SegmentWriter.openNewSegment: idx=\(self.segmentIndex, privacy: .public) url=\(url.path, privacy: .public) formatID=\(self.audioFormatID, privacy: .public) sampleRate=\(self.sampleRate, privacy: .public)")
 
         let writer: AVAssetWriter
         do {
             writer = try AVAssetWriter(outputURL: url, fileType: .m4a)
         } catch {
+            segmentWriterLog.error("SegmentWriter.openNewSegment: AVAssetWriter init failed — \(error.localizedDescription, privacy: .public)")
             throw SegmentWriterError.assetWriterCreationFailed(underlying: error)
         }
 
@@ -149,24 +165,44 @@ public actor SegmentWriter {
         sInput.expectsMediaDataInRealTime = true
 
         guard writer.canAdd(mInput), writer.canAdd(sInput) else {
+            segmentWriterLog.error("SegmentWriter.openNewSegment: canAdd failed (mic=\(writer.canAdd(mInput), privacy: .public) sys=\(writer.canAdd(sInput), privacy: .public)) — codec/sampleRate combination rejected by .m4a container")
             throw SegmentWriterError.assetWriterInputCreationFailed
         }
         writer.add(mInput)
         writer.add(sInput)
 
-        writer.startWriting()
+        let started = writer.startWriting()
+        if !started || writer.status != .writing {
+            segmentWriterLog.error("SegmentWriter.openNewSegment: startWriting() returned \(started, privacy: .public) status=\(writer.status.rawValue, privacy: .public) error=\(writer.error?.localizedDescription ?? "nil", privacy: .public)")
+            throw SegmentWriterError.assetWriterStartFailed
+        }
         writer.startSession(atSourceTime: .zero)
 
         assetWriter = writer
         micInput = mInput
         systemInput = sInput
-        segmentSampleCount = 0
+        micSampleCount = 0
+        systemSampleCount = 0
     }
 
     private func appendBuffer(_ buffer: AVAudioPCMBuffer, to input: AVAssetWriterInput?, sampleOffset: Int64) {
-        guard let input = input, input.isReadyForMoreMediaData else { return }
-        guard let sampleBuffer = buffer.toCMSampleBuffer(sampleOffset: sampleOffset, sampleRate: sampleRate) else { return }
-        input.append(sampleBuffer)
+        guard let input = input else {
+            segmentWriterLog.error("SegmentWriter.appendBuffer: input is nil")
+            return
+        }
+        guard input.isReadyForMoreMediaData else {
+            // High-frequency event — log at debug only.
+            segmentWriterLog.debug("SegmentWriter.appendBuffer: input not ready (status=\(self.assetWriter?.status.rawValue ?? -1, privacy: .public) error=\(self.assetWriter?.error?.localizedDescription ?? "nil", privacy: .public))")
+            return
+        }
+        guard let sampleBuffer = buffer.toCMSampleBuffer(sampleOffset: sampleOffset, sampleRate: sampleRate) else {
+            segmentWriterLog.error("SegmentWriter.appendBuffer: toCMSampleBuffer failed (frameLength=\(buffer.frameLength, privacy: .public))")
+            return
+        }
+        let appended = input.append(sampleBuffer)
+        if !appended {
+            segmentWriterLog.error("SegmentWriter.appendBuffer: AVAssetWriterInput.append returned false — status=\(self.assetWriter?.status.rawValue ?? -1, privacy: .public) error=\(self.assetWriter?.error?.localizedDescription ?? "nil", privacy: .public)")
+        }
     }
 
     private func rollSegment() async throws {
@@ -175,7 +211,10 @@ public actor SegmentWriter {
     }
 
     private func finalizeCurrentSegment() async throws {
-        guard let writer = assetWriter else { return }
+        guard let writer = assetWriter else {
+            segmentWriterLog.info("SegmentWriter.finalizeCurrentSegment: no active writer to finalize (no buffers ever opened a segment)")
+            return
+        }
 
         let url = segmentsDir.appendingPathComponent("\(segmentIndex).m4a")
 
@@ -190,6 +229,9 @@ public actor SegmentWriter {
 
         if writer.status == .completed {
             segmentPaths.append(url)
+            segmentWriterLog.info("SegmentWriter.finalizeCurrentSegment: completed idx=\(self.segmentIndex, privacy: .public) total=\(self.segmentPaths.count, privacy: .public)")
+        } else {
+            segmentWriterLog.error("SegmentWriter.finalizeCurrentSegment: idx=\(self.segmentIndex, privacy: .public) status=\(writer.status.rawValue, privacy: .public) error=\(writer.error?.localizedDescription ?? "nil", privacy: .public)")
         }
     }
 }

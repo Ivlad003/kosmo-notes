@@ -157,6 +157,42 @@ final class LibraryState {
         return dir.appendingPathComponent("audio.m4a")
     }
 
+    /// Delete a session: DB rows (sessions / FTS / embeddings) + the on-disk
+    /// session directory. Best-effort on the filesystem side — the DB delete
+    /// runs first so a row never points at a half-deleted directory. After
+    /// success, refreshes the visible list and clears the selection if needed.
+    func deleteSession(id: String) async {
+        do {
+            try await database.deleteSession(id: id)
+        } catch {
+            print("[LibraryState] deleteSession DB failed: \(error)")
+            return
+        }
+        let dir = await sessionStore.sessionDir(for: id)
+        try? FileManager.default.removeItem(at: dir)
+        if selectedSessionId == id { selectedSessionId = nil }
+        await refresh()
+    }
+
+    /// Nuke every session and its files. DB rows for sessions / FTS / embeddings
+    /// are dropped one-by-one (so any partially-orphaned rows still get cleaned),
+    /// then the recordings root is emptied so even abandoned-mid-record session
+    /// directories that never made it to the DB are removed.
+    func clearAllSessions() async {
+        let all = (try? await database.listSessions(limit: 10_000)) ?? []
+        for record in all {
+            try? await database.deleteSession(id: record.id)
+        }
+        let root = await sessionStore.recordingsRoot
+        if let entries = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
+            for entry in entries {
+                try? FileManager.default.removeItem(at: entry)
+            }
+        }
+        selectedSessionId = nil
+        await refresh()
+    }
+
     // MARK: - Private
 
     /// Embed `query` and return up to 20 sids ordered by descending cosine

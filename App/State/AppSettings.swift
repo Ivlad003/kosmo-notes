@@ -157,6 +157,9 @@ final class AppSettings {
         // bundle IDs are captured.
         static let useProcessTap = "useProcessTap"
         static let processTapBundleIDs = "processTapBundleIDs"
+        // Custom Core Audio input device for system-audio capture (e.g. BlackHole 2ch).
+        // Empty string = use SCKit whole-system mixdown (default behavior).
+        static let systemAudioDeviceUID = "systemAudioDeviceUID"
         // S3 sharing
         static let s3Endpoint = "s3Endpoint"
         static let s3Region = "s3Region"
@@ -182,6 +185,13 @@ final class AppSettings {
     var openrouterApiKey: String = ""
     var s3AccessKey: String = ""
     var s3SecretKey: String = ""
+
+    /// Persistent UID of a custom Core Audio input device (e.g. BlackHole 2ch)
+    /// used as the system-audio source instead of SCKit. Empty string = use
+    /// SCKit whole-system mixdown (default). Set via Settings → Transcription.
+    var systemAudioDeviceUID: String {
+        didSet { UserDefaults.standard.set(systemAudioDeviceUID, forKey: Defaults.systemAudioDeviceUID) }
+    }
 
     var transcriptionProvider: TranscriptionProviderChoice {
         didSet { UserDefaults.standard.set(transcriptionProvider.rawValue, forKey: Defaults.transcriptionProvider) }
@@ -321,7 +331,11 @@ final class AppSettings {
             videoUseHEVC = false
             videoBitrate = 4_000_000
         case .balanced:
-            audioCodec = .heAAC
+            // Was HE-AAC 48 kbps — encoder fails on the macOS AAC HE path with
+            // "Cannot Encode Media" for our mono PCM input. Use AAC-LC at the
+            // same 48 kbps; for voice mono the difference is small enough to
+            // accept until HE-AAC is properly debugged.
+            audioCodec = .aac
             audioBitrate = 48_000
             audioSampleRate = 48_000
             videoUseHEVC = true
@@ -347,6 +361,8 @@ final class AppSettings {
 
         let providerRaw = UserDefaults.standard.string(forKey: Defaults.transcriptionProvider) ?? TranscriptionProviderChoice.openaiWhisper.rawValue
         self.transcriptionProvider = TranscriptionProviderChoice(rawValue: providerRaw) ?? .openaiWhisper
+
+        self.systemAudioDeviceUID = UserDefaults.standard.string(forKey: Defaults.systemAudioDeviceUID) ?? ""
 
         let llmRaw = UserDefaults.standard.string(forKey: Defaults.llmProvider) ?? LLMProviderChoice.anthropic.rawValue
         self.llmProvider = LLMProviderChoice(rawValue: llmRaw) ?? .anthropic
@@ -396,8 +412,19 @@ final class AppSettings {
         let profileRaw = UserDefaults.standard.string(forKey: Defaults.storageProfile) ?? StorageProfile.balanced.rawValue
         self.storageProfile = StorageProfile(rawValue: profileRaw) ?? .balanced
 
-        let codecRaw = UserDefaults.standard.string(forKey: Defaults.audioCodec) ?? AudioCodec.heAAC.rawValue
-        self.audioCodec = AudioCodec(rawValue: codecRaw) ?? .heAAC
+        // Auto-migrate away from HE-AAC: the macOS AAC encoder rejects the PCM
+        // input we feed AVAssetWriterInput with kAudioFormatMPEG4AAC_HE under
+        // certain mono/48 kHz/48 kbps configurations ("Cannot Encode Media",
+        // status=.failed on first append). Until that's properly diagnosed,
+        // any stored .heAAC preference is rewritten to .aac so recordings
+        // actually produce segments. Users can flip back via Storage Profile.
+        let codecRaw = UserDefaults.standard.string(forKey: Defaults.audioCodec) ?? AudioCodec.aac.rawValue
+        var resolvedCodec = AudioCodec(rawValue: codecRaw) ?? .aac
+        if resolvedCodec == .heAAC {
+            resolvedCodec = .aac
+            UserDefaults.standard.set(resolvedCodec.rawValue, forKey: Defaults.audioCodec)
+        }
+        self.audioCodec = resolvedCodec
 
         let abr = UserDefaults.standard.integer(forKey: Defaults.audioBitrate)
         self.audioBitrate = abr > 0 ? abr : 48_000
