@@ -365,7 +365,7 @@ private struct TranscriptRowView: View {
 
             Text(segment.text)
                 .font(.callout)
-                .foregroundStyle(isActive ? .primary : .primary.opacity(0.85))
+                .foregroundStyle(isActive ? Color.primary : Color.primary.opacity(0.85))
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 2)
@@ -406,10 +406,14 @@ final class PlayerModel {
         }
     }
 
-    deinit {
+    /// Explicit cleanup. Call from `.onDisappear`; deinit can't touch
+    /// `@MainActor` state in Swift 6 strict concurrency mode.
+    func invalidate() {
         if let token = timeObserverToken {
             player.removeTimeObserver(token)
+            timeObserverToken = nil
         }
+        player.pause()
     }
 
     func load(url: URL) {

@@ -10,6 +10,7 @@ import StorageKit
 /// isReleasedWhenClosed = false, delegates window-close back to AppDelegate
 /// via NSWindowDelegate so the activation policy can be restored.
 @available(macOS 14.0, *)
+@MainActor
 final class LibraryWindowController {
 
     private weak var window: NSWindow?
