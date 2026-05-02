@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-**v0 — Phase A Weeks 2–3 storage + transcription complete.** The Swift Package exists, **96 tests pass across 19 suites**, and `xcodebuild` produces a `.app`. Read `docs/plans/2026-05-02-jarvis-note-design.md` first — it is the canonical source of truth for all architectural decisions, and `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` for the phase-by-phase plan.
+**v0 — Phase A complete + Phase B/C/D primitives landed.** The Swift Package exists, **215 tests pass across 44 suites** in ~0.5 s, `xcodebuild` produces a `.app` (≈8 MB Debug, well under the 15 MB AC-16 cap), and the menu-bar app records → transcribes via Whisper → AI-summarizes → indexes for FTS search → opens for chat. Phase C Dictation Mode primitives + Settings tab + AppDelegate wiring shipped UNVERIFIED (no manual smoke of hotkey-triggered paste yet). Read `docs/plans/2026-05-02-jarvis-note-design.md` first — it is the canonical source of truth for all architectural decisions, and `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` for the phase-by-phase plan.
 
 Phase A Week 2 (TranscriptionKit + recovery):
 - `Sources/StorageKit/RecoveryService.swift` — orphan-segment scanner + `AVMutableComposition` + `AVAssetExportSession` (`AppleM4A` preset) concat. Replaces the design-doc's bundled-ffmpeg approach (AAC-in-`.m4a` is natively concatenable).
@@ -99,7 +99,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
-Both exit 0. All 96 tests pass in ~0.6 s.
+Both exit 0. 215 tests pass in ~0.5 s. An additional FTS5 perf benchmark is gated behind `JN_RUN_PERF=1` (excluded from default test runs to keep the suite fast).
 
 Other commands:
 - `xed .` — open in Xcode
