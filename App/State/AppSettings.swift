@@ -50,12 +50,26 @@ final class AppSettings {
         }
     }
 
+    enum RecordingMode: String, CaseIterable, Identifiable {
+        case audioOnly
+        case audioAndScreen
+
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .audioOnly: return "Audio only"
+            case .audioAndScreen: return "Audio + Screen"
+            }
+        }
+    }
+
     // MARK: UserDefaults-backed prefs (non-secret)
 
     private enum Defaults {
         static let transcriptionProvider = "transcriptionProvider"
         static let llmProvider = "llmProvider"
         static let summaryLanguage = "summaryLanguage"
+        static let recordingMode = "recordingMode"
     }
 
     // MARK: Observable state — secrets read on demand from Keychain
@@ -76,6 +90,10 @@ final class AppSettings {
     var summaryLanguage: String {
         didSet { UserDefaults.standard.set(summaryLanguage, forKey: Defaults.summaryLanguage) }
     }
+    /// Whether new recordings include screen capture alongside audio.
+    var recordingMode: RecordingMode {
+        didSet { UserDefaults.standard.set(recordingMode.rawValue, forKey: Defaults.recordingMode) }
+    }
 
     // MARK: Init
 
@@ -94,6 +112,9 @@ final class AppSettings {
         self.llmProvider = LLMProviderChoice(rawValue: llmRaw) ?? .anthropic
 
         self.summaryLanguage = UserDefaults.standard.string(forKey: Defaults.summaryLanguage) ?? "auto"
+
+        let modeRaw = UserDefaults.standard.string(forKey: Defaults.recordingMode) ?? RecordingMode.audioOnly.rawValue
+        self.recordingMode = RecordingMode(rawValue: modeRaw) ?? .audioOnly
 
         loadKeysFromKeychain()
     }

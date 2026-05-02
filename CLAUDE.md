@@ -46,6 +46,28 @@ Open the design doc before answering any "how do I implement X" question. Every 
 
 This repository started as **Jarvis Studio** — a cross-platform Tauri/iced screen recorder in Rust. After ~5 weeks of work (37 passing tests, working v0.1.1) the scope was pivoted on 2026-05-02 to a smaller voice-first macOS-native product called **Jarvis Note**.
 
+### 2026-05-02 (evening): Screen recording reinstated
+
+The original Jarvis Note pivot deferred screen recording. The user reversed that
+decision after using the v0 audio-only build — the chat is much more useful when
+it can answer "what was on screen at minute X" by extracting a frame and sending
+it to a vision-capable model.
+
+What changed:
+- `Sources/CaptureKit/ScreenRecorder.swift` adds SCStream-based screen + system
+  audio capture, writing to `<sessionDir>/screen.mp4` via AVAssetWriter (H.264
+  + AAC, 24 fps, 4 Mbps).
+- `AppSettings.RecordingMode` toggle: Audio only / Audio + Screen.
+- `AIKit.ChatMessage` now has structured parts (text + image), Anthropic + OpenAI
+  providers handle base64 image blocks.
+- `ChatState` parses timestamp references in user messages, extracts frames from
+  screen.mp4 of attached sessions via `FrameExtractor`, attaches them as image
+  parts. Cap: 3 frames/send.
+
+Stack invariant updates:
+- The "no screen recording" line in §"Stack invariants" is REMOVED.
+- Recording mode is configurable in Settings → Transcription; audio-only stays the default.
+
 - The complete Rust workspace is preserved on branch `archive/jarvis-studio-rust`. Do not check that branch out unless explicitly asked for historical reference.
 - The Jarvis Studio design doc (`docs/plans/2026-05-01-jarvis-studio-design.md`) is retained on `main` for cross-references — sections §3.1 (External Dependency Lifecycle) and §8 (Sharing pipeline) are reused conceptually in Jarvis Note's design.
 - The Jarvis Studio implementation plan (was in `.omc/plans/`) is **not** on main — it lives in archive only. Do not reference it for new development.
@@ -59,8 +81,9 @@ These come from §3 of the Jarvis Note design doc.
 
 - **Pure Swift / SwiftUI / AppKit.** No Rust, no FFI, no webview, no Tauri / iced / Electron. Native frameworks only: `AVAudioEngine`, `AVPlayer` / `AVPlayerView`, `URLSession`, `GRDB.swift`, Swift concurrency. Bundle target: 5–15 MB. Single `.app`.
 - **Cloud-only transcription.** No local Whisper, no WhisperKit, no on-device CoreML model. The privacy posture is partial; see §12 — every recorded second leaves the machine. Ollama covers the LLM stage only.
-- **Filesystem sidecars are source of truth, SQLite is rebuildable index.** Sessions live in `~/Library/Application Support/JarvisNote/recordings/<sid>/` with `audio.m4a` (AAC; was `audio.opus` in design — see "Encoder deviation"), `transcript.jsonl`, `summary.md`, `actions.json`. SQLite (`sessions.sqlite`) backs FTS5 + filtering and must be rebuildable from sidecars.
+- **Filesystem sidecars are source of truth, SQLite is rebuildable index.** Sessions live in `~/Library/Application Support/JarvisNote/recordings/<sid>/` with `audio.m4a` (AAC; was `audio.opus` in design — see "Encoder deviation"), `transcript.jsonl`, `summary.md`, `actions.json`. Optional: `screen.mp4` when recording mode is Audio + Screen. SQLite (`sessions.sqlite`) backs FTS5 + filtering and must be rebuildable from sidecars.
 - **macOS 12.3+ supported, 14.4+ preferred.** `<12.3` blocked at startup. Core Audio Tap on 14.4+, ScreenCaptureKit audio fallback on 12.3–14.3.
+- **Screen recording is optional, configurable, and off by default.** `AppSettings.recordingMode` controls whether screen.mp4 is captured alongside audio. Requires Screen Recording TCC permission when enabled. Screen frames are used locally for vision-chat only — never uploaded.
 - **No code signing, no notarization, no auto-update.** Single-user product positioning. Document Gatekeeper bypass (`xattr -d com.apple.quarantine`) for hand-shared binaries.
 - **Secrets in macOS Keychain.** Configuration JSON stores only Keychain account references; never plain-text secrets.
 - **Provider abstraction is one protocol.** `Provider` (in §7 of design doc) covers Anthropic / OpenAI / OpenRouter / Ollama. Default LLM: Anthropic Claude Sonnet (latest at ship time). Default transcription: Deepgram Nova-2 with EU residency.
@@ -89,7 +112,9 @@ Other commands:
 
 ## Pivot-time discipline
 
-The Jarvis Studio → Jarvis Note pivot happened after three stack pivots in three days (Tauri → iced → Swift) and four review rounds. **The Swift / cloud-transcription / no-screen-recording decisions are settled.** Reverting to a screen-recording product, a Rust core, or a webview frontend is **out of scope** for v1 and would invalidate the entire spec. If the user proposes another pivot, surface it as a major decision needing a separate design pass — don't quietly accommodate.
+The Jarvis Studio → Jarvis Note pivot happened after three stack pivots in three days (Tauri → iced → Swift) and four review rounds. **The Swift / cloud-transcription decisions are settled.** A Rust core or webview frontend is **out of scope** for v1 and would invalidate the entire spec.
+
+Screen recording was originally deferred but was reinstated on 2026-05-02 evening (see "Pivot history" above) — it is now an opt-in feature, not a product direction change. If the user proposes another pivot, surface it as a major decision needing a separate design pass — don't quietly accommodate.
 
 ## Editing this file
 

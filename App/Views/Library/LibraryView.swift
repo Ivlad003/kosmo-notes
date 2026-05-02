@@ -104,12 +104,21 @@ private struct SidebarView: View {
 private struct SessionRowView: View {
 
     let session: SessionRecord
+    @State private var hasScreenRecording: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(session.recordedAt.formatted(date: .abbreviated, time: .shortened))
-                .font(.subheadline)
-                .fontWeight(.medium)
+            HStack(spacing: 4) {
+                Text(session.recordedAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                if hasScreenRecording {
+                    Image(systemName: "video.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help("Screen recording available")
+                }
+            }
             HStack(spacing: 6) {
                 Label(session.mode.rawValue.capitalized,
                       systemImage: session.mode == .meeting ? "person.2" : "text.bubble")
@@ -124,6 +133,18 @@ private struct SessionRowView: View {
             }
         }
         .padding(.vertical, 2)
+        .task(id: session.id) {
+            // Check for screen.mp4 sidecar using the standard recordings path.
+            let root = FileManager.default
+                .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+                .first?
+                .appendingPathComponent("JarvisNote/recordings")
+                .appendingPathComponent(session.id)
+            let screenURL = root?.appendingPathComponent("screen.mp4")
+            if let url = screenURL {
+                hasScreenRecording = FileManager.default.fileExists(atPath: url.path)
+            }
+        }
     }
 
     private func formatDuration(_ secs: TimeInterval) -> String {
@@ -212,10 +233,18 @@ private struct SessionDetailView: View {
     }
 
     private func loadAudio() async {
-        let url = await state.audioFileURL(for: session.id)
-        // Only load if the file actually exists — avoids AVPlayer logging errors.
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        playerModel.load(url: url)
+        let audioURL = await state.audioFileURL(for: session.id)
+        // Prefer screen.mp4 when present — it contains both video and the system audio track.
+        let screenURL = audioURL.deletingLastPathComponent().appendingPathComponent("screen.mp4")
+        let urlToLoad: URL
+        if FileManager.default.fileExists(atPath: screenURL.path) {
+            urlToLoad = screenURL
+        } else if FileManager.default.fileExists(atPath: audioURL.path) {
+            urlToLoad = audioURL
+        } else {
+            return
+        }
+        playerModel.load(url: urlToLoad)
     }
 
     private func loadTranscript() async {

@@ -114,10 +114,13 @@ final class RecorderState {
             let session = try await sessionStore.createSession(mode: mode, language: language)
             let dir = await sessionStore.sessionDir(for: session.id)
 
+            let screenEnabled = settings.recordingMode == .audioAndScreen
             let config = CaptureSession.Config(
                 micEnabled: true,
                 systemAudioEnabled: false,  // v0: mic only — system audio TCC dance is v1.1
-                sessionDir: dir
+                sessionDir: dir,
+                screenRecordingEnabled: screenEnabled,
+                screenOutputURL: screenEnabled ? dir.appendingPathComponent("screen.mp4") : nil
             )
             let capture = CaptureSession(config: config)
             try await capture.start()

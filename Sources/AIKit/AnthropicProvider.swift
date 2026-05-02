@@ -7,6 +7,10 @@ import Foundation
 /// Anthropic does not allow "system" role in the messages array — it must be
 /// a top-level "system" field. This provider filters system messages out of
 /// the array and uses the last system message's content as the top-level field.
+///
+/// Supports multipart messages: text parts become `{"type":"text","text":"..."}`,
+/// image parts become `{"type":"image","source":{"type":"base64",...}}`.
+/// System messages are always text-only (Anthropic API constraint).
 public final class AnthropicProvider: AIProvider, Sendable {
 
     public typealias HTTPClient = @Sendable (URLRequest) async throws -> (Data, URLResponse)
@@ -93,13 +97,15 @@ public final class AnthropicProvider: AIProvider, Sendable {
         let conversationMessages = messages.filter { $0.role != .system }
 
         // Prefer explicit config.systemPrompt; fall back to last system message.
-        let systemField: String? = config.systemPrompt ?? systemMessages.last?.content
+        let systemField: String? = config.systemPrompt ?? systemMessages.last?.text
 
         var body: [String: Any] = [
             "model": config.model,
             "max_tokens": config.maxTokens,
             "temperature": config.temperature,
-            "messages": conversationMessages.map { ["role": $0.role.rawValue, "content": $0.content] },
+            "messages": conversationMessages.map { msg -> [String: Any] in
+                ["role": msg.role.rawValue, "content": Self.serializeParts(msg.parts)]
+            },
         ]
         if let system = systemField {
             body["system"] = system
@@ -138,5 +144,32 @@ public final class AnthropicProvider: AIProvider, Sendable {
             .joined()
 
         return text
+    }
+
+    // MARK: - Private: part serialization
+
+    /// Convert structured message parts to Anthropic content-block JSON objects.
+    /// text → {"type":"text","text":"..."}
+    /// image → {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"<b64>"}}
+    private static func serializeParts(_ parts: [ChatMessage.Part]) -> Any {
+        // Single text-only part: send as plain string for maximum API compatibility.
+        if parts.count == 1, case .text(let s) = parts[0] {
+            return s
+        }
+        return parts.map { part -> [String: Any] in
+            switch part {
+            case .text(let s):
+                return ["type": "text", "text": s]
+            case .image(let jpegData, let mimeType):
+                return [
+                    "type": "image",
+                    "source": [
+                        "type": "base64",
+                        "media_type": mimeType,
+                        "data": jpegData.base64EncodedString(),
+                    ] as [String: Any],
+                ]
+            }
+        }
     }
 }

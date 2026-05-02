@@ -14,6 +14,10 @@ import TranscriptionKit
 ///
 /// Provider is resolved per-call from `settings.llmProvider` so the user can
 /// switch providers between messages without reopening the window.
+///
+/// Vision: when the user message contains timestamp patterns (0:30, 1:23:45,
+/// "at minute 5", "на 3 хвилині"), ChatState extracts frames from screen.mp4
+/// of attached sessions and appends them as image parts (cap: 3 frames/send).
 @available(macOS 14.0, *)
 @Observable
 @MainActor
@@ -93,7 +97,8 @@ final class ChatState {
 
     /// Posts the user message. When `autoSearchSessions` is on, runs FTS5
     /// over `inputDraft` first and attaches the top hits as context before
-    /// building the system prompt.
+    /// building the system prompt. Scans for timestamp patterns and extracts
+    /// frames from attached sessions' screen.mp4 (cap: 3 frames).
     func send() async {
         let text = inputDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isSending else { return }
@@ -103,14 +108,23 @@ final class ChatState {
         isSending = true
         defer { isSending = false }
 
-        messages.append(ChatMessage(role: .user, content: text))
+        // Auto-attach FTS hits before building the system prompt.
+        if autoSearchSessions {
+            await attachAutoSearchResults(for: text)
+        }
+
+        // Extract vision frames for any timestamp mentions in the user message.
+        let (imageParts, frameFooter) = await extractFramesForTimestamps(in: text)
+
+        // Build the user message: text + any image parts + optional footer.
+        var parts: [ChatMessage.Part] = [.text(text)]
+        parts.append(contentsOf: imageParts)
+        if !frameFooter.isEmpty {
+            parts.append(.text(frameFooter))
+        }
+        messages.append(ChatMessage(role: .user, parts: parts))
 
         do {
-            // Auto-attach FTS hits before building the system prompt.
-            if autoSearchSessions {
-                await attachAutoSearchResults(for: text)
-            }
-
             let systemPrompt = await buildSystemPrompt()
             let reply = try await runProvider(messages: messages, systemPrompt: systemPrompt)
             messages.append(ChatMessage(role: .assistant, content: reply))
@@ -227,6 +241,137 @@ final class ChatState {
         case .openai:    model = OpenAIProvider.defaultModel
         }
         return AIConfig(model: model, systemPrompt: systemPrompt)
+    }
+
+    // MARK: - Private: vision frame extraction
+
+    /// Parse timestamp patterns from `text`, extract ≤3 frames from attached
+    /// sessions' screen.mp4, and return the image parts + a human-readable footer.
+    private func extractFramesForTimestamps(in text: String) async -> ([ChatMessage.Part], String) {
+        let timestamps = parseTimestamps(from: text)
+        guard !timestamps.isEmpty else { return ([], "") }
+
+        // Collect sessions that have a screen.mp4 sidecar.
+        let sessionsWithVideo: [(id: String, videoURL: URL)] = await withTaskGroup(
+            of: (String, URL?).self
+        ) { group in
+            for attachment in attachedSessions {
+                let id = attachment.record.id
+                group.addTask {
+                    let dir = await self.sessionStore.sessionDir(for: id)
+                    let videoURL = dir.appendingPathComponent("screen.mp4")
+                    guard FileManager.default.fileExists(atPath: videoURL.path) else { return (id, nil) }
+                    return (id, videoURL)
+                }
+            }
+            var results: [(String, URL?)] = []
+            for await pair in group { results.append(pair) }
+            return results
+        }.compactMap { (id, url) -> (id: String, videoURL: URL)? in
+            guard let url else { return nil }
+            return (id: id, videoURL: url)
+        }
+
+        guard !sessionsWithVideo.isEmpty else { return ([], "") }
+
+        var imageParts: [ChatMessage.Part] = []
+        var footerLines: [String] = []
+        let maxFrames = 3
+
+        // For each timestamp, try to extract a frame from the first session that has video.
+        outer: for seconds in timestamps {
+            for session in sessionsWithVideo {
+                guard imageParts.count < maxFrames else { break outer }
+                do {
+                    let jpegData = try await FrameExtractor.extractFrame(at: seconds, from: session.videoURL)
+                    imageParts.append(.image(jpegData: jpegData, mimeType: "image/jpeg"))
+                    let label = formatTimestamp(seconds)
+                    let shortId = String(session.id.prefix(8))
+                    footerLines.append("frame from session \(shortId) at \(label)")
+                    break  // one frame per timestamp (first session wins)
+                } catch {
+                    // Skip silently — the session might be audio-only or too short.
+                    continue
+                }
+            }
+        }
+
+        guard !imageParts.isEmpty else { return ([], "") }
+        let footer = "\n\n[Attached: \(footerLines.joined(separator: ", "))]"
+        return (imageParts, footer)
+    }
+
+    /// Parse all timestamp-like patterns from a string and return seconds values.
+    ///
+    /// Supported:
+    ///   `12:34`        → m:ss
+    ///   `0:12:34`      → h:mm:ss
+    ///   `at minute 5`  → 5 * 60
+    ///   `на 3 хвилині` / `на 3 хвилини` / `на 3 хвилинах` → 3 * 60
+    private func parseTimestamps(from text: String) -> [TimeInterval] {
+        var results: [TimeInterval] = []
+        var seen = Set<TimeInterval>()
+
+        func add(_ t: TimeInterval) {
+            guard t >= 0, !seen.contains(t) else { return }
+            seen.insert(t)
+            results.append(t)
+        }
+
+        // h:mm:ss  (e.g. 1:23:45)
+        let hmmss = try? NSRegularExpression(pattern: #"\b(\d+):(\d{2}):(\d{2})\b"#)
+        if let matches = hmmss?.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            for m in matches {
+                let h = Int(substring(text, range: m.range(at: 1))) ?? 0
+                let min = Int(substring(text, range: m.range(at: 2))) ?? 0
+                let sec = Int(substring(text, range: m.range(at: 3))) ?? 0
+                add(TimeInterval(h * 3600 + min * 60 + sec))
+            }
+        }
+
+        // m:ss  (e.g. 5:32) — must NOT be part of an h:mm:ss match already seen.
+        let mss = try? NSRegularExpression(pattern: #"(?<!\d:)\b(\d+):(\d{2})\b(?!:\d)"#)
+        if let matches = mss?.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            for m in matches {
+                let min = Int(substring(text, range: m.range(at: 1))) ?? 0
+                let sec = Int(substring(text, range: m.range(at: 2))) ?? 0
+                add(TimeInterval(min * 60 + sec))
+            }
+        }
+
+        // English: "at minute N" or "minute N"
+        let enMin = try? NSRegularExpression(pattern: #"\b(?:at )?minute (\d+)\b"#, options: .caseInsensitive)
+        if let matches = enMin?.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            for m in matches {
+                let n = Int(substring(text, range: m.range(at: 1))) ?? 0
+                add(TimeInterval(n * 60))
+            }
+        }
+
+        // Ukrainian: "на N хвилині/хвилини/хвилинах"
+        let ukMin = try? NSRegularExpression(pattern: #"\bна (\d+) хвилин(?:і|и|ах)\b"#)
+        if let matches = ukMin?.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            for m in matches {
+                let n = Int(substring(text, range: m.range(at: 1))) ?? 0
+                add(TimeInterval(n * 60))
+            }
+        }
+
+        return results
+    }
+
+    private func substring(_ text: String, range: NSRange) -> String {
+        guard let r = Range(range, in: text) else { return "" }
+        return String(text[r])
+    }
+
+    private func formatTimestamp(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%d:%02d", m, s)
     }
 
     // MARK: - Private: auto-search

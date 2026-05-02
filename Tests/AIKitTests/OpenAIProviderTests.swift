@@ -38,6 +38,7 @@ struct OpenAIProviderRequestTests {
         let msgs = body["messages"] as? [[String: Any]] ?? []
         #expect(msgs.count == 2)
         #expect(msgs[0]["role"] as? String == "system")
+        // single text-only part serializes as a plain string
         #expect(msgs[0]["content"] as? String == "Be concise.")
         #expect(msgs[1]["role"] as? String == "user")
     }
@@ -74,6 +75,37 @@ struct OpenAIProviderRequestTests {
         #expect(body["max_tokens"] as? Int == 1000)
         let temp = body["temperature"] as? Double ?? 0
         #expect(abs(temp - 0.5) < 0.001)
+    }
+
+    @Test("Multipart user message: text + image serialized as content block array")
+    func multipartImageBlock() throws {
+        let jpegData = Data([0xFF, 0xD8, 0xFF, 0xE0])
+        let messages: [ChatMessage] = [
+            ChatMessage(role: .user, parts: [
+                .text("What's on screen at 0:30?"),
+                .image(jpegData: jpegData, mimeType: "image/jpeg"),
+            ])
+        ]
+        let request = try OpenAIProvider.buildRequest(
+            endpoint: OpenAIProvider.defaultEndpoint,
+            apiKey: "sk-x",
+            messages: messages,
+            config: baseConfig
+        )
+
+        let body = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as! [String: Any]
+        let msgs = body["messages"] as! [[String: Any]]
+        #expect(msgs.count == 1)
+        #expect(msgs[0]["role"] as? String == "user")
+
+        let content = msgs[0]["content"] as! [[String: Any]]
+        #expect(content.count == 2)
+        #expect(content[0]["type"] as? String == "text")
+        #expect(content[0]["text"] as? String == "What's on screen at 0:30?")
+        #expect(content[1]["type"] as? String == "image_url")
+        let imageUrl = content[1]["image_url"] as! [String: Any]
+        let expectedURL = "data:image/jpeg;base64,\(jpegData.base64EncodedString())"
+        #expect(imageUrl["url"] as? String == expectedURL)
     }
 }
 
@@ -230,5 +262,41 @@ struct OpenAIProviderE2ETests {
             config: config
         )
         #expect(box.captured?.value(forHTTPHeaderField: "Authorization") == "Bearer sk-captured")
+    }
+
+    @Test("Multipart message with image is sent and response is parsed as text")
+    func multipartRoundTrip() async throws {
+        final class Box: @unchecked Sendable { var body: Data? }
+        let box = Box()
+
+        let provider = OpenAIProvider(apiKey: "sk-x", httpClient: { request in
+            box.body = request.httpBody
+            let resp = HTTPURLResponse(
+                url: OpenAIProvider.defaultEndpoint,
+                statusCode: 200, httpVersion: nil, headerFields: nil
+            )!
+            return (Data("""
+            {"id":"x","object":"chat.completion",
+             "choices":[{"index":0,"message":{"role":"assistant","content":"A terminal window."},"finish_reason":"stop"}],
+             "usage":{"prompt_tokens":50,"completion_tokens":5,"total_tokens":55}}
+            """.utf8), resp)
+        })
+
+        let jpegBytes = Data([0xFF, 0xD8, 0xFF])
+        let reply = try await provider.chat(
+            messages: [ChatMessage(role: .user, parts: [
+                .text("Describe the screen."),
+                .image(jpegData: jpegBytes, mimeType: "image/jpeg"),
+            ])],
+            config: AIConfig(model: "gpt-4o-mini")
+        )
+        #expect(reply == "A terminal window.")
+
+        // Verify the request body contained an image_url block.
+        let bodyObj = try JSONSerialization.jsonObject(with: box.body ?? Data()) as! [String: Any]
+        let msgs = bodyObj["messages"] as! [[String: Any]]
+        let content = msgs[0]["content"] as! [[String: Any]]
+        #expect(content.count == 2)
+        #expect(content[1]["type"] as? String == "image_url")
     }
 }

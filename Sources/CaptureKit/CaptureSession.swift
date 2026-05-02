@@ -17,17 +17,25 @@ public actor CaptureSession {
         public let systemAudioEnabled: Bool
         public let sessionDir: URL
         public let segmentDurationSeconds: Double
+        /// When true, a ScreenRecorder is started alongside audio capture.
+        public let screenRecordingEnabled: Bool
+        /// Where ScreenRecorder writes screen.mp4; ignored when screenRecordingEnabled is false.
+        public let screenOutputURL: URL?
 
         public init(
             micEnabled: Bool = true,
             systemAudioEnabled: Bool = false,
             sessionDir: URL,
-            segmentDurationSeconds: Double = 5.0
+            segmentDurationSeconds: Double = 5.0,
+            screenRecordingEnabled: Bool = false,
+            screenOutputURL: URL? = nil
         ) {
             self.micEnabled = micEnabled
             self.systemAudioEnabled = systemAudioEnabled
             self.sessionDir = sessionDir
             self.segmentDurationSeconds = segmentDurationSeconds
+            self.screenRecordingEnabled = screenRecordingEnabled
+            self.screenOutputURL = screenOutputURL
         }
     }
 
@@ -42,6 +50,7 @@ public actor CaptureSession {
     private var micTask: Task<Void, Never>?
     private var systemTask: Task<Void, Never>?
     private var scKitBox: SCKitBox?
+    private var screenRecorder: ScreenRecorder?
 
     // MARK: - Init
 
@@ -71,6 +80,15 @@ public actor CaptureSession {
                 let box = SCKitBox()
                 self.scKitBox = box
                 systemTask = try await makeSystemTask(box: box, writer: writer)
+            }
+        }
+
+        if config.screenRecordingEnabled, let outputURL = config.screenOutputURL {
+            if #available(macOS 12.3, *) {
+                let recorder = ScreenRecorder()
+                let srConfig = ScreenRecorder.Config(outputURL: outputURL)
+                try await recorder.start(config: srConfig)
+                self.screenRecorder = recorder
             }
         }
 
@@ -116,6 +134,12 @@ public actor CaptureSession {
             await scKitBox?.capture.stop()
         }
         cancelFeedTasks()
+
+        // Stop screen recorder (best-effort; don't let it block audio finalization).
+        if #available(macOS 12.3, *) {
+            try? await screenRecorder?.stop()
+        }
+        screenRecorder = nil
 
         let paths = try await segmentWriter?.close() ?? []
         audioEngine = nil

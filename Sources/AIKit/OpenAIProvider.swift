@@ -6,6 +6,9 @@ import Foundation
 ///
 /// OpenAI treats "system" as a regular role in the messages array. When
 /// `config.systemPrompt` is set it is prepended as the first message.
+///
+/// Supports multipart messages: text parts become `{"type":"text","text":"..."}`,
+/// image parts become `{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,..."}}`.
 public final class OpenAIProvider: AIProvider, Sendable {
 
     public typealias HTTPClient = @Sendable (URLRequest) async throws -> (Data, URLResponse)
@@ -95,7 +98,9 @@ public final class OpenAIProvider: AIProvider, Sendable {
             "model": config.model,
             "max_tokens": config.maxTokens,
             "temperature": config.temperature,
-            "messages": allMessages.map { ["role": $0.role.rawValue, "content": $0.content] },
+            "messages": allMessages.map { msg -> [String: Any] in
+                ["role": msg.role.rawValue, "content": Self.serializeParts(msg.parts)]
+            },
         ]
 
         do {
@@ -131,5 +136,29 @@ public final class OpenAIProvider: AIProvider, Sendable {
             throw AIError.decodingFailed(message: "No choices in response")
         }
         return first.message.content
+    }
+
+    // MARK: - Private: part serialization
+
+    /// Convert structured message parts to OpenAI content-part JSON objects.
+    /// text → {"type":"text","text":"..."}
+    /// image → {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,..."}}
+    private static func serializeParts(_ parts: [ChatMessage.Part]) -> Any {
+        // Single text-only part: send as plain string for maximum API compatibility.
+        if parts.count == 1, case .text(let s) = parts[0] {
+            return s
+        }
+        return parts.map { part -> [String: Any] in
+            switch part {
+            case .text(let s):
+                return ["type": "text", "text": s]
+            case .image(let jpegData, let mimeType):
+                let dataURL = "data:\(mimeType);base64,\(jpegData.base64EncodedString())"
+                return [
+                    "type": "image_url",
+                    "image_url": ["url": dataURL] as [String: Any],
+                ]
+            }
+        }
     }
 }

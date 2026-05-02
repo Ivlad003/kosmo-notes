@@ -92,6 +92,39 @@ struct AnthropicProviderRequestTests {
         let temp = body["temperature"] as? Double ?? 0
         #expect(abs(temp - 0.3) < 0.001)
     }
+
+    @Test("Multipart user message: text + image serialized as content block array")
+    func multipartImageBlock() throws {
+        let jpegData = Data([0xFF, 0xD8, 0xFF, 0xE0])  // minimal JPEG header bytes
+        let messages: [ChatMessage] = [
+            ChatMessage(role: .user, parts: [
+                .text("What is on screen at 0:30?"),
+                .image(jpegData: jpegData, mimeType: "image/jpeg"),
+            ])
+        ]
+        let request = try AnthropicProvider.buildRequest(
+            endpoint: AnthropicProvider.defaultEndpoint,
+            apiKey: "sk-ant-x",
+            messages: messages,
+            config: baseConfig
+        )
+
+        let body = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as! [String: Any]
+        let msgs = body["messages"] as! [[String: Any]]
+        #expect(msgs.count == 1)
+        #expect(msgs[0]["role"] as? String == "user")
+
+        // content must be an array of blocks (not a plain string) when there are image parts.
+        let content = msgs[0]["content"] as! [[String: Any]]
+        #expect(content.count == 2)
+        #expect(content[0]["type"] as? String == "text")
+        #expect(content[0]["text"] as? String == "What is on screen at 0:30?")
+        #expect(content[1]["type"] as? String == "image")
+        let source = content[1]["source"] as! [String: Any]
+        #expect(source["type"] as? String == "base64")
+        #expect(source["media_type"] as? String == "image/jpeg")
+        #expect(source["data"] as? String == jpegData.base64EncodedString())
+    }
 }
 
 // MARK: - Response parser
@@ -275,5 +308,69 @@ struct AnthropicProviderE2ETests {
             config: config
         )
         #expect(box.captured?.value(forHTTPHeaderField: "x-api-key") == "sk-ant-captured")
+    }
+
+    @Test("Multipart message with image is sent and response is parsed as text")
+    func multipartRoundTrip() async throws {
+        final class Box: @unchecked Sendable { var body: Data? }
+        let box = Box()
+
+        let provider = AnthropicProvider(apiKey: "sk-ant-x", httpClient: { request in
+            box.body = request.httpBody
+            let resp = HTTPURLResponse(
+                url: AnthropicProvider.defaultEndpoint,
+                statusCode: 200, httpVersion: nil, headerFields: nil
+            )!
+            return (Data("""
+            {"id":"m","type":"message","role":"assistant",
+             "content":[{"type":"text","text":"I see a code editor."}],
+             "stop_reason":"end_turn","model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":10}}
+            """.utf8), resp)
+        })
+
+        let jpegBytes = Data([0xFF, 0xD8, 0xFF])
+        let reply = try await provider.chat(
+            messages: [ChatMessage(role: .user, parts: [
+                .text("Describe the screen."),
+                .image(jpegData: jpegBytes, mimeType: "image/jpeg"),
+            ])],
+            config: AIConfig(model: "claude-sonnet-4-6")
+        )
+        #expect(reply == "I see a code editor.")
+
+        // Verify the request body contained an image block.
+        let bodyObj = try JSONSerialization.jsonObject(with: box.body ?? Data()) as! [String: Any]
+        let msgs = bodyObj["messages"] as! [[String: Any]]
+        let content = msgs[0]["content"] as! [[String: Any]]
+        #expect(content.count == 2)
+        #expect(content[1]["type"] as? String == "image")
+    }
+}
+
+// MARK: - ChatMessage.text accessor
+
+@Suite("ChatMessage.text accessor")
+struct ChatMessageTextTests {
+
+    @Test("text-only message returns the text")
+    func textOnly() {
+        let msg = ChatMessage(role: .user, content: "Hello world")
+        #expect(msg.text == "Hello world")
+    }
+
+    @Test("image-only message returns empty text")
+    func imageOnly() {
+        let msg = ChatMessage(role: .user, parts: [.image(jpegData: Data([0x00]), mimeType: "image/jpeg")])
+        #expect(msg.text == "")
+    }
+
+    @Test("mixed parts joins text parts with space")
+    func mixedParts() {
+        let msg = ChatMessage(role: .user, parts: [
+            .text("First"),
+            .image(jpegData: Data([0x00]), mimeType: "image/jpeg"),
+            .text("Second"),
+        ])
+        #expect(msg.text == "First Second")
     }
 }
