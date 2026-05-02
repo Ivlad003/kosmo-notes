@@ -70,6 +70,7 @@ final class AppSettings {
         static let llmProvider = "llmProvider"
         static let summaryLanguage = "summaryLanguage"
         static let recordingMode = "recordingMode"
+        static let costCapUSD = "costCapUSD"
     }
 
     // MARK: Observable state — secrets read on demand from Keychain
@@ -95,6 +96,11 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(recordingMode.rawValue, forKey: Defaults.recordingMode) }
     }
 
+    /// Per-session AI summary cost cap in USD. Requests estimated above this are silently skipped.
+    var costCapUSD: Double {
+        didSet { UserDefaults.standard.set(costCapUSD, forKey: Defaults.costCapUSD) }
+    }
+
     // MARK: Init
 
     private let keychain: Keychain
@@ -115,6 +121,10 @@ final class AppSettings {
 
         let modeRaw = UserDefaults.standard.string(forKey: Defaults.recordingMode) ?? RecordingMode.audioOnly.rawValue
         self.recordingMode = RecordingMode(rawValue: modeRaw) ?? .audioOnly
+
+        // Default $1.00; treat stored 0.0 as "never set" and use the default.
+        let cap = UserDefaults.standard.double(forKey: Defaults.costCapUSD)
+        self.costCapUSD = cap > 0 ? cap : 1.00
 
         loadKeysFromKeychain()
     }
