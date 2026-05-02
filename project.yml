@@ -74,6 +74,8 @@ targets:
         product: TranscriptionKit
       - package: JarvisNoteCore
         product: StorageKit
+      - package: JarvisNoteCore
+        product: AIKit
 
   JarvisNoteUITests:
     type: bundle.ui-testing
