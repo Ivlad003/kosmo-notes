@@ -64,6 +64,16 @@ final class DictationState {
     // MARK: - Private
 
     private func handlePress() async {
+        // Pre-flight: Accessibility permission. Without it, the cleaned transcript
+        // can't be pasted into the focused text field. Surface a modal pointing
+        // at System Settings → Privacy → Accessibility and reminding the user that
+        // AX trust only refreshes on relaunch.
+        if !PermissionsHelper.accessibilityGranted() {
+            PermissionsHelper.showMissingAlert(.accessibility)
+            uiStatus = .failed("Accessibility access required. Grant in System Settings, then quit and relaunch Jarvis Note.")
+            return
+        }
+
         // Build pipeline lazily on first press
         if pipeline == nil {
             do {
