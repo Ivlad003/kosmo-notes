@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import AIKit
 import StorageKit
 import TranscriptionKit
 
@@ -10,6 +11,7 @@ enum ModeFilter: String, CaseIterable, Identifiable {
     case all
     case meeting
     case dictation
+    case voiceNote
 
     var id: String { rawValue }
 
@@ -18,6 +20,7 @@ enum ModeFilter: String, CaseIterable, Identifiable {
         case .all: return "All"
         case .meeting: return "Meeting"
         case .dictation: return "Dictation"
+        case .voiceNote: return "Voice Note"
         }
     }
 }
@@ -38,6 +41,7 @@ final class LibraryState {
 
     let database: AppDatabase
     let sessionStore: SessionStore
+    let settings: AppSettings?
 
     // MARK: - Observable state
 
@@ -54,9 +58,10 @@ final class LibraryState {
 
     // MARK: - Init
 
-    init(database: AppDatabase, sessionStore: SessionStore) {
+    init(database: AppDatabase, sessionStore: SessionStore, settings: AppSettings? = nil) {
         self.database = database
         self.sessionStore = sessionStore
+        self.settings = settings
     }
 
     // MARK: - Data loading
@@ -72,10 +77,25 @@ final class LibraryState {
             } else {
                 // FTS5 search returns hits with sids; hydrate back to full records in parallel.
                 let hits = try await database.searchTranscripts(query: trimmed, limit: 100)
+
+                // Optional: fold in semantic search results. Cosine top-K sids are
+                // appended to the FTS sid list (deduplicated) so users still get a
+                // hit for "поговорили про дедлайн" when the transcript said
+                // "запропонували нову дату." Falls back silently when:
+                //   - settings is nil (programmatic test usage)
+                //   - semanticSearchEnabled is off
+                //   - no API key available
+                //   - the embed call fails
+                var orderedSids = hits.map { $0.sid }
+                let semanticSids = await semanticHits(for: trimmed)
+                for sid in semanticSids where !orderedSids.contains(sid) {
+                    orderedSids.append(sid)
+                }
+
                 raw = try await withThrowingTaskGroup(of: SessionRecord?.self) { group in
-                    for hit in hits {
+                    for sid in orderedSids {
                         group.addTask { [database] in
-                            try await database.session(id: hit.sid)
+                            try await database.session(id: sid)
                         }
                     }
                     var results: [SessionRecord] = []
@@ -93,6 +113,7 @@ final class LibraryState {
                 case .all: return true
                 case .meeting: return record.mode == .meeting
                 case .dictation: return record.mode == .dictation
+                case .voiceNote: return record.mode == .voiceNote
                 }
             }
         } catch {
@@ -137,6 +158,33 @@ final class LibraryState {
     }
 
     // MARK: - Private
+
+    /// Embed `query` and return up to 20 sids ordered by descending cosine
+    /// similarity to stored session embeddings. Returns `[]` when semantic
+    /// search is disabled, no key is set, or any step fails.
+    private func semanticHits(for query: String) async -> [String] {
+        guard let settings, settings.semanticSearchEnabled else { return [] }
+        let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return [] }
+        let provider = OpenAIEmbeddingProvider(apiKey: key)
+        do {
+            let queryVector = try await provider.embed(query)
+            let stored = try await database.allEmbeddings()
+            // Score each row, drop low-confidence matches (<0.3 cosine), top-20.
+            let scored: [(sid: String, score: Float)] = stored.compactMap { row in
+                let v = EmbeddingMath.unpack(row.vector)
+                guard v.count == queryVector.count else { return nil }
+                let score = EmbeddingMath.cosineSimilarity(queryVector, v)
+                return score > 0.3 ? (sid: row.sid, score: score) : nil
+            }
+            return scored
+                .sorted { $0.score > $1.score }
+                .prefix(20)
+                .map { $0.sid }
+        } catch {
+            return []
+        }
+    }
 
     // Debounce: refresh fires on the next run-loop turn after the last mutation.
     // Avoids a DB round-trip per keystroke while still feeling live.

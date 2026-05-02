@@ -16,14 +16,21 @@ final class LibraryWindowController {
     private weak var window: NSWindow?
 
     /// Open the Library window. If it already exists, bring it to front.
-    func open(database: AppDatabase, sessionStore: SessionStore, windowDelegate: NSWindowDelegate) {
+    /// `settings` is optional so tests / previews can build a window without
+    /// constructing a full AppSettings (semantic search just stays off).
+    func open(
+        database: AppDatabase,
+        sessionStore: SessionStore,
+        settings: AppSettings? = nil,
+        windowDelegate: NSWindowDelegate
+    ) {
         if let existing = window {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
 
-        let libraryState = LibraryState(database: database, sessionStore: sessionStore)
+        let libraryState = LibraryState(database: database, sessionStore: sessionStore, settings: settings)
         let view = LibraryView(state: libraryState)
         let hosting = NSHostingController(rootView: view)
 

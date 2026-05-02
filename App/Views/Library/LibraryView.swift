@@ -105,9 +105,10 @@ private struct SessionRowView: View {
 
     let session: SessionRecord
     @State private var hasScreenRecording: Bool = false
+    @State private var thumbImage: NSImage?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
                 Text(session.recordedAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.subheadline)
@@ -119,9 +120,24 @@ private struct SessionRowView: View {
                         .help("Screen recording available")
                 }
             }
+            // Waveform thumbnail (cached PNG; placeholder while loading).
+            if let img = thumbImage {
+                Image(nsImage: img)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(height: 18)
+                    .opacity(0.85)
+            } else {
+                // Placeholder: thin gray bar so the layout doesn't jump on render.
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.12))
+                    .frame(height: 4)
+                    .clipShape(RoundedRectangle(cornerRadius: 2))
+            }
             HStack(spacing: 6) {
-                Label(session.mode.rawValue.capitalized,
-                      systemImage: session.mode == .meeting ? "person.2" : "text.bubble")
+                Label(session.mode.displayName,
+                      systemImage: session.mode.iconName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("·")
@@ -144,6 +160,22 @@ private struct SessionRowView: View {
             if let url = screenURL {
                 hasScreenRecording = FileManager.default.fileExists(atPath: url.path)
             }
+            await loadThumbnail(sessionDir: root)
+        }
+    }
+
+    /// Read or generate the waveform PNG and load it as an `NSImage`. Heavy work
+    /// runs inside the WaveformGenerator actor, off the main thread.
+    private func loadThumbnail(sessionDir: URL?) async {
+        guard let dir = sessionDir else { return }
+        // Prefer audio.m4a (always present); skip silently when the file is missing.
+        let audioURL = dir.appendingPathComponent("audio.m4a")
+        let generator = WaveformGenerator()
+        guard let pngURL = await generator.thumbnailURL(for: dir, audioFile: audioURL) else {
+            return
+        }
+        if let image = NSImage(contentsOf: pngURL) {
+            thumbImage = image
         }
     }
 
@@ -214,6 +246,16 @@ private struct SessionDetailView: View {
                 }
                 .buttonStyle(.borderless)
                 .menuStyle(.button)
+
+                if state.settings != nil {
+                    Button {
+                        Task { await runShare() }
+                    } label: {
+                        Label("Share", systemImage: "link")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Upload to S3 and copy a presigned link")
+                }
 
                 Button {
                     openInFinder()
@@ -298,6 +340,14 @@ private struct SessionDetailView: View {
             exportError = error.localizedDescription
         }
     }
+
+    /// Upload session audio + summary + transcript to S3 and present links.
+    /// Settings is required — the Share button is hidden when it's nil.
+    private func runShare() async {
+        guard let settings = state.settings else { return }
+        let coordinator = ShareCoordinator(settings: settings, sessionStore: state.sessionStore)
+        await coordinator.share(sessionId: session.id)
+    }
 }
 
 // MARK: - SessionHeaderView
@@ -316,8 +366,8 @@ private struct SessionHeaderView: View {
                 StatusBadge(status: session.status)
             }
             HStack(spacing: 12) {
-                Label(session.mode.rawValue.capitalized,
-                      systemImage: session.mode == .meeting ? "person.2" : "text.bubble")
+                Label(session.mode.displayName,
+                      systemImage: session.mode.iconName)
                 Label(formatDuration(session.durationSecs), systemImage: "clock")
                 if let lang = session.language {
                     Label(lang.uppercased(), systemImage: "globe")
