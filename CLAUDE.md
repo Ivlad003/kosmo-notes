@@ -4,7 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-**v0 — Phase A complete + Phase B/C/D primitives landed.** The Swift Package exists, **215 tests pass across 44 suites** in ~0.5 s, `xcodebuild` produces a `.app` (≈8 MB Debug, well under the 15 MB AC-16 cap), and the menu-bar app records → transcribes via Whisper → AI-summarizes → indexes for FTS search → opens for chat. Phase C Dictation Mode primitives + Settings tab + AppDelegate wiring shipped UNVERIFIED (no manual smoke of hotkey-triggered paste yet). Read `docs/plans/2026-05-02-jarvis-note-design.md` first — it is the canonical source of truth for all architectural decisions, and `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` for the phase-by-phase plan.
+**v1.0 feature-complete UNVERIFIED — manual smoke pending.** All 18 acceptance criteria are wired in code; release path checklist is in `docs/release/v1.0-checklist.md`. The Swift Package exists, the menu-bar app records → transcribes via Whisper → AI-summarizes → indexes (FTS5 + optional embeddings) → opens for chat → exports → shares to S3. Local validation via `swift build && swift test` is required before tagging. Read `docs/plans/2026-05-02-jarvis-note-design.md` first — it is the canonical source of truth for all architectural decisions, and `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` for the phase-by-phase plan.
+
+**Features added 2026-05-03 (v1.0 scope expansion past the original v1.1 cut):**
+- **AC-6 startup gate.** `JarvisNoteApp.checkMinimumOS` surfaces a `<12.3` "upgrade" modal and a `<14.0` "core features disabled" warning.
+- **Voice Note Mode** (third capture mode) with `freeform / task / journal / checklist` prompt templates. Hotkey ⌘⇧N. Settings → Voice Note tab.
+- **Global hotkeys** (⌘⇧R Meeting · ⌘⇧N Voice Note · ⌘⇧L Library) registered via `KeyboardShortcuts`; rebindable in Settings → Hotkeys.
+- **Cost-cap enforcement modal.** `RecorderState.confirmCostOverage` replaces the silent skip with an "Increase to $X / Cancel" alert.
+- **OpenRouter LLM provider** (`Sources/AIKit/OpenRouterProvider.swift`) — OpenAI-compat with `HTTP-Referer` + `X-Title` headers. Wired into `RecorderState`, `DictationState`, `ChatState`, Settings tab.
+- **Embedding semantic search.** `OpenAIEmbeddingProvider` (`text-embedding-3-small`, 1536 dims). Schema migration v2 adds `session_embeddings(sid, vector BLOB, model, indexed_at)`. `LibraryState.refresh` merges FTS5 hits with cosine top-K. Toggleable in Settings → AI Providers.
+- **S3 sharing** (`Sources/SharingKit/`). Hand-rolled AWS Sig V4 (no aws-sdk dep). `S3Client.putObject` + `S3Client.presignedGetURL`. Compatible with AWS / R2 / B2 / MinIO. Library detail view gets a "Share" button. Settings → Sharing tab.
+- **Per-process Core Audio Tap** (`Sources/CaptureKit/CoreAudioTap.swift`, macOS 14.4+). Settings → Transcription "System audio source" picker. Falls back to SCKit on failure or older OS.
+- **Waveform thumbnails.** `WaveformGenerator` actor. `AVAssetReader` → bucket-average → `CGContext` PNG cached at `<sid>/thumb.png`. Rendered in `SessionRowView`.
+- **SleepAssertion wired** into `RecorderState.start/stop/teardown` so `IOPMAssertion` lifecycle matches the active recording.
+- **`applicationWillTerminate` hook** flushes mid-record on Cmd+Q (was relying on Recovery service before).
 
 Phase A Week 2 (TranscriptionKit + recovery):
 - `Sources/StorageKit/RecoveryService.swift` — orphan-segment scanner + `AVMutableComposition` + `AVAssetExportSession` (`AppleM4A` preset) concat. Replaces the design-doc's bundled-ffmpeg approach (AAC-in-`.m4a` is natively concatenable).
