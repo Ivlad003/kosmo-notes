@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menu: NSMenu?
     private var onboardingWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var chatWindow: NSWindow?
 
     // Shared app singletons. Created on launch, kept for the lifetime of the
     // process. macOS-14-only — guarded by `if #available` at construction.
@@ -28,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recorderHolder: AnyObject?       // RecorderState (macOS 14+)
     private var databaseHolder: AnyObject?       // AppDatabase
     private var sessionStoreHolder: AnyObject?   // SessionStore
+    private var chatHolder: AnyObject?           // ChatState (macOS 14+)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureStatusItem()
@@ -76,6 +78,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openLastSessionItem.target = self
         openLastSessionItem.identifier = NSUserInterfaceItemIdentifier("openLastSession")
         menu.addItem(openLastSessionItem)
+
+        menu.addItem(.separator())
+
+        let chatItem = NSMenuItem(title: "Chat…",
+                                  action: #selector(openChat),
+                                  keyEquivalent: "t")
+        chatItem.keyEquivalentModifierMask = [.command]
+        chatItem.target = self
+        menu.addItem(chatItem)
 
         menu.addItem(.separator())
 
@@ -176,6 +187,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sharedSettings as? AppSettings
     }
 
+    @available(macOS 14.0, *)
+    private var appDatabase: AppDatabase? {
+        databaseHolder as? AppDatabase
+    }
+
+    @available(macOS 14.0, *)
+    private var appSessionStore: SessionStore? {
+        sessionStoreHolder as? SessionStore
+    }
+
     // MARK: - Menu actions
 
     @objc private func recordToggleAction() {
@@ -244,6 +265,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
 
         self.settingsWindow = window
+    }
+
+    @MainActor
+    @objc private func openChat() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        if let existing = chatWindow {
+            existing.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        guard #available(macOS 14.0, *),
+              let settings = appSettings,
+              let database = appDatabase,
+              let sessionStore = appSessionStore else {
+            let alert = NSAlert()
+            alert.messageText = "Chat requires macOS 14.0+"
+            alert.runModal()
+            return
+        }
+
+        let chatState = ChatState(settings: settings, database: database, sessionStore: sessionStore)
+        self.chatHolder = chatState
+
+        let view = ChatView(chat: chatState, settings: settings)
+        let hosting = NSHostingController(rootView: view)
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Jarvis Note Chat"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.isReleasedWhenClosed = false
+        window.setContentSize(NSSize(width: 540, height: 700))
+        window.minSize = NSSize(width: 540, height: 600)
+        window.center()
+        window.identifier = NSUserInterfaceItemIdentifier("chat")
+        window.delegate = self
+        window.makeKeyAndOrderFront(nil)
+
+        self.chatWindow = window
     }
 
     private func showOnboarding() {
@@ -329,11 +389,17 @@ extension AppDelegate: NSWindowDelegate {
         switch window.identifier?.rawValue {
         case "settings":
             settingsWindow = nil
-            if onboardingWindow == nil {
+            if onboardingWindow == nil && chatWindow == nil {
                 NSApp.setActivationPolicy(.accessory)
             }
         case "onboarding":
             onboardingWindow = nil
+        case "chat":
+            chatWindow = nil
+            chatHolder = nil
+            if settingsWindow == nil && onboardingWindow == nil {
+                NSApp.setActivationPolicy(.accessory)
+            }
         default:
             break
         }
