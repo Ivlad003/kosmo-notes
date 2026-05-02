@@ -139,6 +139,21 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(ollamaModel, forKey: Defaults.ollamaModel) }
     }
 
+    /// Capture system audio (SCKit mixdown) alongside the mic. Off by default —
+    /// requires Screen Recording permission and captures whole-system audio.
+    var systemAudioEnabled: Bool {
+        didSet { UserDefaults.standard.set(systemAudioEnabled, forKey: Defaults.systemAudioEnabled) }
+    }
+    /// Run an LLM cleanup pass on the Whisper transcript before pasting (Dictation Mode).
+    /// On = cleaner output, slower (extra round-trip). Off = paste raw transcript.
+    var dictationLLMCleanup: Bool {
+        didSet { UserDefaults.standard.set(dictationLLMCleanup, forKey: Defaults.dictationLLMCleanup) }
+    }
+    /// Hard cap on a single Dictation utterance length, in seconds. Default 60.
+    var dictationMaxSeconds: Int {
+        didSet { UserDefaults.standard.set(dictationMaxSeconds, forKey: Defaults.dictationMaxSeconds) }
+    }
+
     // MARK: Init
 
     private let keychain: Keychain
@@ -170,6 +185,12 @@ final class AppSettings {
         self.ollamaApiMode = OllamaAPIMode(rawValue: apiModeRaw) ?? .native
 
         self.ollamaModel = UserDefaults.standard.string(forKey: Defaults.ollamaModel) ?? "qwen2.5:14b"
+
+        self.systemAudioEnabled = UserDefaults.standard.bool(forKey: Defaults.systemAudioEnabled)
+        // Default true for cleanup; UserDefaults.bool returns false for missing keys, so check object presence.
+        self.dictationLLMCleanup = (UserDefaults.standard.object(forKey: Defaults.dictationLLMCleanup) as? Bool) ?? true
+        let maxSecs = UserDefaults.standard.integer(forKey: Defaults.dictationMaxSeconds)
+        self.dictationMaxSeconds = maxSecs > 0 ? maxSecs : 60
 
         loadKeysFromKeychain()
     }
