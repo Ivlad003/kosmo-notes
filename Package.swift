@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "JarvisNote",
+    name: "JarvisNoteCore",
     platforms: [
         .macOS(.v14)
     ],

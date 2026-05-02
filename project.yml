@@ -4,7 +4,7 @@ xcodeVersion: "16.3"
 options:
   bundleIdPrefix: dev.jarvisnote
   deploymentTarget:
-    macOS: "12.3"
+    macOS: "14.0"
   createIntermediateGroups: true
 
 packages:
@@ -17,12 +17,14 @@ packages:
   KeyboardShortcuts:
     url: https://github.com/sindresorhus/KeyboardShortcuts
     from: 2.2.0
+  JarvisNoteCore:
+    path: .
 
 targets:
   JarvisNote:
     type: application
     platform: macOS
-    deploymentTarget: "12.3"
+    deploymentTarget: "14.0"
     sources:
       - App
     resources:
@@ -47,10 +49,15 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.jarvisnote.studio
         SWIFT_VERSION: "5.10"
-        MACOSX_DEPLOYMENT_TARGET: "12.3"
-        CODE_SIGN_IDENTITY: ""
-        CODE_SIGNING_REQUIRED: "NO"
-        CODE_SIGNING_ALLOWED: "NO"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        # Ad-hoc signing ("-") is required for XCUITest to attach the runner
+        # to the app's process. The distribution `.app.zip` is shipped
+        # ad-hoc-signed too — it's still unsigned by an Apple Developer ID
+        # so users still need `xattr -d com.apple.quarantine` per README.
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: "YES"
+        CODE_SIGNING_ALLOWED: "YES"
+        CODE_SIGN_STYLE: "Manual"
         ENABLE_HARDENED_RUNTIME: "NO"
         ENABLE_APP_SANDBOX: "NO"
         OTHER_LDFLAGS: ""
@@ -61,3 +68,33 @@ targets:
         product: KeychainAccess
       - package: KeyboardShortcuts
         product: KeyboardShortcuts
+      - package: JarvisNoteCore
+        product: CaptureKit
+      - package: JarvisNoteCore
+        product: TranscriptionKit
+      - package: JarvisNoteCore
+        product: StorageKit
+
+  JarvisNoteUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - UITests
+    dependencies:
+      - target: JarvisNote
+    settings:
+      base:
+        SWIFT_VERSION: "5.10"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        TEST_TARGET_NAME: JarvisNote
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: "YES"
+        CODE_SIGNING_ALLOWED: "YES"
+        CODE_SIGN_STYLE: "Manual"
+        GENERATE_INFOPLIST_FILE: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: dev.jarvisnote.studio.uitests
+    scheme:
+      testTargets:
+        - JarvisNoteUITests
+      gatherCoverageData: false
