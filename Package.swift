@@ -63,7 +63,7 @@ let package = Package(
             dependencies: [
                 "TranscriptionKit",
                 "AIKit",
-                // KeyboardShortcuts added when HotkeyMonitor.swift lands in Phase C
+                .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
             ],
             path: "Sources/DictationKit"
         ),

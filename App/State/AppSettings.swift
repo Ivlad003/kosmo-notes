@@ -92,6 +92,9 @@ final class AppSettings {
         static let ollamaModel = "ollamaModel"
         // ollamaBearer is Keychain-backed; this constant is the account name reference.
         static let ollamaBearer = "ollamaBearer"
+        static let systemAudioEnabled = "systemAudioEnabled"
+        static let dictationLLMCleanup = "dictationLLMCleanup"
+        static let dictationMaxSeconds = "dictationMaxSeconds"
     }
 
     // MARK: Observable state — secrets read on demand from Keychain
