@@ -21,6 +21,13 @@ public actor CaptureSession {
         public let screenRecordingEnabled: Bool
         /// Where ScreenRecorder writes screen.mp4; ignored when screenRecordingEnabled is false.
         public let screenOutputURL: URL?
+        /// When true and the OS is macOS 14.4+, system audio is captured via
+        /// per-process Core Audio Taps targeting `processTapBundleIDs`. Falls
+        /// back to SCKit whole-system mixdown on older OS or any tap failure.
+        public let useProcessTap: Bool
+        /// Bundle IDs to capture when `useProcessTap` is on. Only running apps
+        /// match — apps launched after `start()` are not added retroactively.
+        public let processTapBundleIDs: [String]
 
         public init(
             micEnabled: Bool = true,
@@ -28,7 +35,9 @@ public actor CaptureSession {
             sessionDir: URL,
             segmentDurationSeconds: Double = 5.0,
             screenRecordingEnabled: Bool = false,
-            screenOutputURL: URL? = nil
+            screenOutputURL: URL? = nil,
+            useProcessTap: Bool = false,
+            processTapBundleIDs: [String] = []
         ) {
             self.micEnabled = micEnabled
             self.systemAudioEnabled = systemAudioEnabled
@@ -36,6 +45,8 @@ public actor CaptureSession {
             self.segmentDurationSeconds = segmentDurationSeconds
             self.screenRecordingEnabled = screenRecordingEnabled
             self.screenOutputURL = screenOutputURL
+            self.useProcessTap = useProcessTap
+            self.processTapBundleIDs = processTapBundleIDs
         }
     }
 
@@ -51,6 +62,7 @@ public actor CaptureSession {
     private var systemTask: Task<Void, Never>?
     private var scKitBox: SCKitBox?
     private var screenRecorder: ScreenRecorder?
+    private var tapBox: TapBox?
 
     // MARK: - Init
 
@@ -76,7 +88,23 @@ public actor CaptureSession {
         }
 
         if config.systemAudioEnabled {
-            if #available(macOS 12.3, *) {
+            // Try the per-process Core Audio Tap path first when configured + 14.4+.
+            // On any failure (no matching processes, kernel errors, etc.) we fall back
+            // to SCKit's whole-system mixdown so a misconfigured tap never hard-fails
+            // the entire recording.
+            var tapStarted = false
+            if config.useProcessTap, #available(macOS 14.4, *) {
+                do {
+                    let box = TapBox()
+                    self.tapBox = box
+                    systemTask = try await makeTapTask(box: box, bundleIDs: config.processTapBundleIDs, writer: writer)
+                    tapStarted = true
+                } catch {
+                    self.tapBox = nil
+                    // Fall through to SCKit fallback.
+                }
+            }
+            if !tapStarted, #available(macOS 12.3, *) {
                 let box = SCKitBox()
                 self.scKitBox = box
                 systemTask = try await makeSystemTask(box: box, writer: writer)
@@ -133,6 +161,9 @@ public actor CaptureSession {
         if #available(macOS 12.3, *) {
             await scKitBox?.capture.stop()
         }
+        if #available(macOS 14.4, *) {
+            await tapBox?.tap.stop()
+        }
         cancelFeedTasks()
 
         // Stop screen recorder (best-effort; don't let it block audio finalization).
@@ -144,6 +175,7 @@ public actor CaptureSession {
         let paths = try await segmentWriter?.close() ?? []
         audioEngine = nil
         scKitBox = nil
+        tapBox = nil
         segmentWriter = nil
         recordingState = .stopped
         return paths
@@ -183,6 +215,17 @@ public actor CaptureSession {
             }
         }
     }
+
+    @available(macOS 14.4, *)
+    private nonisolated func makeTapTask(box: TapBox, bundleIDs: [String], writer: SegmentWriter) async throws -> Task<Void, Never> {
+        let stream = try await box.tap.start(bundleIDs: bundleIDs)
+        let streamBox = UncheckedSendableBox(stream)
+        return Task.detached {
+            for await buffer in streamBox.value {
+                try? await writer.append(buffer, source: .system)
+            }
+        }
+    }
 }
 
 // MARK: - Helpers
@@ -199,4 +242,11 @@ private final class UncheckedSendableBox<T>: @unchecked Sendable {
 @available(macOS 12.3, *)
 final class SCKitBox: Sendable {
     let capture = SCKitAudioCapture()
+}
+
+/// Boxes CoreAudioTap (macOS 14.4+) so the per-process tap can be stored
+/// without the @available constraint leaking onto stored properties.
+@available(macOS 14.4, *)
+final class TapBox: Sendable {
+    let tap = CoreAudioTap()
 }
