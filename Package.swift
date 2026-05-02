@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "StorageKit", targets: ["StorageKit"]),
         .library(name: "DependencyLifecycle", targets: ["DependencyLifecycle"]),
         .library(name: "DictationKit", targets: ["DictationKit"]),
+        .library(name: "SharingKit", targets: ["SharingKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", from: "6.29.0"),
@@ -67,6 +68,11 @@ let package = Package(
             ],
             path: "Sources/DictationKit"
         ),
+        .target(
+            name: "SharingKit",
+            dependencies: [],
+            path: "Sources/SharingKit"
+        ),
 
         // MARK: - Test targets
 
@@ -102,6 +108,11 @@ let package = Package(
             name: "DictationKitTests",
             dependencies: ["DictationKit"],
             path: "Tests/DictationKitTests"
+        ),
+        .testTarget(
+            name: "SharingKitTests",
+            dependencies: ["SharingKit"],
+            path: "Tests/SharingKitTests"
         ),
     ]
 )

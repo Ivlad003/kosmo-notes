@@ -78,6 +78,8 @@ targets:
         product: AIKit
       - package: JarvisNoteCore
         product: DictationKit
+      - package: JarvisNoteCore
+        product: SharingKit
 
   JarvisNoteUITests:
     type: bundle.ui-testing
