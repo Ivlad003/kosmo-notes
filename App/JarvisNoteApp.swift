@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessionStoreHolder: AnyObject?   // SessionStore
     private var chatHolder: AnyObject?           // ChatState (macOS 14+)
     private var dictationHolder: AnyObject?      // DictationState (macOS 14+)
+    private var pushToMarkdownHolder: AnyObject? // PushToMarkdownState (macOS 14+)
 
     // Library window controller. Stored as AnyObject to avoid @available on
     // a stored property (Swift disallows that). Cast at use-site with #available.
@@ -310,6 +311,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let dictation = DictationState(settings: settings)
             dictation.install()
             self.dictationHolder = dictation
+
+            // Push-to-Markdown: same press/hold/release shape as Dictation,
+            // saves a `.md` file at markdownExportFolder via MarkdownExporter
+            // instead of pasting into the focused field.
+            let p2md = PushToMarkdownState(settings: settings, sessionStore: sessionStore)
+            p2md.install()
+            self.pushToMarkdownHolder = p2md
 
             // Force a menu refresh so any stale "Recording requires macOS 14+"
             // labels flip to the real recorder-ready titles.

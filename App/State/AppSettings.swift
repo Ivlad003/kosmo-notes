@@ -190,6 +190,10 @@ final class AppSettings {
         static let markdownExportFolder = "markdownExportFolder"
         static let markdownExportSystemPrompt = "markdownExportSystemPrompt"
         static let markdownExportUserPrompt = "markdownExportUserPrompt"
+        // Push-to-Markdown — same hold-hotkey-and-talk pattern as Dictation,
+        // but result is saved as a .md file (using the markdownExport*
+        // prompts above) instead of pasted into the focused field.
+        static let pushToMarkdownEnabled = "pushToMarkdownEnabled"
         // S3 sharing
         static let s3Endpoint = "s3Endpoint"
         static let s3Region = "s3Region"
@@ -293,6 +297,15 @@ final class AppSettings {
     /// the LLM. Default keeps it simple: "Here is the transcript: {transcript}".
     var markdownExportUserPrompt: String {
         didSet { UserDefaults.standard.set(markdownExportUserPrompt, forKey: Defaults.markdownExportUserPrompt) }
+    }
+
+    /// Push-to-Markdown toggle. When ON, the global hotkey
+    /// `KeyboardShortcuts.Name.pushToMarkdown` (default ⌘⇧Y) records
+    /// while held; on release the cleaned transcript runs through the
+    /// same MarkdownExporter flow (markdownExport* prompts + folder)
+    /// and a new `.md` file is written. Off by default.
+    var pushToMarkdownEnabled: Bool {
+        didSet { UserDefaults.standard.set(pushToMarkdownEnabled, forKey: Defaults.pushToMarkdownEnabled) }
     }
 
     var transcriptionProvider: TranscriptionProviderChoice {
@@ -531,6 +544,7 @@ final class AppSettings {
             ?? AppSettings.defaultMarkdownExportSystemPrompt
         self.markdownExportUserPrompt = UserDefaults.standard.string(forKey: Defaults.markdownExportUserPrompt)
             ?? AppSettings.defaultMarkdownExportUserPrompt
+        self.pushToMarkdownEnabled = (UserDefaults.standard.object(forKey: Defaults.pushToMarkdownEnabled) as? Bool) ?? false
 
         let llmRaw = UserDefaults.standard.string(forKey: Defaults.llmProvider) ?? LLMProviderChoice.anthropic.rawValue
         self.llmProvider = LLMProviderChoice(rawValue: llmRaw) ?? .anthropic

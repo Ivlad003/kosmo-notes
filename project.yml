@@ -35,7 +35,7 @@ targets:
         CFBundleName: Jarvis Note
         CFBundleDisplayName: Jarvis Note
         CFBundleIdentifier: dev.jarvisnote.studio
-        CFBundleVersion: "9"
+        CFBundleVersion: "10"
         CFBundleShortVersionString: "0.0.2"
         CFBundlePackageType: APPL
         CFBundleExecutable: "$(EXECUTABLE_NAME)"

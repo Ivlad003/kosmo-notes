@@ -666,6 +666,7 @@ private struct HotkeysTab: View {
                 KeyboardShortcuts.Recorder("Voice Note toggle", name: .toggleVoiceNote)
                 KeyboardShortcuts.Recorder("Open Library", name: .openLibrary)
                 KeyboardShortcuts.Recorder("Dictation (push-to-talk)", name: .dictation)
+                KeyboardShortcuts.Recorder("Push-to-Markdown (hold + speak → save .md)", name: .pushToMarkdown)
             }
 
             Section("Defaults") {
@@ -1126,6 +1127,13 @@ private struct MarkdownExportTab: View {
             Section("Markdown export") {
                 Toggle("Save formatted Markdown after every recording", isOn: $settings.markdownExportEnabled)
                 Text("After transcription + cleanup, the cleaned transcript is sent through your configured LLM (AI Providers tab) with the prompts below, and the result is written as a .md file at the folder you pick. Independent of summary.md inside the session folder. Failures are non-fatal — recording stays usable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Push-to-Markdown") {
+                Toggle("Enable push-to-Markdown hotkey", isOn: $settings.pushToMarkdownEnabled)
+                Text("Hold the hotkey (default ⌘⇧Y, rebindable in Settings → Hotkeys), speak, release. The cleaned transcript is run through the SAME prompts + saved into the SAME folder as the post-recording Markdown export above — but as a separate file per press. No popover, no library entry — fast \"voice → markdown note\" capture.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
