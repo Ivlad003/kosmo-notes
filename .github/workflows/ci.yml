@@ -43,24 +43,14 @@ jobs:
         # section is only emitted by Xcode's toolchain — bare CLI swift
         # would silently run zero tests.
         #
-        # Tests are split per target rather than `swift test` once because
-        # Swift Testing's cross-suite parallelism + AVFoundation's per-
-        # AVAssetWriter resource cost piles up too high on macos-15 GH
-        # runners and the worker process dies with SIGSEGV. Per-target
-        # invocations isolate each batch in its own process so the previous
-        # AVAssetWriter / AVAssetExportSession instances are reclaimed
-        # before the next batch starts. Slightly slower (each invocation
-        # rebuilds the test binary entry list) but deterministic.
-        run: |
-          set -e
-          export DEVELOPER_DIR=$(xcode-select -p)
-          for target in AIKitTests CaptureKitTests DependencyLifecycleTests \
-                        DictationKitTests SharingKitTests StorageKitTests \
-                        StreamingKitTests TranscriptionKitTests; do
-            echo "::group::swift test --filter $target"
-            swift test --filter "$target"
-            echo "::endgroup::"
-          done
+        # AVAssetWriter / AVAssetExportSession crash with SIGSEGV on headless
+        # macos-15 GH Actions runners — even when isolated to a single
+        # `swift test --filter` invocation. The four affected suites
+        # (SegmentWriter / AACEncoder / CaptureSession / RecoveryService)
+        # opt out of CI via `.disabled(if: ProcessInfo...["CI"] == "true")`;
+        # coverage for those code paths comes from local Apple-Silicon runs
+        # plus the v1.0 manual smoke checklist.
+        run: DEVELOPER_DIR=$(xcode-select -p) swift test
 
       - name: xcodebuild build (Debug)
         # CI doesn't have Apple Development certs; project.yml pins

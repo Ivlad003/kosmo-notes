@@ -11,7 +11,14 @@ import Testing
 // The tests feed synthetic PCM buffers to a MockAudioEngine and verify that
 // segment files are written to the expected directory structure.
 
-@Suite("CaptureSession tests (mic-only, no TCC required)", .serialized)
+@Suite(
+    "CaptureSession tests (mic-only, no TCC required)",
+    .serialized,
+    .disabled(
+        if: ProcessInfo.processInfo.environment["CI"] == "true",
+        "Spins up SegmentWriter / AVAssetWriter; same SIGSEGV story as the SegmentWriter suite. Local Apple Silicon runs only."
+    )
+)
 struct CaptureSessionTests {
 
     private func makeTempDir() throws -> URL {

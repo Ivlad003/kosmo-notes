@@ -3,7 +3,14 @@ import Foundation
 import Testing
 @testable import CaptureKit
 
-@Suite("AACEncoder tests", .serialized)
+@Suite(
+    "AACEncoder tests",
+    .serialized,
+    .disabled(
+        if: ProcessInfo.processInfo.environment["CI"] == "true",
+        "AVAssetWriter / AVAudioConverter crashes with SIGSEGV on headless macos-15 GH Actions runners. Tests pass locally on Apple Silicon."
+    )
+)
 struct AACEncoderTests {
 
     @Test("AACEncoder initializes successfully")

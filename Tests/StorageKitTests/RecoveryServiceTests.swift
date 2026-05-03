@@ -5,7 +5,14 @@ import Testing
 
 // MARK: - RecoveryServiceTests
 
-@Suite("RecoveryService tests", .serialized)
+@Suite(
+    "RecoveryService tests",
+    .serialized,
+    .disabled(
+        if: ProcessInfo.processInfo.environment["CI"] == "true",
+        "Uses AVMutableComposition + AVAssetExportSession to concat .m4a segments — crashes with SIGSEGV on headless macos-15 GH Actions runners. Local Apple Silicon runs only."
+    )
+)
 struct RecoveryServiceTests {
 
     // MARK: - Helpers
