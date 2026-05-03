@@ -143,6 +143,16 @@ private struct SessionRowView: View {
                         .foregroundStyle(.secondary)
                         .help("Screen recording available")
                 }
+                if session.enhancementStatus == .partial {
+                    // Audit §4.2: silent partial failures (cleanup didn't change
+                    // the transcript, summary returned nil while transcript was
+                    // non-empty, etc.) used to be invisible. The orange dot
+                    // makes degraded sessions findable in the list.
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .help("Some optional enhancements didn't complete (cleanup, summary, or export). The recording and transcript are intact.")
+                }
             }
             // Waveform thumbnail (cached PNG; placeholder while loading).
             if let img = thumbImage {

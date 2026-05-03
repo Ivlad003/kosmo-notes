@@ -202,4 +202,63 @@ struct DatabaseTests {
         let hits = try await db.searchTranscripts(query: "")
         #expect(hits.isEmpty)
     }
+
+    // MARK: - v3 enhancement_status migration
+
+    @Test("v3 migration: round-trips enhancementStatus = .partial")
+    func enhancementStatusRoundTripsPartial() async throws {
+        let (db, dir) = try makeDB()
+        defer { cleanup(dir) }
+        try await db.migrate()
+
+        let record = SessionRecord(
+            id: "partial-record",
+            recordedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            durationSecs: 60,
+            mode: .meeting,
+            language: "en",
+            status: .complete,
+            enhancementStatus: .partial
+        )
+        try await db.insertSession(record)
+        let fetched = try await db.session(id: "partial-record")
+        #expect(fetched?.enhancementStatus == .partial)
+    }
+
+    @Test("v3 migration: omitting enhancementStatus defaults to .ok")
+    func enhancementStatusDefaultsToOk() async throws {
+        let (db, dir) = try makeDB()
+        defer { cleanup(dir) }
+        try await db.migrate()
+
+        // sampleRecord doesn't set enhancementStatus → SessionRecord init
+        // defaults it to .ok. Verify the column persists that and reads back.
+        let record = sampleRecord(id: "default-ok", status: .complete)
+        try await db.insertSession(record)
+        let fetched = try await db.session(id: "default-ok")
+        #expect(fetched?.enhancementStatus == .ok)
+    }
+
+    @Test("v3 migration: updateSession can flip ok → partial")
+    func enhancementStatusFlipsOnUpdate() async throws {
+        let (db, dir) = try makeDB()
+        defer { cleanup(dir) }
+        try await db.migrate()
+
+        let record = sampleRecord(id: "flip-target", status: .complete)
+        try await db.insertSession(record)
+        #expect(try await db.session(id: "flip-target")?.enhancementStatus == .ok)
+
+        let updated = SessionRecord(
+            id: "flip-target",
+            recordedAt: record.recordedAt,
+            durationSecs: record.durationSecs,
+            mode: record.mode,
+            language: record.language,
+            status: .complete,
+            enhancementStatus: .partial
+        )
+        try await db.updateSession(updated)
+        #expect(try await db.session(id: "flip-target")?.enhancementStatus == .partial)
+    }
 }

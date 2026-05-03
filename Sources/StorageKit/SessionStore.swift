@@ -44,11 +44,14 @@ public actor SessionStore {
     // MARK: - Finalize
 
     /// Atomically rewrite session.json with the new status + duration, then update the DB row.
+    /// `enhancementStatus` defaults to `.ok` so existing call sites that only
+    /// distinguish "complete vs failed" don't have to thread the new param.
     @discardableResult
     public func finalize(
         id: String,
         status: SessionStatus,
-        durationSecs: TimeInterval
+        durationSecs: TimeInterval,
+        enhancementStatus: SessionEnhancementStatus = .ok
     ) async throws -> SessionRecord {
         // Read the existing JSON to preserve recordedAt / mode / language.
         let dir = sessionDir(for: id)
@@ -59,7 +62,8 @@ public actor SessionStore {
             durationSecs: durationSecs,
             mode: existing.mode,
             language: existing.language,
-            status: status
+            status: status,
+            enhancementStatus: enhancementStatus
         )
         try writeSessionJSON(updated, to: dir)
         try await database.updateSession(updated)

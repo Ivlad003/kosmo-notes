@@ -440,9 +440,25 @@ final class RecorderState {
                 try await store.append(segment)
             }
             try await store.close(overrideText: cleanedText)
+            // Track whether any opt-in enhancement step degraded silently.
+            // Audit §4.2 flagged that the user had no visible cue when an
+            // opted-in feature didn't run — `partial` surfaces that in the
+            // Library row.
+            var enhancement: SessionEnhancementStatus = .ok
             if settings.transcriptCleanupEnabled, cleanedText != result.text {
                 let rawURL = dir.appendingPathComponent("transcript.raw.txt")
                 try? AtomicWriter.write(Data(result.text.utf8), to: rawURL)
+            }
+            // Cleanup was opted in but produced no usable result (returned the
+            // raw text unchanged) → mark partial so the badge shows up.
+            // We can't distinguish "model returned identical text" from
+            // "fallback to raw" without a richer return type; for v1 we treat
+            // identity as the signal — false positives on perfectly-clean
+            // transcripts are acceptable cost.
+            if settings.transcriptCleanupEnabled,
+               cleanedText.trimmingCharacters(in: .whitespacesAndNewlines)
+                 == result.text.trimmingCharacters(in: .whitespacesAndNewlines) {
+                enhancement = .partial
             }
 
             // FTS index + DB row finalize — index the cleaned text so search
@@ -461,6 +477,16 @@ final class RecorderState {
                 sessionDir: dir,
                 sourceLanguage: result.language
             )
+            // Summary failed despite a non-empty transcript? Mark partial.
+            // tryGenerateSummary returns nil for: empty input (skip), missing
+            // API key (also fine — user not configured), cost-cap rejection
+            // (intentional skip), and real LLM failure. We only know the
+            // outcome; preserve a conservative "if non-empty input → expect
+            // a summary" rule.
+            if !cleanedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               lastSummaryURL == nil {
+                enhancement = .partial
+            }
 
             // Optional Markdown export — runs the cleaned transcript through
             // the user's custom system + user prompts and writes a `.md` to
@@ -474,7 +500,12 @@ final class RecorderState {
                 recordedAt: Date()
             )
 
-            try await sessionStore.finalize(id: sessionId, status: .complete, durationSecs: duration)
+            try await sessionStore.finalize(
+                id: sessionId,
+                status: .complete,
+                durationSecs: duration,
+                enhancementStatus: enhancement
+            )
 
             let preview = previewText(cleanedText)
             self.status = .complete(sessionId: sessionId, audioFile: audioFile, transcriptPreview: preview)

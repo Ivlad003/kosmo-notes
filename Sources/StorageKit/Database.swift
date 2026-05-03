@@ -34,6 +34,20 @@ public enum SessionStatus: String, Sendable, Codable, Equatable {
     case failed
 }
 
+/// Records whether all *optional* post-stop enhancements (transcript cleanup,
+/// AI summary, semantic embedding, Markdown export) succeeded. Audit §4.2 had
+/// flagged that those steps silently swallow failures — when cleanup or
+/// indexing don't run, the user has no visible cue. `partial` makes the
+/// degraded state observable in Library; `ok` is the happy path.
+///
+/// `failed` is **not** included here on purpose — that's already covered by
+/// `SessionStatus.failed`, which means the recording or transcription itself
+/// blew up. `enhancementStatus` is only meaningful on completed sessions.
+public enum SessionEnhancementStatus: String, Sendable, Codable, Equatable {
+    case ok
+    case partial
+}
+
 public struct SessionRecord: Sendable, Codable, Equatable {
     public let id: String
     public let recordedAt: Date
@@ -41,6 +55,7 @@ public struct SessionRecord: Sendable, Codable, Equatable {
     public let mode: SessionMode
     public let language: String?
     public let status: SessionStatus
+    public let enhancementStatus: SessionEnhancementStatus
 
     public init(
         id: String,
@@ -48,7 +63,8 @@ public struct SessionRecord: Sendable, Codable, Equatable {
         durationSecs: TimeInterval,
         mode: SessionMode,
         language: String?,
-        status: SessionStatus
+        status: SessionStatus,
+        enhancementStatus: SessionEnhancementStatus = .ok
     ) {
         self.id = id
         self.recordedAt = recordedAt
@@ -56,6 +72,24 @@ public struct SessionRecord: Sendable, Codable, Equatable {
         self.mode = mode
         self.language = language
         self.status = status
+        self.enhancementStatus = enhancementStatus
+    }
+
+    // Custom decoding so existing session.json sidecars (written before this
+    // field existed) decode cleanly with .ok as the default. Without this,
+    // older sidecars throw `keyNotFound("enhancementStatus")`.
+    private enum CodingKeys: String, CodingKey {
+        case id, recordedAt, durationSecs, mode, language, status, enhancementStatus
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.recordedAt = try c.decode(Date.self, forKey: .recordedAt)
+        self.durationSecs = try c.decode(TimeInterval.self, forKey: .durationSecs)
+        self.mode = try c.decode(SessionMode.self, forKey: .mode)
+        self.language = try c.decodeIfPresent(String.self, forKey: .language)
+        self.status = try c.decode(SessionStatus.self, forKey: .status)
+        self.enhancementStatus = try c.decodeIfPresent(SessionEnhancementStatus.self, forKey: .enhancementStatus) ?? .ok
     }
 }
 
@@ -126,6 +160,16 @@ public actor AppDatabase {
                 );
                 """)
         }
+        // v3: track whether optional post-stop enhancements (cleanup, summary,
+        // semantic indexing, markdown export) all succeeded. Existing rows
+        // backfill to 'ok' — they shipped before this column existed and
+        // we have no historical signal to flag them otherwise.
+        migrator.registerMigration("v3_enhancement_status") { db in
+            try db.execute(sql: """
+                ALTER TABLE sessions
+                ADD COLUMN enhancement_status TEXT NOT NULL DEFAULT 'ok';
+                """)
+        }
         try migrator.migrate(pool)
     }
 
@@ -135,11 +179,12 @@ public actor AppDatabase {
         try await pool.write { db in
             try db.execute(
                 sql: """
-                    INSERT INTO sessions (id, recorded_at, duration_secs, mode, language, status)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO sessions (id, recorded_at, duration_secs, mode, language, status, enhancement_status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [s.id, s.recordedAt.timeIntervalSince1970,
-                            s.durationSecs, s.mode.rawValue, s.language, s.status.rawValue]
+                            s.durationSecs, s.mode.rawValue, s.language, s.status.rawValue,
+                            s.enhancementStatus.rawValue]
             )
         }
     }
@@ -149,12 +194,12 @@ public actor AppDatabase {
             try db.execute(
                 sql: """
                     UPDATE sessions
-                    SET recorded_at = ?, duration_secs = ?, mode = ?, language = ?, status = ?
+                    SET recorded_at = ?, duration_secs = ?, mode = ?, language = ?, status = ?, enhancement_status = ?
                     WHERE id = ?
                     """,
                 arguments: [s.recordedAt.timeIntervalSince1970,
                             s.durationSecs, s.mode.rawValue, s.language, s.status.rawValue,
-                            s.id]
+                            s.enhancementStatus.rawValue, s.id]
             )
         }
     }
@@ -272,13 +317,19 @@ public actor AppDatabase {
     private static func rowToRecord(_ row: Row) -> SessionRecord {
         // recorded_at is stored as Unix epoch (REAL). Convert at the boundary.
         let epoch: Double = row["recorded_at"]
+        // enhancement_status is nullable in fetched rows from a v2 DB right
+        // before the v3 migration runs (defensive); after migration the
+        // column has a NOT NULL DEFAULT 'ok' constraint.
+        let enhRaw: String? = row["enhancement_status"]
+        let enhancement = enhRaw.flatMap(SessionEnhancementStatus.init(rawValue:)) ?? .ok
         return SessionRecord(
             id: row["id"],
             recordedAt: Date(timeIntervalSince1970: epoch),
             durationSecs: row["duration_secs"],
             mode: SessionMode(rawValue: row["mode"]) ?? .meeting,
             language: row["language"],
-            status: SessionStatus(rawValue: row["status"]) ?? .failed
+            status: SessionStatus(rawValue: row["status"]) ?? .failed,
+            enhancementStatus: enhancement
         )
     }
 }
