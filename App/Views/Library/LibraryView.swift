@@ -600,7 +600,15 @@ final class PlayerModel {
 
 // MARK: - AVPlayerRepresentable
 
-/// NSViewRepresentable wrapping AVPlayerView with floating controls.
+/// NSViewRepresentable wrapping AVPlayerView with inline controls.
+///
+/// Controls style is `.inline`, not `.floating`. `.floating` draws a
+/// translucent overlay panel that's larger than the player's own bounds,
+/// which bleeds onto sibling views in the VStack — for the 44pt audio-only
+/// frame in particular it covered the date header above and merged its
+/// time label into the action bar below ("Share" + "00:17" rendered
+/// touching). `.inline` keeps the scrubber + transport row inside the
+/// player's own frame.
 @available(macOS 14.0, *)
 struct AVPlayerRepresentable: NSViewRepresentable {
 
@@ -609,7 +617,7 @@ struct AVPlayerRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.player = model.player
-        view.controlsStyle = .floating
+        view.controlsStyle = .inline
         view.showsFullScreenToggleButton = false
         return view
     }
