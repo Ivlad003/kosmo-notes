@@ -40,7 +40,6 @@ public final class OpenRouterProvider: AIProvider, Sendable {
     // MARK: Defaults
 
     public static let defaultEndpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
-    public static let defaultModel = "anthropic/claude-3.5-sonnet"
 
     public static let defaultHTTPClient: HTTPClient = { request in
         try await URLSession.shared.data(for: request)
