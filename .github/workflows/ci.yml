@@ -42,7 +42,25 @@ jobs:
         # Same DEVELOPER_DIR reasoning, plus Swift Testing's __swift5_tests
         # section is only emitted by Xcode's toolchain — bare CLI swift
         # would silently run zero tests.
-        run: DEVELOPER_DIR=$(xcode-select -p) swift test
+        #
+        # Tests are split per target rather than `swift test` once because
+        # Swift Testing's cross-suite parallelism + AVFoundation's per-
+        # AVAssetWriter resource cost piles up too high on macos-15 GH
+        # runners and the worker process dies with SIGSEGV. Per-target
+        # invocations isolate each batch in its own process so the previous
+        # AVAssetWriter / AVAssetExportSession instances are reclaimed
+        # before the next batch starts. Slightly slower (each invocation
+        # rebuilds the test binary entry list) but deterministic.
+        run: |
+          set -e
+          export DEVELOPER_DIR=$(xcode-select -p)
+          for target in AIKitTests CaptureKitTests DependencyLifecycleTests \
+                        DictationKitTests SharingKitTests StorageKitTests \
+                        StreamingKitTests TranscriptionKitTests; do
+            echo "::group::swift test --filter $target"
+            swift test --filter "$target"
+            echo "::endgroup::"
+          done
 
       - name: xcodebuild build (Debug)
         # CI doesn't have Apple Development certs; project.yml pins
