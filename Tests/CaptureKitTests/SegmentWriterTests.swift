@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import CaptureKit
 
-@Suite("SegmentWriter tests")
+@Suite("SegmentWriter tests", .serialized)
 struct SegmentWriterTests {
 
     // MARK: - Helpers

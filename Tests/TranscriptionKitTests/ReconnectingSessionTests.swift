@@ -60,7 +60,7 @@ private func makeSession(
 
 // MARK: - Tests
 
-@Suite("ReconnectingSession — reconnect on disconnect")
+@Suite("ReconnectingSession — reconnect on disconnect", .serialized)
 struct ReconnectDisconnectTests {
 
     /// Disconnect mid-session → reconnect succeeds → events from BOTH transports flow.
@@ -101,7 +101,7 @@ struct ReconnectDisconnectTests {
     }
 }
 
-@Suite("ReconnectingSession — ring buffer replay")
+@Suite("ReconnectingSession — ring buffer replay", .serialized)
 struct RingBufferReplayTests {
 
     /// Ring buffer replays: enqueue 3 audio chunks, force disconnect, verify the
@@ -146,7 +146,7 @@ struct RingBufferReplayTests {
     }
 }
 
-@Suite("ReconnectingSession — max retries")
+@Suite("ReconnectingSession — max retries", .serialized)
 struct MaxRetriesTests {
 
     /// After 5 consecutive failures the events stream finishes (next() returns nil).
@@ -189,7 +189,7 @@ struct MaxRetriesTests {
     }
 }
 
-@Suite("ReconnectingSession — backoff schedule")
+@Suite("ReconnectingSession — backoff schedule", .serialized)
 struct BackoffScheduleTests {
 
     /// Verify that the sleep calls use the correct exponential schedule.
@@ -231,7 +231,7 @@ struct BackoffScheduleTests {
     }
 }
 
-@Suite("ReconnectingSession — ring buffer aging")
+@Suite("ReconnectingSession — ring buffer aging", .serialized)
 struct RingBufferAgingTests {
 
     /// Recent chunks (within 5 s) are replayed after reconnect.

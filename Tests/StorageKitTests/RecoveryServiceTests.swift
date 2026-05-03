@@ -5,7 +5,7 @@ import Testing
 
 // MARK: - RecoveryServiceTests
 
-@Suite("RecoveryService tests")
+@Suite("RecoveryService tests", .serialized)
 struct RecoveryServiceTests {
 
     // MARK: - Helpers

@@ -11,7 +11,7 @@ import Testing
 // The tests feed synthetic PCM buffers to a MockAudioEngine and verify that
 // segment files are written to the expected directory structure.
 
-@Suite("CaptureSession tests (mic-only, no TCC required)")
+@Suite("CaptureSession tests (mic-only, no TCC required)", .serialized)
 struct CaptureSessionTests {
 
     private func makeTempDir() throws -> URL {

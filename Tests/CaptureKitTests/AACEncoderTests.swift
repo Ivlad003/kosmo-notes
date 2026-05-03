@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import CaptureKit
 
-@Suite("AACEncoder tests")
+@Suite("AACEncoder tests", .serialized)
 struct AACEncoderTests {
 
     @Test("AACEncoder initializes successfully")
