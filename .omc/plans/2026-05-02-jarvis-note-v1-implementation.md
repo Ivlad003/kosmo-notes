@@ -1,9 +1,11 @@
 # Jarvis Note v1.0 — Implementation Plan (scope-reduced after Critic review)
 
+> **⚠️ SUPERSEDED 2026-05-03.** This document captures the original v1.0 scope cut as of 2026-05-02. **What actually shipped is broader** — Voice Note Mode, S3 sharing, per-process Core Audio Tap, embedding-based semantic search, and screen recording all landed in v1.0 (see `CLAUDE.md` "Features added 2026-05-03"). The deployment target is also **macOS 14.0+, not 12.3+** (see `CLAUDE.md` "Stack invariants"). Use this document for historical context on the planning constraints; use `CLAUDE.md` and `docs/audits/2026-05-03-architecture-code-spec-audit.md` for current reality.
+
 **Date:** 2026-05-02
 **Source design:** `docs/plans/2026-05-02-jarvis-note-design.md`
 **Cross-cutting invariants:** `CLAUDE.md`
-**Target platforms:** macOS 12.3+ — single audio path via ScreenCaptureKit (whole-system mixdown). **Per-process Core Audio Tap is deferred to v1.1.**
+**Target platforms:** macOS 12.3+ — single audio path via ScreenCaptureKit (whole-system mixdown). **Per-process Core Audio Tap is deferred to v1.1.** *(Both reversed 2026-05-03 — see banner above.)*
 **Stack:** Pure Swift / SwiftUI / AppKit · `AVAudioEngine` · `ScreenCaptureKit` audio · `URLSession` · `GRDB.swift` · macOS Keychain
 **Distribution:** Hand-shared `.app.zip`. No code signing, no notarization, no auto-update.
 
