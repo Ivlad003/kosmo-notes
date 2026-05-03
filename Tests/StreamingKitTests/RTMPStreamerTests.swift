@@ -199,3 +199,101 @@ struct RTMPStreamerStateTests {
         #expect(observed == [.connecting, .publishing])
     }
 }
+
+// MARK: - Mid-stream event handling
+
+@Suite("RTMPStreamer mid-stream events")
+struct RTMPStreamerEventTests {
+
+    private static let validConfig = RTMPConfig(rtmpURL: "rtmp://example.com/live", streamKey: "k")
+
+    /// Helper: spin until the streamer reaches a target state or we time out.
+    /// Polls at 10 ms — fast enough that healthy state transitions resolve in
+    /// a single iteration, and slow enough to never busy-loop noticeably.
+    private static func waitForState(
+        _ streamer: RTMPStreamer,
+        matching predicate: @escaping (RTMPStreamer.State) -> Bool,
+        timeout: Duration = .milliseconds(500)
+    ) async -> RTMPStreamer.State? {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            let s = await streamer.state
+            if predicate(s) { return s }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return nil
+    }
+
+    @Test("Mid-stream .failed event flips .publishing → .failed")
+    func midStreamFailureFlipsState() async throws {
+        let mock = MockRTMPTransport()
+        let streamer = RTMPStreamer(transport: mock)
+        try await streamer.start(config: Self.validConfig)
+        #expect(await streamer.state == .publishing)
+
+        mock.simulate(.failed(.publishFailed(message: "stream key conflict")))
+
+        let final = await Self.waitForState(streamer, matching: {
+            if case .failed = $0 { return true } else { return false }
+        })
+        if case .failed(let message) = final {
+            #expect(message.contains("stream key conflict"))
+        } else {
+            Issue.record("expected .failed state, got \(String(describing: final))")
+        }
+    }
+
+    @Test("Unsolicited .closed event while .publishing flips to .failed")
+    func unsolicitedCloseFlipsToFailed() async throws {
+        let mock = MockRTMPTransport()
+        let streamer = RTMPStreamer(transport: mock)
+        try await streamer.start(config: Self.validConfig)
+
+        mock.simulate(.closed)
+
+        let final = await Self.waitForState(streamer, matching: {
+            if case .failed = $0 { return true } else { return false }
+        })
+        if case .failed(let message) = final {
+            #expect(message.contains("RTMP peer closed"))
+        } else {
+            Issue.record("expected .failed state, got \(String(describing: final))")
+        }
+    }
+
+    @Test("User-initiated stop ends in .idle (not .failed) — graceful close path")
+    func userInitiatedStopStaysIdle() async throws {
+        let mock = MockRTMPTransport()
+        let streamer = RTMPStreamer(transport: mock)
+        try await streamer.start(config: Self.validConfig)
+
+        // stop() cancels the event-drain task BEFORE close() yields .closed,
+        // so the .closed event must NOT cause a spurious .failed transition.
+        await streamer.stop()
+        // Give the drain task a tick in case it hadn't been cancelled yet.
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await streamer.state == .idle)
+    }
+
+    @Test(".failed event while .idle is ignored")
+    func failedEventWhileIdleIgnored() async {
+        let mock = MockRTMPTransport()
+        let streamer = RTMPStreamer(transport: mock)
+        // Never started — state is .idle. Simulating events shouldn't reach
+        // any handler because the eventTask isn't subscribed yet.
+        mock.simulate(.failed(.connectionFailed(message: "noise")))
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await streamer.state == .idle)
+    }
+
+    @Test("Re-yielded .publishing event doesn't loop the state stream")
+    func duplicatePublishingEventNoOp() async throws {
+        let mock = MockRTMPTransport()
+        let streamer = RTMPStreamer(transport: mock)
+        try await streamer.start(config: Self.validConfig)
+        // Already .publishing from start(); a confirming event should remain a no-op.
+        mock.simulate(.publishing)
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await streamer.state == .publishing)
+    }
+}

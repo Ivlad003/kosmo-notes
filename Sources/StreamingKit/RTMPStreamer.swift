@@ -10,6 +10,12 @@ import Foundation
 /// tests inject a `MockRTMPTransport` so the state machine can be exercised
 /// without opening a real socket.
 ///
+/// Subscribes to `transport.events` while a stream is active so mid-stream
+/// failures (peer drop, publish-rejected, network error) flip `state` to
+/// `.failed(message:)` instead of leaving a zombie that thinks it's still
+/// publishing. The event subscription is cancelled in `stop()` so a
+/// user-initiated close doesn't masquerade as a failure.
+///
 /// `appendAudio` / `appendVideo` are no-ops outside `.publishing` so callers
 /// (the eventual `CaptureSession` tee) can wire them unconditionally and let
 /// the streamer drop samples while the stream is offline.
@@ -37,6 +43,10 @@ public actor RTMPStreamer {
     private let stateStream: AsyncStream<State>
     private let stateContinuation: AsyncStream<State>.Continuation
     private var activeConfig: RTMPConfig?
+    /// Task draining `transport.events` while a session is active. Cancelled
+    /// in `stop()` so the .closed event we emit during user-initiated teardown
+    /// doesn't trigger a spurious .failed transition.
+    private var eventTask: Task<Void, Never>?
 
     // MARK: Init
 
@@ -51,6 +61,7 @@ public actor RTMPStreamer {
 
     deinit {
         stateContinuation.finish()
+        eventTask?.cancel()
     }
 
     // MARK: Public API
@@ -80,6 +91,7 @@ public actor RTMPStreamer {
         do {
             try await transport.connectAndPublish(url: config.rtmpURL, streamKey: config.streamKey)
             transition(to: .publishing)
+            await startEventTask()
         } catch {
             // Map any transport error to .failed and clear active config.
             // Surface a typed StreamingError so the UI gets a stable case set
@@ -105,6 +117,11 @@ public actor RTMPStreamer {
         case .idle, .failed:
             return
         case .connecting, .publishing:
+            // Cancel event subscription FIRST so the .closed event we yield
+            // during transport.close() doesn't race with the manual transition
+            // below and turn into a spurious .failed.
+            eventTask?.cancel()
+            eventTask = nil
             await transport.close()
             activeConfig = nil
             transition(to: .idle)
@@ -132,5 +149,49 @@ public actor RTMPStreamer {
         guard state != next else { return }
         state = next
         stateContinuation.yield(next)
+    }
+
+    /// Spin up the transport-event drain task. Mid-stream events
+    /// (`.failed`, unsolicited `.closed`) flip our state to `.failed` so the
+    /// UI sees the dead stream. `.publishing` events are informational —
+    /// we already transitioned optimistically in `start()`.
+    private func startEventTask() async {
+        let stream = await transport.events
+        eventTask = Task { [weak self] in
+            for await event in stream {
+                guard let self else { return }
+                await self.handle(event: event)
+            }
+        }
+    }
+
+    private func handle(event: TransportEvent) {
+        switch event {
+        case .publishing:
+            // Provider confirmed publish-start. We already optimistically
+            // transitioned to .publishing on connectAndPublish returning;
+            // this event is informational. Re-yield to keep the state stream
+            // consistent if a subscriber missed the first transition.
+            if state != .publishing {
+                transition(to: .publishing)
+            }
+        case .failed(let err):
+            // Mid-stream failure during .publishing OR a late failure during
+            // .connecting both flip us to .failed. Once .failed, ignore
+            // further transport noise.
+            switch state {
+            case .publishing, .connecting:
+                transition(to: .failed(message: err.errorDescription ?? "Stream failed"))
+            case .idle, .failed:
+                break
+            }
+        case .closed:
+            // Unsolicited peer-close while .publishing → .failed.
+            // User-initiated stop() cancels eventTask before close() yields
+            // .closed, so a graceful close never reaches this handler.
+            if case .publishing = state {
+                transition(to: .failed(message: "RTMP peer closed the connection unexpectedly"))
+            }
+        }
     }
 }

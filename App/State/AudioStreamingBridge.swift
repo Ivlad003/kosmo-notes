@@ -60,6 +60,15 @@ final class AudioStreamingBridge {
             return
         }
 
+        // One-time privacy confirmation — first stream surfaces a modal
+        // explaining that audio leaves the machine in real time. User can
+        // cancel here, in which case the recording proceeds locally without
+        // a parallel RTMP stream.
+        guard StreamingPrivacyConfirm.confirm(settings: settings) else {
+            bridgeLog.info("AudioStreamingBridge.startIfEnabled: user declined privacy confirmation — skipping")
+            return
+        }
+
         sampleClock.reset()
 
         let cfg = RTMPConfig(rtmpURL: settings.rtmpURL, streamKey: settings.rtmpStreamKey)
@@ -103,29 +112,6 @@ final class AudioStreamingBridge {
     }
 }
 
-// MARK: - SampleClock
-
-/// Single-writer monotonic sample-time counter. The bridge's `ingest` callback
-/// is the only writer; readers (the `Task.detached` capture) snapshot via
-/// `advance(by:sampleRate:)`. `NSLock` is used here because `ingest` is
-/// `nonisolated` and called from the capture pipeline outside any actor —
-/// that's fine for a sync (non-async) method.
-private final class SampleClock: @unchecked Sendable {
-    private let lock = NSLock()
-    private var sampleTime: Int64 = 0
-
-    func reset() {
-        lock.lock(); sampleTime = 0; lock.unlock()
-    }
-
-    /// Advance by `frames` and return an AVAudioTime stamped at the *start*
-    /// of the chunk (sampleTime BEFORE advancing). HaishinKit / FFmpeg
-    /// conventions both treat the timestamp as the chunk's leading edge.
-    func advance(by frames: Int, sampleRate: Double) -> AVAudioTime {
-        lock.lock()
-        let start = sampleTime
-        sampleTime += Int64(frames)
-        lock.unlock()
-        return AVAudioTime(sampleTime: start, atRate: sampleRate)
-    }
-}
+// SampleClock now lives in StreamingKit (Sources/StreamingKit/SampleClock.swift)
+// so it's unit-testable from the SPM test target — App/ doesn't have a
+// configured XCTest target.

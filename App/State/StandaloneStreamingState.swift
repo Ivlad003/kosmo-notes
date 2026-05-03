@@ -76,6 +76,14 @@ final class StandaloneStreamingState {
             return
         }
 
+        // One-time privacy confirmation. Reused between sync (RecorderState
+        // path) and standalone — both flows funnel through StreamingPrivacyConfirm
+        // so the user only ever sees the modal once.
+        guard StreamingPrivacyConfirm.confirm(settings: settings) else {
+            standaloneLog.info("StandaloneStreaming.start: user declined privacy confirmation — aborting")
+            return
+        }
+
         // Pre-flight: mic permission. First call triggers the OS prompt; cached
         // on subsequent calls. Standalone streaming has no other pre-flight —
         // unlike RecorderState it doesn't need transcription keys, screen

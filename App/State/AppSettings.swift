@@ -253,6 +253,11 @@ final class AppSettings {
         // OBS, MediaMTX, YouTube ingest URLs are public).
         static let streamingEnabled = "streamingEnabled"
         static let rtmpURL = "rtmpURL"
+        // Whether the user has dismissed the one-time privacy modal explaining
+        // that RTMP streaming sends mic / system audio / screen frames in real
+        // time to the configured destination. Set once on first ack; we never
+        // re-prompt — Settings → Streaming has the same warning text.
+        static let streamingPrivacyAcknowledged = "streamingPrivacyAcknowledged"
         // Storage profile + codec overrides
         static let storageProfile = "storageProfile"
         static let audioCodec = "audioCodec"
@@ -575,6 +580,13 @@ final class AppSettings {
     /// when the user finishes editing in Settings → Streaming. Same pattern
     /// as `s3SecretKey` and the API keys.
     var rtmpStreamKey: String = ""
+    /// User has acknowledged the one-time RTMP privacy modal. Set true after
+    /// the first OK on the modal in `StreamingPrivacyConfirm`. Once true, we
+    /// never re-prompt — the same warning text lives in Settings → Streaming
+    /// for users who want to revisit it.
+    var streamingPrivacyAcknowledged: Bool {
+        didSet { UserDefaults.standard.set(streamingPrivacyAcknowledged, forKey: Defaults.streamingPrivacyAcknowledged) }
+    }
     /// Presigned URL TTL in hours. Default 168 (7 days, the S3 max for sigv4).
     var s3PresignTTLHours: Int {
         didSet { UserDefaults.standard.set(s3PresignTTLHours, forKey: Defaults.s3PresignTTLHours) }
@@ -809,6 +821,7 @@ final class AppSettings {
 
         self.streamingEnabled = UserDefaults.standard.bool(forKey: Defaults.streamingEnabled)
         self.rtmpURL = UserDefaults.standard.string(forKey: Defaults.rtmpURL) ?? ""
+        self.streamingPrivacyAcknowledged = UserDefaults.standard.bool(forKey: Defaults.streamingPrivacyAcknowledged)
         // rtmpStreamKey is read from Keychain at the end of init via
         // loadKeysFromKeychain — see the openaiApiKey / s3SecretKey pattern.
 

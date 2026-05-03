@@ -1,6 +1,28 @@
 @preconcurrency import AVFoundation
 import Foundation
 
+// MARK: - TransportEvent
+
+/// Mid-stream lifecycle signals surfaced by an RTMP transport AFTER
+/// `connectAndPublish` has resolved. `RTMPStreamer` subscribes to these and
+/// updates its public `state` accordingly so users see "stream dropped"
+/// instead of a silent zombie that thinks it's still publishing.
+///
+///   - `.publishing` — provider has accepted the publish command (e.g. RTMP
+///     `NetStream.Publish.Start`). HaishinKit buffers samples before this
+///     event fires; arrival of `.publishing` confirms the muxer is live.
+///   - `.failed(error)` — handshake / publish / mid-stream error from the
+///     transport. RTMPStreamer transitions to `.failed(message:)`.
+///   - `.closed` — peer or local close (graceful or unexpected). For a
+///     graceful close after `transport.close()`, RTMPStreamer suppresses the
+///     event by inspecting its current state; an unsolicited `.closed` while
+///     `.publishing` is treated as a failure.
+public enum TransportEvent: Sendable, Equatable {
+    case publishing
+    case failed(StreamingError)
+    case closed
+}
+
 // MARK: - RTMPTransport
 
 /// Internal abstraction over an RTMP publish session. Decouples `RTMPStreamer`
@@ -9,14 +31,26 @@ import Foundation
 ///
 /// The contract is intentionally minimal:
 ///   - `connectAndPublish` opens the socket, performs the RTMP handshake, and
-///     issues the publish command. It throws if any of that fails.
+///     issues the publish command. It throws if any of that fails synchronously
+///     (validation, socket-creation errors). Mid-stream failures are not
+///     thrown — they arrive on `events` instead.
 ///   - `appendAudio` / `appendVideo` push one chunk onto the live stream.
 ///     Implementations are expected to be tolerant of being called before
 ///     `connectAndPublish` finishes — HaishinKit, for example, buffers
 ///     internally until the connection is established.
+///   - `events` is a single shared AsyncStream of mid-stream lifecycle
+///     events. Subscribing more than once consumes the same stream — the
+///     intended consumer is `RTMPStreamer`, which subscribes once and never
+///     reaches `events` from outside the actor again.
 ///   - `close` tears the session down. Idempotent — calling on a non-active
 ///     transport is a no-op.
 public protocol RTMPTransport: Sendable {
+
+    /// Stream of mid-stream lifecycle signals (publish-start, mid-stream
+    /// failure, peer close). Single-consumer — production wiring has
+    /// `RTMPStreamer` subscribe once at start; multiple subscribers will
+    /// race for events and miss them.
+    var events: AsyncStream<TransportEvent> { get async }
 
     /// Open the RTMP socket and start publishing under `streamKey`. Throws on
     /// invalid URL, socket failure, handshake rejection. `RTMPStreamer` maps
