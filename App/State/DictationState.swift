@@ -34,6 +34,12 @@ final class DictationState {
     private let settings: AppSettings
     private var pipeline: DictationPipeline?
     private let hotkeyMonitor = HotkeyMonitor()
+    /// Subscription ID when the active trigger is routed through KeyTriggerEngine
+    /// (.holdKey). Nil when using the legacy KeyboardShortcuts combo path.
+    private var engineSubscription: KeyTriggerEngine.SubscriptionID?
+    /// NotificationCenter token observing AppSettings.dictationTriggerDidChange,
+    /// so a Settings change re-registers the hotkey live.
+    private var triggerChangeObserver: NSObjectProtocol?
 
     // MARK: - Init
 
@@ -43,25 +49,86 @@ final class DictationState {
 
     // MARK: - Public API
 
-    /// Wire up the hotkey monitor. Call once on launch.
+    /// Wire up the hotkey monitor. Call once on launch. Picks between the
+    /// KeyboardShortcuts combo path and the CGEventTap engine based on the
+    /// currently configured `settings.dictationTrigger`. Also subscribes to
+    /// AppSettings.dictationTriggerDidChange so Settings edits take effect
+    /// without a relaunch.
     func install() {
-        hotkeyMonitor.startMonitoring(
-            onPress: { [weak self] in
-                Task { @MainActor [weak self] in
-                    await self?.handlePress()
-                }
-            },
-            onRelease: { [weak self] in
-                Task { @MainActor [weak self] in
-                    await self?.handleRelease()
-                }
+        installTrigger(settings.dictationTrigger)
+        triggerChangeObserver = NotificationCenter.default.addObserver(
+            forName: AppSettings.dictationTriggerDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // Hop back to MainActor explicitly — NotificationCenter delivers on
+            // the queue we passed but the closure isn't main-actor-isolated.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.reinstall(trigger: self.settings.dictationTrigger)
             }
-        )
+        }
     }
 
-    /// Remove hotkey callbacks.
+    /// Remove hotkey callbacks for whichever path is currently active and stop
+    /// observing trigger-change notifications.
     func uninstall() {
         hotkeyMonitor.stopMonitoring()
+        if let id = engineSubscription {
+            KeyTriggerEngine.shared.unregister(id)
+            engineSubscription = nil
+        }
+        if let token = triggerChangeObserver {
+            NotificationCenter.default.removeObserver(token)
+            triggerChangeObserver = nil
+        }
+    }
+
+    /// Tear down + re-install the hotkey under a new trigger configuration.
+    /// Call this from Settings when the user picks a different trigger so the
+    /// change takes effect without a relaunch.
+    func reinstall(trigger: HotkeyTrigger) {
+        uninstall()
+        installTrigger(trigger)
+    }
+
+    // MARK: - Private installation
+
+    private func installTrigger(_ trigger: HotkeyTrigger) {
+        switch trigger {
+        case .combo:
+            hotkeyMonitor.startMonitoring(
+                onPress: { [weak self] in
+                    Task { @MainActor [weak self] in await self?.handlePress() }
+                },
+                onRelease: { [weak self] in
+                    Task { @MainActor [weak self] in await self?.handleRelease() }
+                }
+            )
+        case .holdKey:
+            engineSubscription = KeyTriggerEngine.shared.register(
+                trigger: trigger,
+                onPress: { [weak self] in
+                    Task { @MainActor [weak self] in await self?.handlePress() }
+                },
+                onRelease: { [weak self] in
+                    Task { @MainActor [weak self] in await self?.handleRelease() }
+                }
+            )
+            if engineSubscription == nil {
+                // Engine refused (.combo would, but already filtered above) or
+                // Accessibility permission missing. Fall back to combo path so
+                // the user always has *some* working hotkey.
+                dictationLog.error("Dictation.installTrigger: KeyTriggerEngine.register returned nil — falling back to .combo")
+                installTrigger(.combo)
+            }
+        case .doubleTapModifier:
+            // Dictation is push-to-talk — there's no meaningful "release" event
+            // for a double-tap. Refuse and fall back so the feature stays usable
+            // even if a user JSON-edits the pref to an unsupported variant.
+            dictationLog.error("Dictation.installTrigger: .doubleTapModifier is not supported for push-to-talk; falling back to .combo")
+            installTrigger(.combo)
+        }
     }
 
     // MARK: - Private

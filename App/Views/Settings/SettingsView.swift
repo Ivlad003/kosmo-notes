@@ -577,15 +577,67 @@ private struct ConnectionTestRow: View {
 private struct DictationTab: View {
     @Bindable var settings: AppSettings
 
+    /// Categorised picker value — collapses HotkeyTrigger's enum cases into the
+    /// two variants Dictation supports (push-to-talk has no meaning for double-
+    /// tap). Bound to settings.dictationTrigger via `triggerKindBinding` below.
+    private enum TriggerKind: String, CaseIterable, Identifiable {
+        case combo
+        case holdKey
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .combo:   return "Key combination"
+            case .holdKey: return "Hold a key"
+            }
+        }
+    }
+
+    /// Default ms threshold for fresh .holdKey selections. 200 ms is short
+    /// enough to feel instant but long enough that a stray brush of the key
+    /// doesn't fire dictation.
+    private static let defaultHoldMs = 200
+
     var body: some View {
         Form {
             Section("Hotkey") {
                 Text("Press and hold the global hotkey to dictate. Release to paste a cleaned transcript into the focused text field.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                Text("Default: ⌘⇧D — change in System Settings → Keyboard → Shortcuts → App Shortcuts (custom binding lands in v1.1).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+
+                Picker("Trigger type", selection: triggerKindBinding) {
+                    ForEach(TriggerKind.allCases) { kind in
+                        Text(kind.displayName).tag(kind)
+                    }
+                }
+
+                switch settings.dictationTrigger {
+                case .combo:
+                    KeyboardShortcuts.Recorder("Combination", name: .dictation)
+                    Text("Default: ⌘⇧D. Click the recorder to rebind. Uses the system hotkey API — no extra permissions required.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                case .holdKey(let key, let ms):
+                    Picker("Key", selection: holdKeyBinding(currentMs: ms)) {
+                        ForEach(HoldKey.allCases, id: \.self) { k in
+                            Text(k.displayName).tag(k)
+                        }
+                    }
+                    Stepper(value: holdMsBinding(currentKey: key), in: 50...2000, step: 50) {
+                        Text("Hold for \(ms) ms")
+                    }
+                    Text("Hold the chosen key past the threshold to start; release to stop. Requires Accessibility permission (System Settings → Privacy & Security → Accessibility) — first install will prompt.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                case .doubleTapModifier:
+                    // Defensive: if a stale pref lands here, .install() falls
+                    // back to .combo at runtime. Show a hint so the UI doesn't
+                    // look broken.
+                    Text("Double-tap is not supported for push-to-talk dictation. Pick Combination or Hold instead.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
 
             Section("Cleanup") {
@@ -611,6 +663,65 @@ private struct DictationTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - Bindings
+
+    /// Maps `settings.dictationTrigger` to the simplified `TriggerKind` picker.
+    /// Setting either case from the picker assigns a sensible default trigger
+    /// payload — the user can then refine the held key / threshold below.
+    private var triggerKindBinding: Binding<TriggerKind> {
+        Binding(
+            get: {
+                switch settings.dictationTrigger {
+                case .combo:                return .combo
+                case .holdKey:              return .holdKey
+                case .doubleTapModifier:    return .combo  // unsupported variant collapses
+                }
+            },
+            set: { newKind in
+                switch newKind {
+                case .combo:
+                    settings.dictationTrigger = .combo
+                case .holdKey:
+                    // Preserve any prior hold-key choice; default to Right ⌘
+                    // because it's the closest thing macOS has to a dedicated
+                    // push-to-talk key (no accidental conflicts with text input).
+                    if case .holdKey = settings.dictationTrigger {
+                        // Already a holdKey — keep current sub-config.
+                        break
+                    }
+                    settings.dictationTrigger = .holdKey(.rightCommand, minHoldMs: Self.defaultHoldMs)
+                }
+            }
+        )
+    }
+
+    /// Bind only the held-key sub-field of a `.holdKey` trigger; preserves the
+    /// caller-visible ms threshold so editing the key doesn't reset the timing.
+    private func holdKeyBinding(currentMs: Int) -> Binding<HoldKey> {
+        Binding(
+            get: {
+                if case .holdKey(let k, _) = settings.dictationTrigger { return k }
+                return .rightCommand
+            },
+            set: { newKey in
+                settings.dictationTrigger = .holdKey(newKey, minHoldMs: currentMs)
+            }
+        )
+    }
+
+    /// Bind only the ms threshold of a `.holdKey` trigger; preserves the held key.
+    private func holdMsBinding(currentKey: HoldKey) -> Binding<Int> {
+        Binding(
+            get: {
+                if case .holdKey(_, let ms) = settings.dictationTrigger { return ms }
+                return Self.defaultHoldMs
+            },
+            set: { newMs in
+                settings.dictationTrigger = .holdKey(currentKey, minHoldMs: newMs)
+            }
+        )
     }
 }
 

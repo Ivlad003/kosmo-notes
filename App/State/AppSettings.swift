@@ -1,5 +1,6 @@
 import Foundation
 import AIKit
+import DictationKit
 @preconcurrency import KeychainAccess
 import Observation
 
@@ -185,6 +186,10 @@ final class AppSettings {
         // pass after Whisper/Deepgram. Reuses the configured llmProvider; default ON.
         static let transcriptCleanupEnabled = "transcriptCleanupEnabled"
         static let dictationMaxSeconds = "dictationMaxSeconds"
+        // How the Dictation hotkey is delivered. JSON-encoded HotkeyTrigger
+        // because the enum carries associated values (hold ms, etc) so a plain
+        // raw-value can't round-trip it.
+        static let dictationTrigger = "dictationTrigger"
         static let voiceNoteKind = "voiceNoteKind"
         static let openrouterModel = "openrouterModel"
         static let semanticSearchEnabled = "semanticSearchEnabled"
@@ -431,6 +436,24 @@ final class AppSettings {
     var dictationMaxSeconds: Int {
         didSet { UserDefaults.standard.set(dictationMaxSeconds, forKey: Defaults.dictationMaxSeconds) }
     }
+
+    /// How the Dictation hotkey fires. Default `.combo` keeps the historical
+    /// ⌘⇧D shortcut wired through `KeyboardShortcuts`. `.holdKey` and
+    /// `.doubleTapModifier` route through `KeyTriggerEngine` (CGEventTap +
+    /// Accessibility permission).
+    var dictationTrigger: HotkeyTrigger {
+        didSet {
+            if let data = try? JSONEncoder().encode(dictationTrigger) {
+                UserDefaults.standard.set(data, forKey: Defaults.dictationTrigger)
+            }
+            NotificationCenter.default.post(name: AppSettings.dictationTriggerDidChange, object: nil)
+        }
+    }
+
+    /// Posted on the default NotificationCenter whenever `dictationTrigger`
+    /// is reassigned (e.g. via the Settings UI). DictationState subscribes to
+    /// re-register the hotkey without requiring an app relaunch.
+    static let dictationTriggerDidChange = Notification.Name("dev.kosmonotes.studio.dictationTriggerDidChange")
 
     /// Run the long-form meeting / voice-note transcript through an LLM cleanup
     /// pass after Whisper / Deepgram / Gemini transcribes. Reuses the configured
@@ -684,6 +707,14 @@ final class AppSettings {
         self.transcriptCleanupEnabled = (UserDefaults.standard.object(forKey: Defaults.transcriptCleanupEnabled) as? Bool) ?? true
         let maxSecs = UserDefaults.standard.integer(forKey: Defaults.dictationMaxSeconds)
         self.dictationMaxSeconds = maxSecs > 0 ? maxSecs : 60
+
+        // dictationTrigger: JSON blob in UserDefaults, .combo if absent / corrupt.
+        if let data = UserDefaults.standard.data(forKey: Defaults.dictationTrigger),
+           let decoded = try? JSONDecoder().decode(HotkeyTrigger.self, from: data) {
+            self.dictationTrigger = decoded
+        } else {
+            self.dictationTrigger = .combo
+        }
 
         let kindRaw = UserDefaults.standard.string(forKey: Defaults.voiceNoteKind) ?? PromptTemplates.VoiceNoteKind.freeform.rawValue
         self.voiceNoteKind = PromptTemplates.VoiceNoteKind(rawValue: kindRaw) ?? .freeform
