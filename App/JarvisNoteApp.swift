@@ -33,6 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chatHolder: AnyObject?           // ChatState (macOS 14+)
     private var dictationHolder: AnyObject?      // DictationState (macOS 14+)
     private var pushToMarkdownHolder: AnyObject? // PushToMarkdownState (macOS 14+)
+    private var agentSessionHolder: AnyObject?   // AgentSessionState (macOS 14+)
+    private var agentHotkeyHolder: AnyObject?    // AgentHotkeyState (macOS 14+)
+    private var agentConsoleHolder: AnyObject?   // AgentConsoleWindowController (macOS 14+)
 
     // Library window controller. Stored as AnyObject to avoid @available on
     // a stored property (Swift disallows that). Cast at use-site with #available.
@@ -216,6 +219,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         chatItem.target = self
         menu.addItem(chatItem)
 
+        let agentItem = NSMenuItem(title: "Agent Console…",
+                                   action: #selector(openAgentConsole),
+                                   keyEquivalent: "")
+        agentItem.target = self
+        menu.addItem(agentItem)
+
         menu.addItem(.separator())
 
         let settingsItem = NSMenuItem(title: "Settings…",
@@ -318,6 +327,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let p2md = PushToMarkdownState(settings: settings, sessionStore: sessionStore)
             p2md.install()
             self.pushToMarkdownHolder = p2md
+
+            // Autonomous agent: voice instruction → tool-using Claude loop
+            // restricted to the workspace folder. Hotkey installs even when
+            // disabled (it bails inside handlePress on the toggle), so a
+            // future enable doesn't require relaunch.
+            let agentSession = AgentSessionState(settings: settings)
+            self.agentSessionHolder = agentSession
+            let agentHotkey = AgentHotkeyState(settings: settings, agentSession: agentSession)
+            agentHotkey.install()
+            self.agentHotkeyHolder = agentHotkey
 
             // Force a menu refresh so any stale "Recording requires macOS 14+"
             // labels flip to the real recorder-ready titles.
@@ -521,6 +540,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
+    @objc private func openAgentConsole() {
+        guard #available(macOS 14.0, *) else { return }
+        guard let session = agentSessionHolder as? AgentSessionState else { return }
+        let controller: AgentConsoleWindowController
+        if let existing = agentConsoleHolder as? AgentConsoleWindowController {
+            controller = existing
+        } else {
+            controller = AgentConsoleWindowController()
+            agentConsoleHolder = controller
+        }
+        controller.open(session: session, windowDelegate: self)
+    }
+
+    @MainActor
     @objc private func openChat() {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
@@ -683,6 +716,10 @@ extension AppDelegate: NSWindowDelegate {
         case "chat":
             chatWindow = nil
             chatHolder = nil
+        case "agentConsole":
+            if #available(macOS 14.0, *) {
+                (agentConsoleHolder as? AgentConsoleWindowController)?.didClose()
+            }
         default:
             break
         }
@@ -702,10 +739,18 @@ extension AppDelegate: NSWindowDelegate {
             }
             return false
         }()
+        let agentConsoleVisible: Bool = {
+            if #available(macOS 14.0, *),
+               let controller = agentConsoleHolder as? AgentConsoleWindowController {
+                return controller.isVisible
+            }
+            return false
+        }()
         let anyVisible = settingsWindow != nil
             || onboardingWindow != nil
             || chatWindow != nil
             || libraryVisible
+            || agentConsoleVisible
         if !anyVisible {
             NSApp.setActivationPolicy(.accessory)
         }

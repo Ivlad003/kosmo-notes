@@ -37,6 +37,9 @@ struct SettingsView: View {
             MarkdownExportTab(settings: settings)
                 .tabItem { Label("Markdown", systemImage: "doc.text") }
 
+            AgentTab(settings: settings)
+                .tabItem { Label("Agent", systemImage: "wand.and.rays") }
+
             PrivacyTab()
                 .tabItem { Label("Privacy", systemImage: "lock.shield") }
         }
@@ -667,6 +670,7 @@ private struct HotkeysTab: View {
                 KeyboardShortcuts.Recorder("Open Library", name: .openLibrary)
                 KeyboardShortcuts.Recorder("Dictation (push-to-talk)", name: .dictation)
                 KeyboardShortcuts.Recorder("Push-to-Markdown (hold + speak → save .md)", name: .pushToMarkdown)
+                KeyboardShortcuts.Recorder("Agent (hold + speak → autonomous agent)", name: .agentTrigger)
             }
 
             Section("Defaults") {
@@ -1107,6 +1111,97 @@ private extension AudioInputDevice {
     /// touching the enumerator directly.
     static func fresh() -> [AudioInputDevice] {
         AudioDeviceEnumerator.inputDevices()
+    }
+}
+
+// MARK: - AgentTab
+
+/// Settings for the autonomous voice-driven agent. Toggle, hotkey rebind
+/// hint, workspace folder picker, max-iterations cap, and a TextEditor for
+/// the system prompt.
+@available(macOS 14.0, *)
+private struct AgentTab: View {
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        Form {
+            Section("Autonomous agent") {
+                Toggle("Enable agent hotkey", isOn: $settings.agentEnabled)
+                Text("Hold ⌘⇧A (rebindable in Settings → Hotkeys), speak an instruction, release. Whisper transcribes; Claude runs an autonomous tool-use loop with bash / read_file / write_file restricted to the workspace folder. Open the console (menu → Agent Console…) to watch the live log and inject extra instructions mid-run.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Workspace folder") {
+                HStack(alignment: .top) {
+                    TextField("Path", text: $settings.agentWorkspaceFolder, prompt: Text("~/Documents/JarvisNote-agent (default)"))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.callout, design: .monospaced))
+                    Button("Choose…") { pickWorkspaceFolder() }
+                }
+                Text("All bash / read_file / write_file calls are sandboxed inside this directory. Path traversal (../etc/passwd) is rejected. Empty = use the default `~/Documents/JarvisNote-agent` (created on first run).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Iteration cap") {
+                Stepper(value: $settings.agentMaxIterations, in: 3...30, step: 1) {
+                    Text("Max iterations: \(settings.agentMaxIterations)")
+                }
+                Text("Each iteration = one round-trip to Claude + zero or more tool runs. Hitting the cap stops the agent automatically (runaway protection).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("System prompt") {
+                TextEditor(text: $settings.agentSystemPrompt)
+                    .font(.system(.callout, design: .monospaced))
+                    .frame(minHeight: 200)
+                    .border(Color(NSColor.separatorColor), width: 1)
+                HStack {
+                    Text("Sent as Claude's `system` message every iteration. The workspace path + macOS version are appended automatically at run time.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Reset to default") {
+                        settings.agentSystemPrompt = AppSettings.defaultAgentSystemPrompt
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                }
+            }
+
+            Section("Session logs") {
+                let logsDir = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false))?
+                    .appendingPathComponent("JarvisNote/agent-sessions").path
+                    ?? "~/Library/Application Support/JarvisNote/agent-sessions"
+                Text("Each session writes a JSONL log to:")
+                    .font(.caption)
+                Text(logsDir)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Button("Open logs folder") {
+                    if let url = URL(string: "file://" + logsDir) {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func pickWorkspaceFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.title = "Pick the agent workspace folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            settings.agentWorkspaceFolder = url.path
+        }
     }
 }
 

@@ -194,6 +194,11 @@ final class AppSettings {
         // but result is saved as a .md file (using the markdownExport*
         // prompts above) instead of pasted into the focused field.
         static let pushToMarkdownEnabled = "pushToMarkdownEnabled"
+        // Autonomous agent — voice instruction → tool-using Claude loop.
+        static let agentEnabled = "agentEnabled"
+        static let agentSystemPrompt = "agentSystemPrompt"
+        static let agentMaxIterations = "agentMaxIterations"
+        static let agentWorkspaceFolder = "agentWorkspaceFolder"
         // S3 sharing
         static let s3Endpoint = "s3Endpoint"
         static let s3Region = "s3Region"
@@ -306,6 +311,29 @@ final class AppSettings {
     /// and a new `.md` file is written. Off by default.
     var pushToMarkdownEnabled: Bool {
         didSet { UserDefaults.standard.set(pushToMarkdownEnabled, forKey: Defaults.pushToMarkdownEnabled) }
+    }
+
+    /// Autonomous agent toggle. When ON, the global hotkey
+    /// `KeyboardShortcuts.Name.agentTrigger` (default ⌘⇧A) is push-to-talk
+    /// for an agent loop: hold it, speak an instruction, release. Whisper
+    /// transcribes; AgentSessionState spawns a Claude tool-use loop with
+    /// bash/read_file/write_file tools restricted to the workspace folder.
+    var agentEnabled: Bool {
+        didSet { UserDefaults.standard.set(agentEnabled, forKey: Defaults.agentEnabled) }
+    }
+    /// System prompt the agent runs with. User-editable in Settings → Agent.
+    var agentSystemPrompt: String {
+        didSet { UserDefaults.standard.set(agentSystemPrompt, forKey: Defaults.agentSystemPrompt) }
+    }
+    /// Hard cap on agent loop iterations — runaway protection. Default 12.
+    /// Each iteration = one round-trip to Claude + zero or more tool runs.
+    var agentMaxIterations: Int {
+        didSet { UserDefaults.standard.set(agentMaxIterations, forKey: Defaults.agentMaxIterations) }
+    }
+    /// Workspace directory the agent's bash/read/write tools are restricted
+    /// to. Empty → `~/Documents/JarvisNote-agent` (auto-created on first run).
+    var agentWorkspaceFolder: String {
+        didSet { UserDefaults.standard.set(agentWorkspaceFolder, forKey: Defaults.agentWorkspaceFolder) }
     }
 
     var transcriptionProvider: TranscriptionProviderChoice {
@@ -511,6 +539,32 @@ final class AppSettings {
     {transcript}
     """
 
+    /// Default system prompt for the autonomous agent. Editable in
+    /// Settings → Agent. Errs on the side of being explicit about safety
+    /// + the read-only-allowlist that BashTool enforces.
+    static let defaultAgentSystemPrompt: String = """
+    You are JarvisNote's local assistant agent. The user has spoken a task \
+    via push-to-talk; you now have a small toolbox to accomplish it on their Mac.
+
+    Tools you can call:
+    - bash      — run a single shell command (allowlisted: ls, cat, echo, pwd, \
+      which, head, tail, wc, file, find, grep, rg, sed, awk, date, uname, env, \
+      git, swift, xcodebuild, make, npm, node, python). No mutating commands.
+    - read_file — read a UTF-8 text file inside the workspace folder.
+    - write_file — write a UTF-8 text file inside the workspace folder.
+
+    Behaviour:
+    1. Plan briefly before acting. State the plan in one sentence, then run.
+    2. Prefer small, observable steps over big batches — call one tool, read the \
+       result, decide the next move.
+    3. Stay inside the workspace directory provided in the system context. Path \
+       traversal is rejected with an error.
+    4. When you've answered the user's request or hit a wall, finish your reply \
+       with a concise summary and stop calling tools.
+    5. If a step needs information you don't have (a credential, a file location), \
+       ask the user — they can inject a follow-up message via the console.
+    """
+
     // MARK: Init
 
     private let keychain: Keychain
@@ -545,6 +599,12 @@ final class AppSettings {
         self.markdownExportUserPrompt = UserDefaults.standard.string(forKey: Defaults.markdownExportUserPrompt)
             ?? AppSettings.defaultMarkdownExportUserPrompt
         self.pushToMarkdownEnabled = (UserDefaults.standard.object(forKey: Defaults.pushToMarkdownEnabled) as? Bool) ?? false
+
+        self.agentEnabled = (UserDefaults.standard.object(forKey: Defaults.agentEnabled) as? Bool) ?? false
+        self.agentSystemPrompt = UserDefaults.standard.string(forKey: Defaults.agentSystemPrompt) ?? AppSettings.defaultAgentSystemPrompt
+        let savedIters = UserDefaults.standard.integer(forKey: Defaults.agentMaxIterations)
+        self.agentMaxIterations = savedIters > 0 ? savedIters : 12
+        self.agentWorkspaceFolder = UserDefaults.standard.string(forKey: Defaults.agentWorkspaceFolder) ?? ""
 
         let llmRaw = UserDefaults.standard.string(forKey: Defaults.llmProvider) ?? LLMProviderChoice.anthropic.rawValue
         self.llmProvider = LLMProviderChoice(rawValue: llmRaw) ?? .anthropic

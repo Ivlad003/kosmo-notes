@@ -121,11 +121,12 @@ public final class DictationPipeline {
         }
     }
 
-    /// Test-only initializer that injects custom transcription / paste shims
-    /// so the pipeline can be exercised end-to-end without touching the
-    /// network or the AX subsystem. Marked `internal` so production code
-    /// can't accidentally rely on it.
-    init(
+    /// Initializer that injects custom transcription / paste shims. Originally
+    /// test-only (internal), now public so app-layer features like
+    /// PushToMarkdownState and AgentHotkeyState can swap the paste step for
+    /// their own sinks (save .md, launch agent, etc.) while reusing the
+    /// dictation capture + transcribe + cleanup flow unchanged.
+    public init(
         transcriber: @escaping Transcriber,
         paster: @escaping Paster,
         llmProvider: (any AIProvider)?,
