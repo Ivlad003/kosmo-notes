@@ -1,22 +1,18 @@
 @preconcurrency import AVFoundation
 import Foundation
-import HaishinKit
 
 // MARK: - RTMPStreamer
 
 /// The single live-streaming pipeline for the app.
 ///
-/// Phase 1 (this file) wires the **state machine** and **public API surface**
-/// only. The actual HaishinKit `RTMPConnection` / `RTMPStream` lifecycle is
-/// stubbed — `start(config:)` validates the config, transitions through
-/// `.connecting` to `.publishing` immediately, and `appendAudio` /
-/// `appendVideo` accept buffers without forwarding them anywhere. This lets
-/// the rest of the app (Settings UI, hotkey, recording-time wire-up) land
-/// against a stable interface before the network plumbing turns on.
+/// Drives a state machine (.idle → .connecting → .publishing → .idle) over an
+/// injected `RTMPTransport`. Production code uses `HaishinKitRTMPTransport`;
+/// tests inject a `MockRTMPTransport` so the state machine can be exercised
+/// without opening a real socket.
 ///
-/// Phase 2 (next commit on this branch) replaces the stubs with real
-/// HaishinKit calls and wires audio / video sample-buffer tees from
-/// `CaptureSession` and `ScreenRecorder`.
+/// `appendAudio` / `appendVideo` are no-ops outside `.publishing` so callers
+/// (the eventual `CaptureSession` tee) can wire them unconditionally and let
+/// the streamer drop samples while the stream is offline.
 public actor RTMPStreamer {
 
     // MARK: State
@@ -37,13 +33,17 @@ public actor RTMPStreamer {
 
     // MARK: Stored
 
+    private let transport: any RTMPTransport
     private let stateStream: AsyncStream<State>
     private let stateContinuation: AsyncStream<State>.Continuation
     private var activeConfig: RTMPConfig?
 
     // MARK: Init
 
-    public init() {
+    /// Default init wires the production HaishinKit transport. Tests inject a
+    /// mock via the explicit-transport overload.
+    public init(transport: any RTMPTransport = HaishinKitRTMPTransport()) {
+        self.transport = transport
         var continuation: AsyncStream<State>.Continuation!
         self.stateStream = AsyncStream { continuation = $0 }
         self.stateContinuation = continuation
@@ -57,14 +57,13 @@ public actor RTMPStreamer {
 
     /// Begin publishing to the configured RTMP endpoint.
     ///
-    /// Idempotency: calling while already publishing throws
-    /// `.alreadyPublishing`. Calling from `.failed` or `.idle` is fine —
-    /// state transitions to `.connecting` immediately, then either
-    /// `.publishing` or `.failed`.
+    /// Idempotency: calling while already publishing or connecting throws
+    /// `.alreadyPublishing`. Calling from `.failed` or `.idle` runs the full
+    /// connect+publish flow.
     ///
-    /// Phase 1: validates config and transitions to `.publishing` without
-    /// opening a socket. Phase 2 will replace the body with the real
-    /// HaishinKit `RTMPConnection.connect` + `RTMPStream.publish` flow.
+    /// On `transport.connectAndPublish` throw, state transitions to
+    /// `.failed(message:)` and the original error is re-thrown so the caller
+    /// can surface it directly.
     public func start(config: RTMPConfig) async throws {
         switch state {
         case .publishing, .connecting:
@@ -78,46 +77,53 @@ public actor RTMPStreamer {
         transition(to: .connecting)
         activeConfig = config
 
-        // Phase 2 inserts the real connect / publish here. For now pretend
-        // the connection succeeded immediately so downstream wiring (Settings
-        // UI, hotkey, recording sync) can be exercised without a server.
-        transition(to: .publishing)
+        do {
+            try await transport.connectAndPublish(url: config.rtmpURL, streamKey: config.streamKey)
+            transition(to: .publishing)
+        } catch {
+            // Map any transport error to .failed and clear active config.
+            // Surface a typed StreamingError so the UI gets a stable case set
+            // regardless of whether HaishinKit threw a system error or a
+            // mock transport threw a test fixture.
+            activeConfig = nil
+            let wrapped: StreamingError
+            if let typed = error as? StreamingError {
+                wrapped = typed
+            } else {
+                wrapped = .connectionFailed(message: error.localizedDescription)
+            }
+            transition(to: .failed(message: wrapped.errorDescription ?? "Unknown failure"))
+            throw wrapped
+        }
     }
 
-    /// Stop publishing and close the underlying connection. Safe to call from
-    /// any state — non-publishing states are no-ops (no error thrown) so the
-    /// UI's "Stop" button can be wired without state checks.
+    /// Stop publishing and close the underlying transport. Safe to call from
+    /// any state — non-active states are no-ops (no error thrown) so the UI's
+    /// "Stop" button can be wired without state checks.
     public func stop() async {
         switch state {
         case .idle, .failed:
             return
         case .connecting, .publishing:
-            // Phase 2: tear down RTMPStream + RTMPConnection here.
+            await transport.close()
             activeConfig = nil
             transition(to: .idle)
         }
     }
 
-    /// Push one mic / system-audio sample buffer onto the live stream. Caller
-    /// is responsible for sample-rate compatibility (HaishinKit re-encodes).
-    /// No-op when not `.publishing`.
-    ///
-    /// Phase 2: forwards into `RTMPStream.appendSampleBuffer(_:withType: .audio)`.
-    public func appendAudio(_ buffer: CMSampleBuffer) {
+    /// Push one mic / system-audio PCM buffer onto the live stream. No-op when
+    /// not `.publishing` — callers can wire this unconditionally from the
+    /// capture pipeline and let the streamer drop samples while offline.
+    public func appendAudio(_ buffer: AVAudioPCMBuffer, when: AVAudioTime) {
         guard case .publishing = state else { return }
-        // Phase 2 wires HaishinKit here.
-        _ = buffer
+        transport.appendAudio(buffer, when: when)
     }
 
-    /// Push one screen / camera video frame onto the live stream. Buffer must
-    /// be H.264-encodable (CVPixelBuffer-backed CMSampleBuffer with timing
-    /// info). No-op when not `.publishing`.
-    ///
-    /// Phase 2: forwards into `RTMPStream.appendSampleBuffer(_:withType: .video)`.
+    /// Push one screen / camera video frame onto the live stream. No-op when
+    /// not `.publishing`.
     public func appendVideo(_ buffer: CMSampleBuffer) {
         guard case .publishing = state else { return }
-        // Phase 2 wires HaishinKit here.
-        _ = buffer
+        transport.appendVideo(buffer)
     }
 
     // MARK: Private
