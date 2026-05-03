@@ -380,44 +380,15 @@ final class RecorderState {
                 let s = settings.summaryLanguage
                 return (s == "auto" || s.isEmpty) ? nil : s
             }()
-            let provider: any BatchTranscriptionProvider = {
-                switch settings.transcriptionProvider {
-                case .deepgram:
-                    let key = settings.deepgramApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return DeepgramBatchProvider(apiKey: key)
-                case .openaiWhisper:
-                    let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return WhisperProvider(apiKey: key, model: settings.openaiTranscribeModel.rawValue)
-                case .gemini:
-                    let key = settings.geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return GeminiAudioProvider(apiKey: key)
-                case .openrouterAudio:
-                    let key = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let model = settings.openrouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return OpenRouterAudioProvider(
-                        apiKey: key,
-                        model: model.isEmpty ? "google/gemini-2.5-flash" : model
-                    )
-                }
-            }()
+            let resolvedTx = TranscriptionResolver.resolve(settings.transcriptionConfig)
+            let provider = resolvedTx.provider
 
             // Pre-flight cost gate. Long recordings + a per-minute pricing
             // model can push past the user's cap silently — surface the same
             // "increase cap or cancel" modal we already use for summary /
             // cleanup. Providers without a known per-minute price (Gemini,
-            // OpenRouter) are estimated at 0 and skip the gate.
-            let txPricing: CostEstimator.TranscriptionPricing? = {
-                switch settings.transcriptionProvider {
-                case .openaiWhisper:
-                    switch settings.openaiTranscribeModel {
-                    case .whisper1:           return CostEstimator.openai_whisper_1
-                    case .gpt4oTranscribe:    return CostEstimator.openai_gpt_4o_transcribe
-                    case .gpt4oMiniTranscribe: return CostEstimator.openai_gpt_4o_mini_transcribe
-                    }
-                case .deepgram:               return CostEstimator.deepgram_nova_2_batch
-                case .gemini, .openrouterAudio: return nil
-                }
-            }()
+            // OpenRouter) return nil pricing and skip the gate.
+            let txPricing = resolvedTx.pricing
             if let pricing = txPricing {
                 let estimated = CostEstimator.estimateTranscription(durationSec: duration, pricing: pricing)
                 if estimated > settings.costCapUSD {
@@ -528,45 +499,12 @@ final class RecorderState {
         let userMsg = PromptTemplates.transcriptCleanupUserMessage(rawTranscript: trimmed)
 
         // Build the LLM provider per current settings. Mirror of tryGenerateSummary.
-        let provider: any AIProvider
-        let pricing: CostEstimator.Pricing
-        let model: String
-
-        switch settings.llmProvider {
-        case .anthropic:
-            let key = settings.anthropicApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { return nil }
-            provider = AnthropicProvider(apiKey: key)
-            model = "claude-sonnet-4-6"
-            pricing = CostEstimator.anthropic_claude_sonnet_4_6
-        case .openai:
-            let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { return nil }
-            provider = OpenAIProvider(apiKey: key)
-            model = "gpt-4o-mini"
-            pricing = CostEstimator.openai_gpt_4o_mini
-        case .openrouter:
-            let key = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { return nil }
-            provider = OpenRouterProvider(apiKey: key)
-            model = settings.openrouterModel
-            pricing = CostEstimator.openrouter_default
-        case .ollama:
-            let endpoint = URL(string: settings.ollamaEndpoint) ?? URL(string: "http://localhost:11434")!
-            let mode: OllamaProvider.APIMode = settings.ollamaApiMode == .native ? .native : .openaiCompat
-            let bearer = settings.ollamaBearer.trimmingCharacters(in: .whitespacesAndNewlines)
-            do {
-                provider = try OllamaProvider(
-                    endpoint: endpoint,
-                    apiMode: mode,
-                    bearerToken: bearer.isEmpty ? nil : bearer
-                )
-            } catch {
-                return nil
-            }
-            model = settings.ollamaModel
-            pricing = CostEstimator.Pricing(inputPerMillion: 0, outputPerMillion: 0)
+        guard let resolved = AIProviderResolver.resolve(settings.aiProviderConfig) else {
+            return nil
         }
+        let provider = resolved.provider
+        let model = resolved.model
+        let pricing = resolved.pricing
 
         // Cost estimate. Cleanup output is roughly the same length as input,
         // so cap maxTokens at ~1.2× input-token estimate to leave headroom.
@@ -626,45 +564,12 @@ final class RecorderState {
         }
 
         // Select provider and pricing based on user preference.
-        let provider: any AIProvider
-        let pricing: CostEstimator.Pricing
-        let model: String
-
-        switch settings.llmProvider {
-        case .anthropic:
-            let key = settings.anthropicApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { return nil }
-            provider = AnthropicProvider(apiKey: key)
-            model = "claude-sonnet-4-6"
-            pricing = CostEstimator.anthropic_claude_sonnet_4_6
-        case .openai:
-            let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { return nil }
-            provider = OpenAIProvider(apiKey: key)
-            model = "gpt-4o-mini"
-            pricing = CostEstimator.openai_gpt_4o_mini
-        case .openrouter:
-            let key = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { return nil }
-            provider = OpenRouterProvider(apiKey: key)
-            model = settings.openrouterModel
-            pricing = CostEstimator.openrouter_default
-        case .ollama:
-            let endpoint = URL(string: settings.ollamaEndpoint) ?? URL(string: "http://localhost:11434")!
-            let mode: OllamaProvider.APIMode = settings.ollamaApiMode == .native ? .native : .openaiCompat
-            let bearer = settings.ollamaBearer.trimmingCharacters(in: .whitespacesAndNewlines)
-            do {
-                provider = try OllamaProvider(
-                    endpoint: endpoint,
-                    apiMode: mode,
-                    bearerToken: bearer.isEmpty ? nil : bearer
-                )
-            } catch {
-                return nil
-            }
-            model = settings.ollamaModel
-            pricing = CostEstimator.Pricing(inputPerMillion: 0, outputPerMillion: 0)  // local, free
+        guard let resolved = AIProviderResolver.resolve(settings.aiProviderConfig) else {
+            return nil
         }
+        let provider = resolved.provider
+        let model = resolved.model
+        let pricing = resolved.pricing
 
         // Estimate cost before sending. If it exceeds the cap, surface a modal
         // so the user can either bump the cap or skip this run. Ollama is free

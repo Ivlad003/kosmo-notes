@@ -1,0 +1,77 @@
+import Foundation
+import AIKit
+import TranscriptionKit
+
+// MARK: - AppSettings → Resolver configs
+
+/// Bridges between `AppSettings`'s persisted enums (`LLMProviderChoice`,
+/// `TranscriptionProviderChoice`, `OpenAITranscribeModel`, `OllamaAPIMode`) and
+/// the resolver-internal mirrors in AIKit / TranscriptionKit. Kept in App-side
+/// so AIKit / TranscriptionKit don't need to import AppSettings.
+extension AppSettings {
+
+    /// Snapshot of the current LLM-provider settings as a flat config the
+    /// `AIProviderResolver` can consume. Each call site materializes this
+    /// fresh so a setting change between calls is reflected.
+    var aiProviderConfig: AIProviderResolver.Config {
+        AIProviderResolver.Config(
+            kind: aiResolverKind,
+            anthropicAPIKey: anthropicApiKey,
+            openaiAPIKey: openaiApiKey,
+            openrouterAPIKey: openrouterApiKey,
+            openrouterModel: openrouterModel,
+            ollamaEndpoint: ollamaEndpoint,
+            ollamaModel: ollamaModel,
+            ollamaAPIMode: ollamaResolverMode,
+            ollamaBearer: ollamaBearer
+        )
+    }
+
+    /// Snapshot of the current transcription-provider settings.
+    var transcriptionConfig: TranscriptionResolver.Config {
+        TranscriptionResolver.Config(
+            kind: txResolverKind,
+            openaiAPIKey: openaiApiKey,
+            openaiModel: txResolverOpenAIModel,
+            deepgramAPIKey: deepgramApiKey,
+            geminiAPIKey: geminiApiKey,
+            openrouterAPIKey: openrouterApiKey,
+            openrouterModel: openrouterModel
+        )
+    }
+
+    // MARK: - Enum bridges
+
+    private var aiResolverKind: AIProviderResolver.Kind {
+        switch llmProvider {
+        case .anthropic:  return .anthropic
+        case .openai:     return .openai
+        case .openrouter: return .openrouter
+        case .ollama:     return .ollama
+        }
+    }
+
+    private var ollamaResolverMode: OllamaProvider.APIMode {
+        switch ollamaApiMode {
+        case .native:       return .native
+        case .openaiCompat: return .openaiCompat
+        }
+    }
+
+    private var txResolverKind: TranscriptionResolver.Kind {
+        switch transcriptionProvider {
+        case .deepgram:        return .deepgram
+        case .openaiWhisper:   return .openaiWhisper
+        case .gemini:          return .gemini
+        case .openrouterAudio: return .openrouterAudio
+        }
+    }
+
+    private var txResolverOpenAIModel: TranscriptionResolver.OpenAITranscribeModel {
+        switch openaiTranscribeModel {
+        case .whisper1:            return .whisper1
+        case .gpt4oTranscribe:     return .gpt4oTranscribe
+        case .gpt4oMiniTranscribe: return .gpt4oMiniTranscribe
+        }
+    }
+}

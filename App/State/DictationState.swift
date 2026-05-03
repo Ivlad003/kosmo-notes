@@ -152,10 +152,12 @@ final class DictationState {
         // LLM provider + per-provider model. The pipeline used to hardcode
         // claude-sonnet-4-6 in its AIConfig, so cleanup tied to OpenAI / Ollama
         // / OpenRouter would either reject the model or silently fall back to
-        // raw transcript. Picking the right default here means the configured
-        // provider actually runs cleanup with a model it understands.
-        let llm: (any AIProvider)? = settings.dictationLLMCleanup ? makeLLMProvider() : nil
-        let model = makeLLMModel()
+        // raw transcript. AIProviderResolver picks the right default per
+        // provider so the configured provider actually runs cleanup with a
+        // model it understands.
+        let resolved = AIProviderResolver.resolve(settings.aiProviderConfig)
+        let llm: (any AIProvider)? = settings.dictationLLMCleanup ? resolved?.provider : nil
+        let model = resolved?.model ?? ""
 
         return DictationPipeline(
             whisperProvider: whisper,
@@ -163,47 +165,6 @@ final class DictationState {
             llmModel: model,
             maxDurationSeconds: settings.dictationMaxSeconds
         )
-    }
-
-    /// Default model name for the currently-selected LLM provider. Chosen to
-    /// be cheap + fast since cleanup runs on every dictation press.
-    private func makeLLMModel() -> String {
-        switch settings.llmProvider {
-        case .anthropic:  return "claude-sonnet-4-6"
-        case .openai:     return "gpt-4o-mini"
-        case .openrouter:
-            let m = settings.openrouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            return m.isEmpty ? "openai/gpt-4o-mini" : m
-        case .ollama:
-            let m = settings.ollamaModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            return m.isEmpty ? "qwen2.5:14b" : m
-        }
-    }
-
-    private func makeLLMProvider() -> (any AIProvider)? {
-        switch settings.llmProvider {
-        case .anthropic:
-            let k = settings.anthropicApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !k.isEmpty else { return nil }
-            return AnthropicProvider(apiKey: k)
-        case .openai:
-            let k = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !k.isEmpty else { return nil }
-            return OpenAIProvider(apiKey: k)
-        case .openrouter:
-            let k = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !k.isEmpty else { return nil }
-            return OpenRouterProvider(apiKey: k)
-        case .ollama:
-            let endpoint = URL(string: settings.ollamaEndpoint) ?? URL(string: "http://localhost:11434")!
-            let mode: OllamaProvider.APIMode = settings.ollamaApiMode == .native ? .native : .openaiCompat
-            let bearer = settings.ollamaBearer.trimmingCharacters(in: .whitespacesAndNewlines)
-            return try? OllamaProvider(
-                endpoint: endpoint,
-                apiMode: mode,
-                bearerToken: bearer.isEmpty ? nil : bearer
-            )
-        }
     }
 }
 

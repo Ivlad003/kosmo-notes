@@ -60,10 +60,13 @@ enum MarkdownExporter {
 
         // Build provider + cost guard. Same per-provider model defaults as
         // tryGenerateSummary so the export honors the AI Providers tab.
-        guard let (provider, model, pricing) = makeProvider(settings: settings) else {
+        guard let resolved = AIProviderResolver.resolve(settings.aiProviderConfig) else {
             exporterLog.error("MarkdownExporter: no LLM provider available (missing API key)")
             return nil
         }
+        let provider = resolved.provider
+        let model = resolved.model
+        let pricing = resolved.pricing
 
         let inputTokens = CostEstimator.estimateTokens(text: systemPrompt)
             + CostEstimator.estimateTokens(text: userMessage)
@@ -149,41 +152,4 @@ enum MarkdownExporter {
         return "\(date)_\(modeStr)_\(shortID).md"
     }
 
-    /// Build the AIProvider + model + pricing for the active LLM provider.
-    /// Mirror of RecorderState.tryGenerateSummary's switch — kept duplicated
-    /// rather than factored out to keep the helper self-contained and to
-    /// avoid leaking a public Provider-builder onto AppSettings.
-    private static func makeProvider(
-        settings: AppSettings
-    ) -> (provider: any AIProvider, model: String, pricing: CostEstimator.Pricing)? {
-        switch settings.llmProvider {
-        case .anthropic:
-            let key = settings.anthropicApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { return nil }
-            return (AnthropicProvider(apiKey: key), "claude-sonnet-4-6", CostEstimator.anthropic_claude_sonnet_4_6)
-        case .openai:
-            let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { return nil }
-            return (OpenAIProvider(apiKey: key), "gpt-4o-mini", CostEstimator.openai_gpt_4o_mini)
-        case .openrouter:
-            let key = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { return nil }
-            let model = settings.openrouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (OpenRouterProvider(apiKey: key), model.isEmpty ? "openai/gpt-4o-mini" : model, CostEstimator.openrouter_default)
-        case .ollama:
-            let endpoint = URL(string: settings.ollamaEndpoint) ?? URL(string: "http://localhost:11434")!
-            let mode: OllamaProvider.APIMode = settings.ollamaApiMode == .native ? .native : .openaiCompat
-            let bearer = settings.ollamaBearer.trimmingCharacters(in: .whitespacesAndNewlines)
-            do {
-                let provider = try OllamaProvider(
-                    endpoint: endpoint,
-                    apiMode: mode,
-                    bearerToken: bearer.isEmpty ? nil : bearer
-                )
-                return (provider, settings.ollamaModel, CostEstimator.Pricing(inputPerMillion: 0, outputPerMillion: 0))
-            } catch {
-                return nil
-            }
-        }
-    }
 }

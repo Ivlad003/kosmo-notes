@@ -240,46 +240,11 @@ final class ChatState {
 
     /// Shared send-to-LLM path used by both `send()` and `sendSnapshot()`.
     private func runProvider(messages: [ChatMessage], systemPrompt: String?) async throws -> String {
-        let provider = try makeProvider()
-        let config = makeConfig(systemPrompt: systemPrompt)
-        return try await provider.chat(messages: messages, config: config)
-    }
-
-    private func makeProvider() throws -> any AIProvider {
-        switch settings.llmProvider {
-        case .anthropic:
-            let key = settings.anthropicApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { throw AIError.authenticationFailed }
-            return AnthropicProvider(apiKey: key)
-        case .openai:
-            let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { throw AIError.authenticationFailed }
-            return OpenAIProvider(apiKey: key)
-        case .openrouter:
-            let key = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { throw AIError.authenticationFailed }
-            return OpenRouterProvider(apiKey: key)
-        case .ollama:
-            let endpoint = URL(string: settings.ollamaEndpoint) ?? URL(string: "http://localhost:11434")!
-            let mode: OllamaProvider.APIMode = settings.ollamaApiMode == .native ? .native : .openaiCompat
-            let bearer = settings.ollamaBearer.trimmingCharacters(in: .whitespacesAndNewlines)
-            return try OllamaProvider(
-                endpoint: endpoint,
-                apiMode: mode,
-                bearerToken: bearer.isEmpty ? nil : bearer
-            )
+        guard let resolved = AIProviderResolver.resolve(settings.aiProviderConfig) else {
+            throw AIError.authenticationFailed
         }
-    }
-
-    private func makeConfig(systemPrompt: String?) -> AIConfig {
-        let model: String
-        switch settings.llmProvider {
-        case .anthropic:  model = AnthropicProvider.defaultModel
-        case .openai:     model = OpenAIProvider.defaultModel
-        case .openrouter: model = settings.openrouterModel
-        case .ollama:     model = settings.ollamaModel
-        }
-        return AIConfig(model: model, systemPrompt: systemPrompt)
+        let config = AIConfig(model: resolved.model, systemPrompt: systemPrompt)
+        return try await resolved.provider.chat(messages: messages, config: config)
     }
 
     // MARK: - Private: vision frame extraction

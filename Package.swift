@@ -36,6 +36,7 @@ let package = Package(
             name: "TranscriptionKit",
             dependencies: [
                 "StorageKit",
+                "AIKit",
             ],
             path: "Sources/TranscriptionKit"
         ),

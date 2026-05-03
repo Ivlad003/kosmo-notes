@@ -156,8 +156,9 @@ final class PushToMarkdownState {
     private func makePipeline(openaiKey: String) throws -> DictationPipeline {
         let whisper = WhisperProvider(apiKey: openaiKey, model: settings.openaiTranscribeModel.rawValue)
 
-        let llm: (any AIProvider)? = settings.dictationLLMCleanup ? makeLLMProvider() : nil
-        let model = makeLLMModel()
+        let resolved = AIProviderResolver.resolve(settings.aiProviderConfig)
+        let llm: (any AIProvider)? = settings.dictationLLMCleanup ? resolved?.provider : nil
+        let model = resolved?.model ?? ""
 
         // Hijack the paster injection: instead of pasting, fire a detached
         // Task that runs the cleaned text through MarkdownExporter and
@@ -209,44 +210,4 @@ final class PushToMarkdownState {
         }
     }
 
-    // MARK: - LLM provider builder (mirror of DictationState)
-
-    private func makeLLMModel() -> String {
-        switch settings.llmProvider {
-        case .anthropic:  return "claude-sonnet-4-6"
-        case .openai:     return "gpt-4o-mini"
-        case .openrouter:
-            let m = settings.openrouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            return m.isEmpty ? "openai/gpt-4o-mini" : m
-        case .ollama:
-            let m = settings.ollamaModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            return m.isEmpty ? "qwen2.5:14b" : m
-        }
-    }
-
-    private func makeLLMProvider() -> (any AIProvider)? {
-        switch settings.llmProvider {
-        case .anthropic:
-            let k = settings.anthropicApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !k.isEmpty else { return nil }
-            return AnthropicProvider(apiKey: k)
-        case .openai:
-            let k = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !k.isEmpty else { return nil }
-            return OpenAIProvider(apiKey: k)
-        case .openrouter:
-            let k = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !k.isEmpty else { return nil }
-            return OpenRouterProvider(apiKey: k)
-        case .ollama:
-            let endpoint = URL(string: settings.ollamaEndpoint) ?? URL(string: "http://localhost:11434")!
-            let mode: OllamaProvider.APIMode = settings.ollamaApiMode == .native ? .native : .openaiCompat
-            let bearer = settings.ollamaBearer.trimmingCharacters(in: .whitespacesAndNewlines)
-            return try? OllamaProvider(
-                endpoint: endpoint,
-                apiMode: mode,
-                bearerToken: bearer.isEmpty ? nil : bearer
-            )
-        }
-    }
 }
