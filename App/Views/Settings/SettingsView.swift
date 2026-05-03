@@ -17,6 +17,9 @@ struct SettingsView: View {
             AIProvidersTab(settings: settings)
                 .tabItem { Label("AI Providers", systemImage: "sparkles") }
 
+            DictationTab(settings: settings)
+                .tabItem { Label("Dictation", systemImage: "keyboard") }
+
             PrivacyTab()
                 .tabItem { Label("Privacy", systemImage: "lock.shield") }
         }
@@ -47,6 +50,10 @@ private struct TranscriptionTab: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                Toggle("Capture system audio alongside mic", isOn: $settings.systemAudioEnabled)
+                Text("Mixes Spotify, video calls, browser audio etc. into the recording. Off by default; toggle on for meeting / call capture.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Default provider") {
@@ -327,6 +334,49 @@ private struct ConnectionTestRow: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+// MARK: - Dictation tab
+
+@available(macOS 14.0, *)
+private struct DictationTab: View {
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        Form {
+            Section("Hotkey") {
+                Text("Press and hold the global hotkey to dictate. Release to paste a cleaned transcript into the focused text field.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text("Default: ⌘⇧D — change in System Settings → Keyboard → Shortcuts → App Shortcuts (custom binding lands in v1.1).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Cleanup") {
+                Toggle("Run LLM cleanup pass before pasting", isOn: $settings.dictationLLMCleanup)
+                Text("Uses the configured AI Provider (Anthropic / OpenAI / Ollama) to fix punctuation, casing, and remove disfluencies. Adds ~1–2 s latency. Off = paste raw Whisper transcript.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Limits") {
+                Stepper(value: $settings.dictationMaxSeconds, in: 10...120, step: 5) {
+                    Text("Max utterance: \(settings.dictationMaxSeconds) seconds")
+                }
+                Text("Hard cap on a single dictation press-and-hold. Hitting the cap stops the recording automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Permission") {
+                Text("First press triggers a macOS Accessibility permission prompt. Grant in System Settings → Privacy & Security → Accessibility, then quit + relaunch Jarvis Note for the trust to take effect.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 

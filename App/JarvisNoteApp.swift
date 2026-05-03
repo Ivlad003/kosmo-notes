@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var databaseHolder: AnyObject?       // AppDatabase
     private var sessionStoreHolder: AnyObject?   // SessionStore
     private var chatHolder: AnyObject?           // ChatState (macOS 14+)
+    private var dictationHolder: AnyObject?      // DictationState (macOS 14+)
 
     // Library window controller. Stored as AnyObject to avoid @available on
     // a stored property (Swift disallows that). Cast at use-site with #available.
@@ -169,6 +170,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let recorder = RecorderState(database: database, sessionStore: sessionStore, settings: settings)
         self.recorderHolder = recorder
+
+        // Dictation: register the global hotkey monitor. The pipeline itself is
+        // built lazily on first hotkey press (no API call until then).
+        let dictation = DictationState(settings: settings)
+        dictation.install()
+        self.dictationHolder = dictation
 
         Task { @MainActor in
             do {

@@ -76,6 +76,8 @@ targets:
         product: StorageKit
       - package: JarvisNoteCore
         product: AIKit
+      - package: JarvisNoteCore
+        product: DictationKit
 
   JarvisNoteUITests:
     type: bundle.ui-testing

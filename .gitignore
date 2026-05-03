@@ -43,4 +43,5 @@ node_modules/
 .claude/
 .omc/state/
 .omc/project-memory.json
+.omc/sessions/
 # Keep .omc/plans/ committed — it's part of the design trail.

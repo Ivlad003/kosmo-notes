@@ -108,6 +108,33 @@ final class RecorderState {
             return
         }
 
+        // Pre-flight: Microphone permission. First call triggers the macOS prompt;
+        // subsequent calls return cached status. On denial, surface a modal with a
+        // direct link to System Settings → Privacy → Microphone.
+        let micGranted = await PermissionsHelper.requestMicAccess()
+        if !micGranted {
+            PermissionsHelper.showMissingAlert(.microphone)
+            status = .failed(message: "Microphone access denied. Grant in System Settings, then try again.")
+            return
+        }
+
+        let screenEnabled = settings.recordingMode == .audioAndScreen
+        let systemAudioEnabled = settings.systemAudioEnabled
+
+        // Pre-flight: Screen Recording permission, when either Audio + Screen mode
+        // is enabled (writes screen.mp4) or the system-audio toggle is on (SCKit
+        // mixdown also requires this entitlement). Calling CGRequest... triggers
+        // the prompt on first run; the granted state often only takes effect after
+        // a relaunch, so we surface a modal explaining that.
+        if screenEnabled || systemAudioEnabled {
+            if !PermissionsHelper.screenRecordingGranted() {
+                PermissionsHelper.requestScreenRecordingAccess()
+                PermissionsHelper.showMissingAlert(.screenRecording)
+                status = .failed(message: "Screen Recording access required. Grant in System Settings, then quit and relaunch Jarvis Note.")
+                return
+            }
+        }
+
         let language: String? = {
             let s = settings.summaryLanguage
             return (s == "auto" || s.isEmpty) ? nil : s
@@ -117,10 +144,9 @@ final class RecorderState {
             let session = try await sessionStore.createSession(mode: mode, language: language)
             let dir = await sessionStore.sessionDir(for: session.id)
 
-            let screenEnabled = settings.recordingMode == .audioAndScreen
             let config = CaptureSession.Config(
                 micEnabled: true,
-                systemAudioEnabled: false,  // v0: mic only — system audio TCC dance is v1.1
+                systemAudioEnabled: systemAudioEnabled,
                 sessionDir: dir,
                 screenRecordingEnabled: screenEnabled,
                 screenOutputURL: screenEnabled ? dir.appendingPathComponent("screen.mp4") : nil

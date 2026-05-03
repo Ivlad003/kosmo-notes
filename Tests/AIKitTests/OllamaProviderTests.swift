@@ -313,7 +313,7 @@ struct OllamaProviderNativeParserTests {
 
     @Test("Throws decodingFailed when message key missing")
     func missingMessageKey() {
-        let json = """{"model":"q","done":true}"""
+        let json = #"{"model":"q","done":true}"#
         #expect(throws: AIError.self) {
             try OllamaProvider.parseNative(data: Data(json.utf8))
         }
@@ -615,7 +615,7 @@ struct OllamaProviderListModelsTests {
             httpClient: { _ in
                 let resp = HTTPURLResponse(url: URL(string: "http://localhost:11434/api/tags")!,
                     statusCode: 200, httpVersion: nil, headerFields: nil)!
-                return (Data("""{"models":[]}""".utf8), resp)
+                return (Data(#"{"models":[]}"#.utf8), resp)
             }
         )
         let models = try await provider.listModels()

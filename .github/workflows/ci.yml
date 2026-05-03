@@ -29,5 +29,46 @@ jobs:
       - name: swift test
         run: swift test
 
-      - name: xcodebuild build
+      - name: xcodebuild build (Debug)
         run: xcodebuild -scheme JarvisNote -configuration Debug -destination 'platform=macOS' build
+
+      - name: xcodebuild build (Release, for size check)
+        run: |
+          xcodebuild \
+            -scheme JarvisNote \
+            -configuration Release \
+            -derivedDataPath ./build-release \
+            CODE_SIGN_IDENTITY=- \
+            build
+
+      - name: Bundle size check (AC-16)
+        # Fails CI if JarvisNote.app > 15 MB uncompressed or .app.zip > 8 MB.
+        # Echoes both numbers on every run so the trend is visible.
+        run: |
+          set -euo pipefail
+          APP="./build-release/Build/Products/Release/JarvisNote.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::JarvisNote.app not found at $APP"
+            exit 1
+          fi
+
+          UNCOMPRESSED_KB=$(du -sk "$APP" | awk '{print $1}')
+          ditto -c -k --keepParent "$APP" ./JarvisNote.app.zip
+          COMPRESSED_KB=$(du -sk ./JarvisNote.app.zip | awk '{print $1}')
+
+          UNCOMPRESSED_MAX=15360  # 15 MB
+          COMPRESSED_MAX=8192     # 8 MB
+
+          echo "JarvisNote.app uncompressed: ${UNCOMPRESSED_KB} KB (cap: ${UNCOMPRESSED_MAX} KB)"
+          echo "JarvisNote.app.zip:          ${COMPRESSED_KB} KB (cap: ${COMPRESSED_MAX} KB)"
+
+          STATUS=0
+          if [ "$UNCOMPRESSED_KB" -gt "$UNCOMPRESSED_MAX" ]; then
+            echo "::error::Uncompressed bundle exceeds 15 MB: ${UNCOMPRESSED_KB} KB"
+            STATUS=1
+          fi
+          if [ "$COMPRESSED_KB" -gt "$COMPRESSED_MAX" ]; then
+            echo "::error::Compressed .zip exceeds 8 MB: ${COMPRESSED_KB} KB"
+            STATUS=1
+          fi
+          exit $STATUS
