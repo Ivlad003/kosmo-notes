@@ -61,6 +61,14 @@ public actor SegmentWriter {
     private var micSampleCount: Int64 = 0
     private var systemSampleCount: Int64 = 0
 
+    /// Reentrancy guard for `finalizeCurrentSegment`. While this is `true`,
+    /// buffered `append()` calls that re-enter the actor during the
+    /// `await writer.finishWriting()` suspension drop their PCM data
+    /// instead of trying to write to inputs that have already received
+    /// `markAsFinished()`. Without this, the second task's append hits
+    /// `_transitionToClientInitiatedTerminalStatus` and aborts the process.
+    private var finalizing: Bool = false
+
     // MARK: Init
 
     public init(
@@ -105,6 +113,14 @@ public actor SegmentWriter {
 
     /// Append a PCM buffer from the given source. Opens a new segment if needed.
     public func append(_ pcmBuffer: AVAudioPCMBuffer, source: AudioSource) async throws {
+        // While the previous segment is still being finalized (the
+        // `await writer.finishWriting()` suspension below in
+        // `finalizeCurrentSegment`), the actor allows queued `append` calls
+        // to re-enter. Inputs have already been `markAsFinished`'d, so any
+        // append against them would throw an AVAssetWriter exception. Drop
+        // the buffer; ~tens of ms of audio loss per roll, which is invisible
+        // for the use case (transcription doesn't notice).
+        if finalizing { return }
         if assetWriter == nil {
             try openNewSegment()
         }
@@ -190,6 +206,15 @@ public actor SegmentWriter {
             segmentWriterLog.error("SegmentWriter.appendBuffer: input is nil")
             return
         }
+        // Don't keep feeding a writer that already failed. A `.failed` writer
+        // turns every subsequent `append()` into a logged no-op; the next
+        // rollSegment() finalize call would have aborted the process before
+        // the previous fix landed. Bail early so the next roll opens a
+        // fresh writer cleanly.
+        if let w = self.assetWriter, w.status != .writing {
+            segmentWriterLog.debug("SegmentWriter.appendBuffer: writer status=\(w.status.rawValue, privacy: .public) — skipping append until next roll")
+            return
+        }
         guard input.isReadyForMoreMediaData else {
             // High-frequency event — log at debug only.
             segmentWriterLog.debug("SegmentWriter.appendBuffer: input not ready (status=\(self.assetWriter?.status.rawValue ?? -1, privacy: .public) error=\(self.assetWriter?.error?.localizedDescription ?? "nil", privacy: .public))")
@@ -218,6 +243,32 @@ public actor SegmentWriter {
 
         let url = segmentsDir.appendingPathComponent("\(segmentIndex).m4a")
 
+        // AVFoundation contract: `finishWriting()` is only valid when the
+        // writer is in `.writing`. Calling it on `.failed` / `.cancelled`
+        // throws an Obj-C exception (`-[AVAssetWriterHelper
+        // _transitionToClientInitiatedTerminalStatus:]`) that aborts the
+        // process. A bad upstream append (encoder rejection, malformed
+        // PTS, etc.) can transition the writer to `.failed` silently —
+        // `appendBuffer` only logs and continues. Cancel cleanly here
+        // instead of pulling the trigger.
+        guard writer.status == .writing else {
+            segmentWriterLog.error(
+                "SegmentWriter.finalizeCurrentSegment: writer not in .writing (status=\(writer.status.rawValue, privacy: .public) error=\(writer.error?.localizedDescription ?? "nil", privacy: .public)) — cancelling instead of finishing"
+            )
+            writer.cancelWriting()
+            assetWriter = nil
+            micInput = nil
+            systemInput = nil
+            return
+        }
+
+        // Set the reentrancy flag BEFORE markAsFinished + finishWriting.
+        // While `await writer.finishWriting()` suspends below, the actor
+        // can let other tasks' queued `append()` calls run. They'll see
+        // `finalizing == true` and bail out cleanly instead of writing to
+        // inputs that have already been finished.
+        finalizing = true
+
         micInput?.markAsFinished()
         systemInput?.markAsFinished()
 
@@ -226,6 +277,7 @@ public actor SegmentWriter {
         assetWriter = nil
         micInput = nil
         systemInput = nil
+        finalizing = false
 
         if writer.status == .completed {
             segmentPaths.append(url)

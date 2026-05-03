@@ -36,7 +36,11 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleName: KosmoNotes
-        CFBundleDisplayName: KosmoNotes
+        # Display name carries the "Alpha" tag so the menu-bar item, Dock
+        # tooltip, and Spotlight result all surface that this is a pre-release
+        # build. Bundle identifier and executable name stay unchanged so TCC
+        # grants persist across builds.
+        CFBundleDisplayName: KosmoNotes Alpha
         CFBundleIdentifier: dev.kosmonotes.studio
         # CFBundleVersion is the *seed* value here; the postBuildScripts
         # entry below overwrites it with a YYYYMMDD.HHMM timestamp on every
@@ -95,21 +99,29 @@ targets:
         product: SharingKit
       - package: KosmoNotesCore
         product: StreamingKit
-    postBuildScripts:
+    preBuildScripts:
       # Stamp CFBundleVersion with a YYYYMMDD.HHMM timestamp every build so
-      # `KosmoNotes 0.0.2 (20260503.2154)` in the menu changes every time
-      # we rebuild. Without this, xcodebuild's incremental cache reuses the
-      # previously-baked Info.plist and the build number stays static.
-      # `basedOnDependencyAnalysis: false` forces the phase to run on every
+      # `KosmoNotes 0.0.2 (20260503.2154)` in the menu changes on every
+      # rebuild. We MUST do this as a preBuildScript (not post-) because
+      # on Xcode 26 / Swift 6 the `ProcessInfoPlistFile` phase runs AFTER
+      # any "Run Script" phase appended to the target's build phases,
+      # which means a postBuildScript that touches the bundled Info.plist
+      # gets overwritten by the source App/Info.plist a moment later.
+      # Stamping the source first lets ProcessInfoPlistFile pick it up.
+      #
+      # Side effect: App/Info.plist appears modified in `git status` after
+      # every build. That's expected; commit the bumped value alongside
+      # any release tag, otherwise let the dirty diff sit.
+      #
+      # `basedOnDependencyAnalysis: false` forces the phase to run every
       # build regardless of input/output up-to-date checks.
       - name: "Stamp build number with timestamp"
         basedOnDependencyAnalysis: false
         script: |
           set -e
-          INFO_PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
           STAMP=$(date +%Y%m%d.%H%M)
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${STAMP}" "$INFO_PLIST"
-          echo "Stamped CFBundleVersion = ${STAMP}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${STAMP}" "${PROJECT_DIR}/App/Info.plist"
+          echo "Stamped App/Info.plist CFBundleVersion = ${STAMP}"
 
   KosmoNotesUITests:
     type: bundle.ui-testing
