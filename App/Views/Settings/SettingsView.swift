@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import SwiftUI
 import AIKit
 import CaptureKit
@@ -71,6 +72,10 @@ private struct TranscriptionTab: View {
 
             Section("System audio source") {
                 SystemAudioSourcePicker(settings: settings)
+            }
+
+            Section("Webcam bubble (Loom-style)") {
+                CameraBubbleSettings(settings: settings)
             }
 
             if isMacOS14_4OrLater() {
@@ -169,6 +174,13 @@ private struct TranscriptionTab: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Transcript LLM cleanup") {
+                Toggle("Clean transcript with LLM after transcription", isOn: $settings.transcriptCleanupEnabled)
+                Text("Runs the raw ASR output through your configured LLM (AI Providers tab) to fix mishearing — wrong numbers, names, technical terms, doubled words, missing punctuation. Speaker voice and timing are preserved. Adds ~1–3 s + a small LLM cost per recording. Saved separately as `transcript.raw.txt` for audit. Cleanup failures are non-fatal — raw transcript stays.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Deepgram") {
                 APIKeyField(
                     title: "API key",
@@ -194,6 +206,19 @@ private struct TranscriptionTab: View {
                 Link("Get an OpenAI API key", destination: URL(string: "https://platform.openai.com/api-keys")!)
                     .font(.caption)
             }
+
+            Section("Gemini (multimodal audio)") {
+                APIKeyField(
+                    title: "API key",
+                    text: $settings.geminiApiKey,
+                    onCommit: { settings.commit(.gemini, value: settings.geminiApiKey) }
+                )
+                Text("Used when 'Default provider' is set to Gemini. Sends the recording's audio.m4a directly to Gemini 2.5 Flash, which returns transcript + segments in one shot.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Link("Get a Gemini API key (Google AI Studio)", destination: URL(string: "https://aistudio.google.com/apikey")!)
+                    .font(.caption)
+            }
         }
         .formStyle(.grouped)
     }
@@ -212,6 +237,10 @@ private struct TranscriptionTab: View {
             return "Deepgram streams partial transcripts during recording (live). Best fit for Dictation Mode."
         case .openaiWhisper:
             return "OpenAI Whisper transcribes after the recording stops (batch). Higher latency, broad language coverage."
+        case .gemini:
+            return "Google Gemini ingests the audio file directly via its multimodal API. One round-trip = transcript + segments. Inline upload caps at ~18 MB (~3–4 h of HE-AAC mono); longer recordings fail until we wire the resumable File API."
+        case .openrouterAudio:
+            return "Routes audio through OpenRouter to a multimodal model (defaults to google/gemini-2.5-flash, configurable in AI Providers → OpenRouter model). Same OpenRouter API key as LLM cleanup. Inline cap ~18 MB. Use this if you want one billing relationship for everything."
         }
     }
 
@@ -692,6 +721,8 @@ private struct PrivacyTab: View {
     /// permission badges re-read CGPreflightScreenCaptureAccess /
     /// AVCaptureDevice.authorizationStatus / AXIsProcessTrusted.
     @State private var refreshTick: Int = 0
+    @State private var confirmReset: Bool = false
+    @State private var resetResult: String? = nil
 
     var body: some View {
         Form {
@@ -732,17 +763,55 @@ private struct PrivacyTab: View {
                     onOpen: { PermissionsHelper.openAccessibilitySettings() }
                 )
 
+                PermissionRow(
+                    title: "Camera",
+                    systemImage: "video.fill",
+                    detail: "Only needed for the Loom-style webcam bubble during Audio + Screen recordings.",
+                    status: cameraStatusText,
+                    granted: PermissionsHelper.cameraGranted(),
+                    requestLabel: "Request",
+                    onRequest: { Task { _ = await PermissionsHelper.requestCameraAccess(); refreshTick &+= 1 } },
+                    onOpen: { PermissionsHelper.openCameraSettings() }
+                )
+
                 HStack {
+                    Button(role: .destructive) {
+                        confirmReset = true
+                    } label: {
+                        Label("Reset all permissions", systemImage: "arrow.counterclockwise.circle")
+                    }
+                    .help("Runs `tccutil reset All dev.jarvisnote.studio` so macOS will re-prompt fresh on the next recording. Use this when you granted access but the app still refuses (cdhash mismatch from rebuild).")
+
                     Spacer()
                     Button("Refresh status") { refreshTick &+= 1 }
                         .buttonStyle(.borderless)
                 }
 
-                Text("Tip: ad-hoc-signed dev builds change their code-signature hash on every rebuild, which can leave a stale TCC entry that shows as granted in System Settings but isn't honored at runtime. Toggle the row off then on, or run `tccutil reset Microphone dev.jarvisnote.studio` (replace `Microphone` with `ScreenCapture` for screen recording) and re-grant.")
+                Text("Tip: ad-hoc-signed dev builds change their code-signature hash on every rebuild, which can leave a stale TCC entry that shows as granted in System Settings but isn't honored at runtime. Click **Reset all permissions** to clear the slate, then re-grant on the next macOS prompt.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .id(refreshTick)
+            .confirmationDialog(
+                "Reset all JarvisNote permissions?",
+                isPresented: $confirmReset,
+                titleVisibility: .visible
+            ) {
+                Button("Reset", role: .destructive) {
+                    runTCCReset()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Microphone, Screen Recording, and Accessibility grants for `dev.jarvisnote.studio` will be cleared. macOS will prompt for them again the next time you start recording. JarvisNote will need to be quit & relaunched after the prompts.")
+            }
+            .alert("Permissions reset", isPresented: Binding(
+                get: { resetResult != nil },
+                set: { if !$0 { resetResult = nil } }
+            )) {
+                Button("OK", role: .cancel) { resetResult = nil }
+            } message: {
+                Text(resetResult ?? "")
+            }
 
             Section("How Jarvis Note handles your audio") {
                 Text("""
@@ -801,6 +870,50 @@ private struct PrivacyTab: View {
 
     private var axStatusText: String {
         PermissionsHelper.accessibilityGranted() ? "Granted" : "Not granted"
+    }
+
+    private var cameraStatusText: String {
+        switch PermissionsHelper.cameraAuthStatus() {
+        case .authorized: return "Granted"
+        case .denied: return "Denied"
+        case .restricted: return "Restricted"
+        case .notDetermined: return "Not requested"
+        @unknown default: return "Unknown"
+        }
+    }
+
+    /// Spawn `/usr/bin/tccutil reset All dev.jarvisnote.studio` and report
+    /// the verdict via the alert. Runs synchronously on a background queue so
+    /// SwiftUI doesn't stall during the ~50ms IPC. No admin needed — tccutil
+    /// works at the user-level for app-scoped resets.
+    private func runTCCReset() {
+        let bundleID = "dev.jarvisnote.studio"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            task.arguments = ["reset", "All", bundleID]
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            task.standardError = pipe
+            do {
+                try task.run()
+                task.waitUntilExit()
+                let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
+                let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                Task { @MainActor in
+                    if task.terminationStatus == 0 {
+                        resetResult = "All Microphone, Screen Recording, and Accessibility entries for \(bundleID) were cleared. Quit JarvisNote and re-launch from /Applications, then start a recording — macOS will prompt fresh for each permission."
+                    } else {
+                        resetResult = "tccutil exited with status \(task.terminationStatus). Output:\n\(output.isEmpty ? "<empty>" : output)"
+                    }
+                    refreshTick &+= 1
+                }
+            } catch {
+                Task { @MainActor in
+                    resetResult = "Could not run tccutil: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 }
 
@@ -976,5 +1089,60 @@ private extension AudioInputDevice {
     /// touching the enumerator directly.
     static func fresh() -> [AudioInputDevice] {
         AudioDeviceEnumerator.inputDevices()
+    }
+}
+
+// MARK: - CameraBubbleSettings
+
+/// Toggle + camera-device picker + size slider for the Loom-style webcam
+/// bubble. Lives inside the Transcription tab. The bubble itself is a
+/// floating circular NSWindow that opens during Audio + Screen recordings;
+/// ScreenCaptureKit captures the window as part of screen.mp4.
+@available(macOS 14.0, *)
+private struct CameraBubbleSettings: View {
+    @Bindable var settings: AppSettings
+    @State private var devices: [AVCaptureDevice] = []
+    @State private var refreshTick: Int = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Show webcam bubble during Audio + Screen recordings", isOn: $settings.cameraBubbleEnabled)
+
+            if settings.cameraBubbleEnabled {
+                Picker("Camera", selection: $settings.cameraDeviceUID) {
+                    Text("System default").tag("")
+                    if !devices.isEmpty {
+                        Divider()
+                        ForEach(devices, id: \.uniqueID) { device in
+                            Text(device.localizedName).tag(device.uniqueID)
+                        }
+                    }
+                }
+                .id(refreshTick)
+
+                HStack {
+                    Text("Size")
+                    Slider(value: $settings.cameraBubbleSize, in: 120...400, step: 10)
+                    Text("\(Int(settings.cameraBubbleSize)) pt")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 60, alignment: .trailing)
+                }
+
+                Button("Refresh camera list") {
+                    devices = CameraBubble.availableDevices()
+                    refreshTick &+= 1
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+            }
+
+            Text("Floating circular window with your front camera, draggable anywhere on screen. Captured by ScreenCaptureKit alongside the screen, so it lands inside `screen.mp4` automatically. Position and size are remembered between recordings. Camera permission is requested on first use.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .onAppear {
+            devices = CameraBubble.availableDevices()
+        }
     }
 }

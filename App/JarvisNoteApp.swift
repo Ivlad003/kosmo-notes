@@ -149,6 +149,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.delegate = self
 
+        // Version header — disabled menu item that shows what build is actually
+        // running. Useful when rebuilding ad-hoc dev binaries: confirms whether
+        // the app you're talking to is the latest one or a stale relaunch.
+        let versionItem = NSMenuItem(title: "Jarvis Note \(Self.appVersionLine())", action: nil, keyEquivalent: "")
+        versionItem.isEnabled = false
+        menu.addItem(versionItem)
+
+        let copyVersionItem = NSMenuItem(title: "Copy version info",
+                                         action: #selector(copyVersionAction),
+                                         keyEquivalent: "")
+        copyVersionItem.target = self
+        menu.addItem(copyVersionItem)
+
+        menu.addItem(.separator())
+
         let recordItem = NSMenuItem(title: "Start Recording",
                                     action: #selector(recordToggleAction),
                                     keyEquivalent: "r")
@@ -351,6 +366,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Menu actions
+
+    /// "0.0.2 (build 2)" — read at runtime from the bundle's Info.plist so the
+    /// menu always reflects what's actually loaded, not a stale source-coded
+    /// constant. Sole reason this exists: rebuild loops where the user can't
+    /// tell whether the running instance is the latest binary or a stale one.
+    @MainActor
+    static func appVersionLine() -> String {
+        let info = Bundle.main.infoDictionary
+        let short = (info?["CFBundleShortVersionString"] as? String) ?? "?"
+        let build = (info?["CFBundleVersion"] as? String) ?? "?"
+        return "\(short) (build \(build))"
+    }
+
+    /// Copy a one-line version + system summary to the clipboard. Useful when
+    /// reporting issues — paste it into chat / GitHub and the recipient knows
+    /// exactly which build of which OS produced the problem.
+    @MainActor
+    @objc private func copyVersionAction() {
+        let line = "Jarvis Note \(Self.appVersionLine()) on macOS \(ProcessInfo.processInfo.operatingSystemVersionString)"
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(line, forType: .string)
+    }
 
     @objc private func recordToggleAction() {
         guard #available(macOS 14.0, *) else {

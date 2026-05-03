@@ -58,6 +58,13 @@ final class RecoveryCoordinator {
                 // Update or insert the DB row so the Library reflects the recovered session.
                 await markSessionFailed(orphan: orphan)
                 recovered += 1
+            } catch RecoveryService.RecoveryError.noSegmentsFound {
+                // Truly empty orphan — segments dir contains only zero-frame
+                // .m4a stubs (user pressed Record then Stop instantly, or the
+                // app crashed before any PCM buffer arrived). There's nothing
+                // to salvage; purge the dir + DB row so it stops triggering
+                // recovery prompts on every launch.
+                await purgeEmptyOrphan(orphan)
             } catch {
                 // Partial failure — keep processing remaining orphans.
                 failed += 1
@@ -137,6 +144,15 @@ final class RecoveryCoordinator {
         } catch {
             // DB failure after successful finalize is non-fatal — audio.m4a is on disk.
         }
+    }
+
+    /// Wipe the orphan's session directory + any DB row for it. Called when
+    /// the segments are empty / unrecoverable — there's no transcript-able
+    /// audio to salvage, and leaving the dir behind would re-trigger the
+    /// "recover N interrupted recordings?" prompt on every future launch.
+    private func purgeEmptyOrphan(_ orphan: RecoveryService.OrphanSession) async {
+        try? FileManager.default.removeItem(at: orphan.sessionDir)
+        try? await database.deleteSession(id: orphan.id)
     }
 
     /// Returns the filesystem creation date of a directory, or now() as a fallback.

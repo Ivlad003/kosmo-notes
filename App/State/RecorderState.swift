@@ -88,6 +88,11 @@ final class RecorderState {
     private var captureSession: CaptureSession?
     private var micMeter: MicLevelMeter?
     private let sleepAssertion = SleepAssertion()
+    /// Floating webcam bubble window; opened only when both Audio + Screen
+    /// mode AND `cameraBubbleEnabled` are on, AND camera permission was
+    /// granted. The bubble lives on screen for ScreenCaptureKit to capture
+    /// it as part of `screen.mp4` — no separate compositing in our writer.
+    private let cameraBubbleController = CameraBubbleWindowController()
 
     // MARK: - Init
 
@@ -136,6 +141,18 @@ final class RecorderState {
             let deepgramKey = settings.deepgramApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
             if deepgramKey.isEmpty {
                 status = .failed(message: "Set your Deepgram API key in Settings → Transcription before recording.")
+                return
+            }
+        case .gemini:
+            let geminiKey = settings.geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if geminiKey.isEmpty {
+                status = .failed(message: "Set your Gemini API key in Settings → Transcription before recording.")
+                return
+            }
+        case .openrouterAudio:
+            let orKey = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if orKey.isEmpty {
+                status = .failed(message: "Set your OpenRouter API key in Settings → AI Providers before recording (used for OpenRouter multimodal transcription).")
                 return
             }
         }
@@ -206,6 +223,22 @@ final class RecorderState {
                 audioCodec: settings.audioCodec.captureChoice,
                 systemAudioDeviceUID: settings.systemAudioDeviceUID.isEmpty ? nil : settings.systemAudioDeviceUID
             )
+            // Open the camera bubble window BEFORE starting SCStream so the
+            // window is on screen by the time the first screen frame is
+            // captured. Only when in Audio + Screen mode (no point recording
+            // a webcam if there's no video file) and user has opted in.
+            // If camera permission is missing we surface the alert and skip
+            // — recording continues without the bubble.
+            if screenEnabled && settings.cameraBubbleEnabled {
+                let granted = await PermissionsHelper.requestCameraAccess()
+                if granted {
+                    await cameraBubbleController.show(settings: settings)
+                } else {
+                    PermissionsHelper.showMissingAlert(.camera)
+                    // Don't fail the recording — just skip the bubble.
+                }
+            }
+
             let capture = CaptureSession(config: config)
             try await capture.start()
             self.captureSession = capture
@@ -245,6 +278,7 @@ final class RecorderState {
         micMeter = nil
         micLevel = 0
         sleepAssertion.release()
+        await cameraBubbleController.hide()
 
         guard !segments.isEmpty else {
             self.status = .failed(message: "No audio captured (check Microphone permission in System Settings).")
@@ -304,6 +338,16 @@ final class RecorderState {
                 case .openaiWhisper:
                     let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
                     return WhisperProvider(apiKey: key)
+                case .gemini:
+                    let key = settings.geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return GeminiAudioProvider(apiKey: key)
+                case .openrouterAudio:
+                    let key = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let model = settings.openrouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return OpenRouterAudioProvider(
+                        apiKey: key,
+                        model: model.isEmpty ? "google/gemini-2.5-flash" : model
+                    )
                 }
             }()
             let result = try await provider.transcribe(
@@ -311,37 +355,146 @@ final class RecorderState {
                 config: TranscriptionConfig(language: language)
             )
 
-            // Persist transcript.jsonl + transcript.txt
+            // Optional LLM cleanup pass — fixes ASR mistakes (numbers, names,
+            // double-words, missing punctuation) without touching segment
+            // boundaries. Only the full text gets rewritten; segment timing is
+            // preserved from the ASR output. On failure (no key, network, etc.)
+            // we keep the raw text and continue.
+            let cleanedText: String
+            if settings.transcriptCleanupEnabled {
+                cleanedText = await tryCleanupTranscript(
+                    rawText: result.text,
+                    sourceLanguage: result.language
+                ) ?? result.text
+            } else {
+                cleanedText = result.text
+            }
+
+            // Persist transcript.jsonl (segments with timing — always raw) +
+            // transcript.txt (the cleaned full text users actually read).
+            // When cleanup is enabled we also save transcript.raw.txt so the
+            // raw ASR output is available for audit / re-cleanup.
             let store = try TranscriptStore(sessionDir: dir)
             for segment in result.segments {
                 try await store.append(segment)
             }
-            try await store.close()
+            try await store.close(overrideText: cleanedText)
+            if settings.transcriptCleanupEnabled, cleanedText != result.text {
+                let rawURL = dir.appendingPathComponent("transcript.raw.txt")
+                try? AtomicWriter.write(Data(result.text.utf8), to: rawURL)
+            }
 
-            // FTS index + DB row finalize
-            try await sessionStore.indexTranscript(sid: sessionId, text: result.text)
+            // FTS index + DB row finalize — index the cleaned text so search
+            // hits the corrected words, not the misheard versions.
+            try await sessionStore.indexTranscript(sid: sessionId, text: cleanedText)
 
             // Optional embedding index for semantic search. Failures are silent;
             // FTS5 is the primary index, embeddings just augment recall.
             if settings.semanticSearchEnabled {
-                await indexSemantic(sid: sessionId, transcript: result.text)
+                await indexSemantic(sid: sessionId, transcript: cleanedText)
             }
 
             // Generate AI summary; failures are non-fatal — pipeline continues regardless.
             lastSummaryURL = await tryGenerateSummary(
-                transcript: result.text,
+                transcript: cleanedText,
                 sessionDir: dir,
                 sourceLanguage: result.language
             )
 
             try await sessionStore.finalize(id: sessionId, status: .complete, durationSecs: duration)
 
-            let preview = previewText(result.text)
+            let preview = previewText(cleanedText)
             self.status = .complete(sessionId: sessionId, audioFile: audioFile, transcriptPreview: preview)
         } catch {
             // Mark the session failed in the DB, but don't crash if that fails too.
             try? await sessionStore.finalize(id: sessionId, status: .failed, durationSecs: 0)
             self.status = .failed(message: "Transcription failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - LLM transcript cleanup
+
+    /// Optional post-ASR pass that fixes recognition mistakes (numbers, names,
+    /// double-words, missing punctuation) without touching segment boundaries.
+    /// Returns `nil` on any failure — caller falls back to the raw transcript.
+    /// Cost-capped via the same mechanism as summary generation.
+    private func tryCleanupTranscript(
+        rawText: String,
+        sourceLanguage: String?
+    ) async -> String? {
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Same target-language resolution rule as the summary pass.
+        let target: String? = settings.summaryLanguage == "auto" ? nil : settings.summaryLanguage
+        let system = PromptTemplates.transcriptCleanup(sourceLanguage: sourceLanguage, targetLanguage: target)
+        let userMsg = PromptTemplates.transcriptCleanupUserMessage(rawTranscript: trimmed)
+
+        // Build the LLM provider per current settings. Mirror of tryGenerateSummary.
+        let provider: any AIProvider
+        let pricing: CostEstimator.Pricing
+        let model: String
+
+        switch settings.llmProvider {
+        case .anthropic:
+            let key = settings.anthropicApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { return nil }
+            provider = AnthropicProvider(apiKey: key)
+            model = "claude-sonnet-4-6"
+            pricing = CostEstimator.anthropic_claude_sonnet_4_6
+        case .openai:
+            let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { return nil }
+            provider = OpenAIProvider(apiKey: key)
+            model = "gpt-4o-mini"
+            pricing = CostEstimator.openai_gpt_4o_mini
+        case .openrouter:
+            let key = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { return nil }
+            provider = OpenRouterProvider(apiKey: key)
+            model = settings.openrouterModel
+            pricing = CostEstimator.openrouter_default
+        case .ollama:
+            let endpoint = URL(string: settings.ollamaEndpoint) ?? URL(string: "http://localhost:11434")!
+            let mode: OllamaProvider.APIMode = settings.ollamaApiMode == .native ? .native : .openaiCompat
+            let bearer = settings.ollamaBearer.trimmingCharacters(in: .whitespacesAndNewlines)
+            do {
+                provider = try OllamaProvider(
+                    endpoint: endpoint,
+                    apiMode: mode,
+                    bearerToken: bearer.isEmpty ? nil : bearer
+                )
+            } catch {
+                return nil
+            }
+            model = settings.ollamaModel
+            pricing = CostEstimator.Pricing(inputPerMillion: 0, outputPerMillion: 0)
+        }
+
+        // Cost estimate. Cleanup output is roughly the same length as input,
+        // so cap maxTokens at ~1.2× input-token estimate to leave headroom.
+        let inputTokens = CostEstimator.estimateTokens(text: system) + CostEstimator.estimateTokens(text: userMsg)
+        let outputTokensCap = max(512, Int(Double(inputTokens) * 1.2))
+        let estimatedCost = CostEstimator.estimate(
+            inputTokens: inputTokens,
+            outputTokens: outputTokensCap,
+            pricing: pricing
+        )
+        if estimatedCost > settings.costCapUSD {
+            // Don't pop a modal for cleanup — silently skip if the cap is too
+            // low. Summary already has a "increase cap?" interaction.
+            return nil
+        }
+
+        let messages: [ChatMessage] = [ChatMessage(role: .user, content: userMsg)]
+        let config = AIConfig(model: model, temperature: 0.0, maxTokens: outputTokensCap, systemPrompt: system)
+
+        do {
+            let cleaned = try await provider.chat(messages: messages, config: config)
+            let trimmedClean = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmedClean.isEmpty ? nil : trimmedClean
+        } catch {
+            return nil
         }
     }
 
@@ -524,6 +677,7 @@ final class RecorderState {
         micMeter = nil
         micLevel = 0
         sleepAssertion.release()
+        await cameraBubbleController.hide()
     }
 
     private func previewText(_ text: String) -> String {

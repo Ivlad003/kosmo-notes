@@ -25,6 +25,10 @@ final class AppSettings {
         case anthropic = "anthropic.api_key"
         case ollama = "ollama.bearer_token"             // optional; some self-hosted setups require auth
         case openrouter = "openrouter.api_key"
+        // Google AI Studio key for Gemini multimodal audio transcription
+        // (https://aistudio.google.com/apikey). Separate from any Vertex AI
+        // service-account credentials.
+        case gemini = "gemini.api_key"
         case s3AccessKey = "s3.access_key_id"
         case s3SecretKey = "s3.secret_access_key"
     }
@@ -32,12 +36,16 @@ final class AppSettings {
     enum TranscriptionProviderChoice: String, CaseIterable, Identifiable {
         case deepgram
         case openaiWhisper
+        case gemini
+        case openrouterAudio
 
         var id: String { rawValue }
         var displayName: String {
             switch self {
             case .deepgram: return "Deepgram"
             case .openaiWhisper: return "OpenAI Whisper"
+            case .gemini: return "Gemini (multimodal)"
+            case .openrouterAudio: return "OpenRouter (multimodal)"
             }
         }
     }
@@ -148,6 +156,9 @@ final class AppSettings {
         static let ollamaBearer = "ollamaBearer"
         static let systemAudioEnabled = "systemAudioEnabled"
         static let dictationLLMCleanup = "dictationLLMCleanup"
+        // Whether to run the meeting/voice-note transcript through an LLM cleanup
+        // pass after Whisper/Deepgram. Reuses the configured llmProvider; default ON.
+        static let transcriptCleanupEnabled = "transcriptCleanupEnabled"
         static let dictationMaxSeconds = "dictationMaxSeconds"
         static let voiceNoteKind = "voiceNoteKind"
         static let openrouterModel = "openrouterModel"
@@ -160,6 +171,12 @@ final class AppSettings {
         // Custom Core Audio input device for system-audio capture (e.g. BlackHole 2ch).
         // Empty string = use SCKit whole-system mixdown (default behavior).
         static let systemAudioDeviceUID = "systemAudioDeviceUID"
+        // Loom-style floating webcam bubble during Audio + Screen recordings.
+        static let cameraBubbleEnabled = "cameraBubbleEnabled"
+        static let cameraDeviceUID = "cameraDeviceUID"
+        static let cameraBubblePositionX = "cameraBubblePositionX"
+        static let cameraBubblePositionY = "cameraBubblePositionY"
+        static let cameraBubbleSize = "cameraBubbleSize"
         // S3 sharing
         static let s3Endpoint = "s3Endpoint"
         static let s3Region = "s3Region"
@@ -183,6 +200,7 @@ final class AppSettings {
     var anthropicApiKey: String = ""
     var ollamaBearer: String = ""   // optional bearer token for self-hosted Ollama frontends
     var openrouterApiKey: String = ""
+    var geminiApiKey: String = ""
     var s3AccessKey: String = ""
     var s3SecretKey: String = ""
 
@@ -191,6 +209,32 @@ final class AppSettings {
     /// SCKit whole-system mixdown (default). Set via Settings → Transcription.
     var systemAudioDeviceUID: String {
         didSet { UserDefaults.standard.set(systemAudioDeviceUID, forKey: Defaults.systemAudioDeviceUID) }
+    }
+
+    /// Show a Loom-style floating webcam bubble during Audio + Screen recordings.
+    /// When on, a circular always-on-top NSWindow with the front camera feed
+    /// appears at the saved position; ScreenCaptureKit then captures it as
+    /// part of `screen.mp4`. Off by default — opt-in.
+    var cameraBubbleEnabled: Bool {
+        didSet { UserDefaults.standard.set(cameraBubbleEnabled, forKey: Defaults.cameraBubbleEnabled) }
+    }
+    /// Persistent UID of the AVCaptureDevice the bubble should use (FaceTime,
+    /// USB cam, Continuity Camera, etc). Empty string = system default.
+    var cameraDeviceUID: String {
+        didSet { UserDefaults.standard.set(cameraDeviceUID, forKey: Defaults.cameraDeviceUID) }
+    }
+    /// On-screen position of the bubble's bottom-left corner (Cocoa coords).
+    /// Persisted across launches so the bubble reappears where the user left it.
+    var cameraBubblePosition: CGPoint {
+        didSet {
+            UserDefaults.standard.set(Double(cameraBubblePosition.x), forKey: Defaults.cameraBubblePositionX)
+            UserDefaults.standard.set(Double(cameraBubblePosition.y), forKey: Defaults.cameraBubblePositionY)
+        }
+    }
+    /// Side length in points of the (square) bubble window. 200 default;
+    /// clamped to [120, 500] in the window controller.
+    var cameraBubbleSize: Double {
+        didSet { UserDefaults.standard.set(cameraBubbleSize, forKey: Defaults.cameraBubbleSize) }
     }
 
     var transcriptionProvider: TranscriptionProviderChoice {
@@ -239,6 +283,16 @@ final class AppSettings {
     /// Hard cap on a single Dictation utterance length, in seconds. Default 60.
     var dictationMaxSeconds: Int {
         didSet { UserDefaults.standard.set(dictationMaxSeconds, forKey: Defaults.dictationMaxSeconds) }
+    }
+
+    /// Run the long-form meeting / voice-note transcript through an LLM cleanup
+    /// pass after Whisper / Deepgram / Gemini transcribes. Reuses the configured
+    /// `llmProvider`. On = ASR mistakes (numbers, names, double-words, missing
+    /// punctuation) corrected; speaker voice and timing preserved. Off = raw
+    /// transcript stored as-is. Default ON. Adds ~1–3 s + a small LLM cost per
+    /// recording. Cleanup failures are non-fatal — raw transcript is kept.
+    var transcriptCleanupEnabled: Bool {
+        didSet { UserDefaults.standard.set(transcriptCleanupEnabled, forKey: Defaults.transcriptCleanupEnabled) }
     }
 
     /// Default Voice Note kind. The user can override per session.
@@ -364,6 +418,14 @@ final class AppSettings {
 
         self.systemAudioDeviceUID = UserDefaults.standard.string(forKey: Defaults.systemAudioDeviceUID) ?? ""
 
+        self.cameraBubbleEnabled = (UserDefaults.standard.object(forKey: Defaults.cameraBubbleEnabled) as? Bool) ?? false
+        self.cameraDeviceUID = UserDefaults.standard.string(forKey: Defaults.cameraDeviceUID) ?? ""
+        let cbX = UserDefaults.standard.object(forKey: Defaults.cameraBubblePositionX) as? Double ?? 100
+        let cbY = UserDefaults.standard.object(forKey: Defaults.cameraBubblePositionY) as? Double ?? 100
+        self.cameraBubblePosition = CGPoint(x: cbX, y: cbY)
+        let savedSize = UserDefaults.standard.double(forKey: Defaults.cameraBubbleSize)
+        self.cameraBubbleSize = savedSize > 0 ? savedSize : 200
+
         let llmRaw = UserDefaults.standard.string(forKey: Defaults.llmProvider) ?? LLMProviderChoice.anthropic.rawValue
         self.llmProvider = LLMProviderChoice(rawValue: llmRaw) ?? .anthropic
 
@@ -386,6 +448,7 @@ final class AppSettings {
         self.systemAudioEnabled = UserDefaults.standard.bool(forKey: Defaults.systemAudioEnabled)
         // Default true for cleanup; UserDefaults.bool returns false for missing keys, so check object presence.
         self.dictationLLMCleanup = (UserDefaults.standard.object(forKey: Defaults.dictationLLMCleanup) as? Bool) ?? true
+        self.transcriptCleanupEnabled = (UserDefaults.standard.object(forKey: Defaults.transcriptCleanupEnabled) as? Bool) ?? true
         let maxSecs = UserDefaults.standard.integer(forKey: Defaults.dictationMaxSeconds)
         self.dictationMaxSeconds = maxSecs > 0 ? maxSecs : 60
 
@@ -447,6 +510,7 @@ final class AppSettings {
         anthropicApiKey = (try? keychain.get(KeychainAccount.anthropic.rawValue)) ?? ""
         ollamaBearer = (try? keychain.get(KeychainAccount.ollama.rawValue)) ?? ""
         openrouterApiKey = (try? keychain.get(KeychainAccount.openrouter.rawValue)) ?? ""
+        geminiApiKey = (try? keychain.get(KeychainAccount.gemini.rawValue)) ?? ""
         s3AccessKey = (try? keychain.get(KeychainAccount.s3AccessKey.rawValue)) ?? ""
         s3SecretKey = (try? keychain.get(KeychainAccount.s3SecretKey.rawValue)) ?? ""
     }
@@ -459,6 +523,7 @@ final class AppSettings {
         commit(.anthropic, value: anthropicApiKey)
         commit(.ollama, value: ollamaBearer)
         commit(.openrouter, value: openrouterApiKey)
+        commit(.gemini, value: geminiApiKey)
         commit(.s3AccessKey, value: s3AccessKey)
         commit(.s3SecretKey, value: s3SecretKey)
     }
