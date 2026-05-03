@@ -85,13 +85,21 @@ final class ChatState {
         database: AppDatabase,
         sessionStore: SessionStore,
         recorder: RecorderState,
-        whisperProviderFactory: @Sendable @escaping (String) -> WhisperProvider = { WhisperProvider(apiKey: $0) }
+        whisperProviderFactory: (@Sendable (String) -> WhisperProvider)? = nil
     ) {
         self.settings = settings
         self.database = database
         self.sessionStore = sessionStore
         self.recorder = recorder
-        self.whisperProviderFactory = whisperProviderFactory
+        // Default factory captures the user-selected OpenAI model
+        // (whisper-1 / gpt-4o-transcribe / gpt-4o-mini-transcribe) at
+        // init time, so chat-side audio snapshots use the same upgrade
+        // path as the recorder's transcription. Tests still inject a
+        // custom factory to short-circuit the network.
+        let modelName = settings.openaiTranscribeModel.rawValue
+        self.whisperProviderFactory = whisperProviderFactory ?? { apiKey in
+            WhisperProvider(apiKey: apiKey, model: modelName)
+        }
     }
 
     // MARK: - Actions

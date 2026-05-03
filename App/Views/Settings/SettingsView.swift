@@ -181,6 +181,20 @@ private struct TranscriptionTab: View {
                     .foregroundStyle(.secondary)
             }
 
+            if settings.transcriptionProvider == .openaiWhisper {
+                Section("OpenAI model") {
+                    Picker("Model", selection: $settings.openaiTranscribeModel) {
+                        ForEach(AppSettings.OpenAITranscribeModel.allCases) { m in
+                            Text(m.displayName).tag(m)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    Text("`whisper-1` is the legacy hosted Whisper Large-v2 (~5.3% WER). `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` are OpenAI's March 2025 successors with measurably lower WER (~4.1%). Same /v1/audio/transcriptions endpoint, same API key — only the `model` field differs. Default is `gpt-4o-mini-transcribe` per OpenAI's own recommendation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Transcript LLM cleanup") {
                 Toggle("Clean transcript with LLM after transcription", isOn: $settings.transcriptCleanupEnabled)
                 Text("Runs the raw ASR output through your configured LLM (AI Providers tab) to fix mishearing — wrong numbers, names, technical terms, doubled words, missing punctuation. Speaker voice and timing are preserved. Adds ~1–3 s + a small LLM cost per recording. Saved separately as `transcript.raw.txt` for audit. Cleanup failures are non-fatal — raw transcript stays.")

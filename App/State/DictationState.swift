@@ -147,7 +147,7 @@ final class DictationState {
         guard !key.isEmpty else {
             throw DictationSetupError.missingAPIKey("Configure OpenAI key for dictation")
         }
-        let whisper = WhisperProvider(apiKey: key)
+        let whisper = WhisperProvider(apiKey: key, model: settings.openaiTranscribeModel.rawValue)
 
         // LLM provider + per-provider model. The pipeline used to hardcode
         // claude-sonnet-4-6 in its AIConfig, so cleanup tied to OpenAI / Ollama

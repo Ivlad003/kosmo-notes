@@ -387,7 +387,7 @@ final class RecorderState {
                     return DeepgramBatchProvider(apiKey: key)
                 case .openaiWhisper:
                     let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return WhisperProvider(apiKey: key)
+                    return WhisperProvider(apiKey: key, model: settings.openaiTranscribeModel.rawValue)
                 case .gemini:
                     let key = settings.geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
                     return GeminiAudioProvider(apiKey: key)

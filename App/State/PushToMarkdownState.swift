@@ -154,7 +154,7 @@ final class PushToMarkdownState {
     }
 
     private func makePipeline(openaiKey: String) throws -> DictationPipeline {
-        let whisper = WhisperProvider(apiKey: openaiKey)
+        let whisper = WhisperProvider(apiKey: openaiKey, model: settings.openaiTranscribeModel.rawValue)
 
         let llm: (any AIProvider)? = settings.dictationLLMCleanup ? makeLLMProvider() : nil
         let model = makeLLMModel()

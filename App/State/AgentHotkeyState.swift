@@ -115,7 +115,7 @@ final class AgentHotkeyState {
         // forward the text to AgentSessionState.start as the initial
         // instruction; pipeline returns .clipboardSimulatedV so its own
         // status flips to `.completed`.
-        let whisper = WhisperProvider(apiKey: openaiKey)
+        let whisper = WhisperProvider(apiKey: openaiKey, model: settings.openaiTranscribeModel.rawValue)
         let saver: DictationPipeline.Paster = { [weak self] instruction in
             Task { @MainActor [weak self] in
                 guard let self else { return }

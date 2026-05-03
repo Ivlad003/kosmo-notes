@@ -52,6 +52,26 @@ final class AppSettings {
         }
     }
 
+    /// Which OpenAI hosted speech-to-text model to use when the
+    /// transcription provider is `.openaiWhisper`. Same `/v1/audio/transcriptions`
+    /// endpoint, different `model` field. `whisper-1` is the legacy hosted
+    /// Whisper-large-v2 model; the gpt-4o-transcribe family is OpenAI's
+    /// newer (March 2025) successor with measurably lower WER.
+    enum OpenAITranscribeModel: String, CaseIterable, Identifiable {
+        case whisper1 = "whisper-1"
+        case gpt4oTranscribe = "gpt-4o-transcribe"
+        case gpt4oMiniTranscribe = "gpt-4o-mini-transcribe"
+
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .whisper1: return "whisper-1 (legacy Large-v2)"
+            case .gpt4oTranscribe: return "gpt-4o-transcribe (highest accuracy)"
+            case .gpt4oMiniTranscribe: return "gpt-4o-mini-transcribe (recommended)"
+            }
+        }
+    }
+
     enum LLMProviderChoice: String, CaseIterable, Identifiable {
         case anthropic
         case openai
@@ -248,6 +268,11 @@ final class AppSettings {
         static let s3Region = "s3Region"
         static let s3Bucket = "s3Bucket"
         static let s3PresignTTLHours = "s3PresignTTLHours"
+        // OpenAI speech-to-text model selection. Whisper-1 is the legacy
+        // hosted Large-v2; gpt-4o-transcribe / gpt-4o-mini-transcribe are
+        // OpenAI's newer (March 2025) higher-accuracy successors. Same
+        // /v1/audio/transcriptions endpoint, different `model` field.
+        static let openaiTranscribeModel = "openaiTranscribeModel"
         // RTMP live streaming. streamKey moved to Keychain in Phase 4 polish;
         // only the toggle and URL stay in UserDefaults (URL is not a secret —
         // OBS, MediaMTX, YouTube ingest URLs are public).
@@ -409,6 +434,14 @@ final class AppSettings {
 
     var transcriptionProvider: TranscriptionProviderChoice {
         didSet { UserDefaults.standard.set(transcriptionProvider.rawValue, forKey: Defaults.transcriptionProvider) }
+    }
+
+    /// Which OpenAI hosted speech-to-text model to use when
+    /// `transcriptionProvider == .openaiWhisper`. Default is `gpt-4o-mini-transcribe`
+    /// per OpenAI's own recommendation — newer than `whisper-1` (~4.1% WER vs 5.3%)
+    /// and cheaper than `gpt-4o-transcribe`. User can switch in Settings → Transcription.
+    var openaiTranscribeModel: OpenAITranscribeModel {
+        didSet { UserDefaults.standard.set(openaiTranscribeModel.rawValue, forKey: Defaults.openaiTranscribeModel) }
     }
     var llmProvider: LLMProviderChoice {
         didSet { UserDefaults.standard.set(llmProvider.rawValue, forKey: Defaults.llmProvider) }
@@ -729,6 +762,9 @@ final class AppSettings {
 
         let providerRaw = UserDefaults.standard.string(forKey: Defaults.transcriptionProvider) ?? TranscriptionProviderChoice.openaiWhisper.rawValue
         self.transcriptionProvider = TranscriptionProviderChoice(rawValue: providerRaw) ?? .openaiWhisper
+
+        let openaiModelRaw = UserDefaults.standard.string(forKey: Defaults.openaiTranscribeModel) ?? OpenAITranscribeModel.gpt4oMiniTranscribe.rawValue
+        self.openaiTranscribeModel = OpenAITranscribeModel(rawValue: openaiModelRaw) ?? .gpt4oMiniTranscribe
 
         self.systemAudioDeviceUID = UserDefaults.standard.string(forKey: Defaults.systemAudioDeviceUID) ?? ""
 
