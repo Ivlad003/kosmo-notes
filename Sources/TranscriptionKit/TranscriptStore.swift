@@ -62,6 +62,17 @@ public actor TranscriptStore {
         try flushTxt()
     }
 
+    /// Close the JSONL handle and write `overrideText` (e.g. an LLM-cleaned
+    /// version of the full transcript) to `transcript.txt` instead of
+    /// concatenating segments. JSONL still holds the per-segment timing /
+    /// raw text — only the human-readable plain-text view is overridden.
+    public func close(overrideText: String) throws {
+        try jsonlHandle?.synchronize()
+        try jsonlHandle?.close()
+        jsonlHandle = nil
+        try AtomicWriter.write(Data(overrideText.utf8), to: txtURL)
+    }
+
     /// Snapshot of all final segments persisted so far. Useful for tests
     /// and for re-driving the AI summary stage from a finished session.
     public func segments() -> [TranscriptSegment] {

@@ -8,7 +8,7 @@ import DictationKit
 
 /// Centralised TCC permission checks + "Open System Settings" prompts.
 ///
-/// Mic / Screen Recording / Accessibility — the three permissions Jarvis Note
+/// Mic / Screen Recording / Accessibility — the three permissions KosmoNotes
 /// needs at runtime. Each call returns synchronously where the OS supports it
 /// (Screen Recording, AX) or async where it requires a prompt (Mic).
 ///
@@ -67,6 +67,30 @@ enum PermissionsHelper {
         AccessibilityPaster.isTrusted()
     }
 
+    // MARK: - Camera
+
+    static func cameraAuthStatus() -> AVAuthorizationStatus {
+        AVCaptureDevice.authorizationStatus(for: .video)
+    }
+
+    /// Request camera access. Returns true if granted.
+    static func requestCameraAccess() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await AVCaptureDevice.requestAccess(for: .video)
+        case .denied, .restricted:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    static func cameraGranted() -> Bool {
+        AVCaptureDevice.authorizationStatus(for: .video) == .authorized
+    }
+
     // MARK: - Open System Settings
 
     static func openMicSettings() {
@@ -81,6 +105,10 @@ enum PermissionsHelper {
         AccessibilityPaster.openSystemSettingsAccessibility()
     }
 
+    static func openCameraSettings() {
+        open("x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")
+    }
+
     private static func open(_ urlString: String) {
         if let url = URL(string: urlString) {
             NSWorkspace.shared.open(url)
@@ -93,23 +121,27 @@ enum PermissionsHelper {
         case microphone
         case screenRecording
         case accessibility
+        case camera
 
         var title: String {
             switch self {
             case .microphone: return "Microphone access required"
             case .screenRecording: return "Screen Recording access required"
             case .accessibility: return "Accessibility access required"
+            case .camera: return "Camera access required"
             }
         }
 
         var body: String {
             switch self {
             case .microphone:
-                return "Jarvis Note can't record your voice without Microphone access. Grant it in System Settings → Privacy & Security → Microphone, then start the recording again."
+                return "KosmoNotes can't record your voice without Microphone access. Grant it in System Settings → Privacy & Security → Microphone, then start the recording again."
             case .screenRecording:
-                return "Audio + Screen mode and system-audio capture both need Screen Recording permission. Grant it in System Settings → Privacy & Security → Screen Recording, then quit and relaunch Jarvis Note for the change to take effect."
+                return "Audio + Screen mode and system-audio capture both need Screen Recording permission. Grant it in System Settings → Privacy & Security → Screen Recording, then quit and relaunch KosmoNotes for the change to take effect."
             case .accessibility:
-                return "Dictation Mode pastes the cleaned transcript into the focused text field via the Accessibility API. Grant Jarvis Note Accessibility access in System Settings → Privacy & Security → Accessibility, then quit and relaunch the app — macOS only refreshes AX trust on launch."
+                return "Dictation Mode pastes the cleaned transcript into the focused text field via the Accessibility API. Grant KosmoNotes Accessibility access in System Settings → Privacy & Security → Accessibility, then quit and relaunch the app — macOS only refreshes AX trust on launch."
+            case .camera:
+                return "The Loom-style webcam bubble needs Camera access. Grant it in System Settings → Privacy & Security → Camera, then start the recording again. The bubble is captured by ScreenCaptureKit and lands inside screen.mp4 alongside your screen."
             }
         }
     }
@@ -131,6 +163,7 @@ enum PermissionsHelper {
             case .microphone: openMicSettings()
             case .screenRecording: openScreenRecordingSettings()
             case .accessibility: openAccessibilitySettings()
+            case .camera: openCameraSettings()
             }
             return true
         }

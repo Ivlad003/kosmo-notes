@@ -15,7 +15,7 @@ import Testing
 struct CaptureSessionTests {
 
     private func makeTempDir() throws -> URL {
-        let dir = URL.temporaryDirectory.appendingPathComponent("JarvisNoteSessionTests-\(UUID().uuidString)")
+        let dir = URL.temporaryDirectory.appendingPathComponent("KosmoNotesSessionTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

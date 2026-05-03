@@ -52,9 +52,9 @@ Out of scope for v1.0 (original list):
 
 | # | Criterion | Verification |
 |---|---|---|
-| AC-1 | Empty Xcode project compiles to a `.app` that launches and shows a menu-bar icon | `xcodebuild -scheme JarvisNote -configuration Release` exits 0; manual smoke |
+| AC-1 | Empty Xcode project compiles to a `.app` that launches and shows a menu-bar icon | `xcodebuild -scheme KosmoNotes -configuration Release` exits 0; manual smoke |
 | AC-2 | Popover opens on icon click; mode picker shows Meeting / Dictation (Voice Note absent in v1.0) | Manual smoke |
-| AC-3 | Recording 5 min mic-only on macOS 14.5 produces a playable `audio.m4a` (AAC, ~7 MB at 96 kbps mono) at `~/Library/Application Support/JarvisNote/recordings/<sid>/` | `afplay` plays end-to-end; `ffprobe` shows aac codec, 96 kbps, mono |
+| AC-3 | Recording 5 min mic-only on macOS 14.5 produces a playable `audio.m4a` (AAC, ~7 MB at 96 kbps mono) at `~/Library/Application Support/KosmoNotes/recordings/<sid>/` | `afplay` plays end-to-end; `ffprobe` shows aac codec, 96 kbps, mono |
 | AC-4 | SIGKILL during a 1-min recording leaves `recordings/<sid>/segments/*.m4a` files; on next launch, Recover dialog surfaces this session, accepting yields a finalized `audio.m4a` of ≥25 s | Integration test: kill at t=30s; relaunch in test harness; verify Recover service finalizes |
 | AC-5 | Recording mic + system audio on macOS 12.3+ produces an `audio.m4a` (AAC-in-MP4 container) with **2 separate audio tracks** (track 0 = mic, track 1 = SCKit mixdown) via `AVAssetWriter` multi-track output. Stereo-interleave was rejected (per Critic MAJOR-B) — interleaving requires custom `AVAudioMixerNode` + clock-drift handling between two unrelated capture sources, more work than 2-track | `ffprobe nb_streams == 2` (both audio); manual: play in QuickTime, both audible (QuickTime plays track 0 by default; users get full mixdown via `ffmpeg -map 0:a -filter_complex amerge`) |
 | AC-6 | macOS <12.3 surfaces a clear startup modal: "macOS 12.3 required for system audio. Continue with mic only? [Continue] [Quit]" | Manual on 11.x VM (or version-spoofed test) |
@@ -66,9 +66,9 @@ Out of scope for v1.0 (original list):
 | AC-11 | Click word in transcript view → AVPlayer seeks to that timestamp ±100 ms; live highlight tracks active segment during playback | Integration test: programmatic seek + position-observer assertion |
 | AC-12 | FTS5 search across 100 sessions × 10k tokens returns matches in <50 ms warm cache, <200 ms cold (M-series) | Performance test: synthesize 100 sessions; CI runs on macos-14 GitHub runner |
 | AC-13 | Export to Markdown / plain text / audio file via Save dialog produces files at user-chosen path; Markdown contains YAML frontmatter + summary + transcript with `[mm:ss]` timestamps | Manual smoke + unit test on ExportFormatter |
-| AC-14 | API keys stored in macOS Keychain under service `dev.jarvisnote.studio`; deleting `JarvisNote.config.json` does not lose secrets | Manual: open Keychain Access; integration test: round-trip |
+| AC-14 | API keys stored in macOS Keychain under service `dev.kosmonotes.studio`; deleting `KosmoNotes.config.json` does not lose secrets | Manual: open Keychain Access; integration test: round-trip |
 | AC-15 | Atomic state-file writes survive `kill -9` mid-write | Unit test: write loop with concurrent SIGKILL; reads return valid JSON or empty `{}` |
-| AC-16 | Bundle size: `JarvisNote.app` ≤15 MB uncompressed; `.app.zip` ≤8 MB | CI artifact size check |
+| AC-16 | Bundle size: `KosmoNotes.app` ≤15 MB uncompressed; `.app.zip` ≤8 MB | CI artifact size check |
 | AC-17 | First Record press triggers Microphone TCC prompt; first SCKit attempt triggers Screen Recording TCC prompt; first Dictation hotkey-press triggers Accessibility prompt with link to System Settings → Privacy → Accessibility. After grant + relaunch, all three pipelines work | Manual on a fresh macOS install / fresh VM |
 | AC-18 | All four LLM providers (Anthropic / OpenAI / OpenRouter / Ollama native + OpenAI-compat) pass a "Test connection" round-trip from Settings → AI Providers / Settings → Ollama | Manual matrix; mocked HTTP integration tests |
 
@@ -86,10 +86,10 @@ This was missing from the previous plan and would have surfaced as a blocker on 
 |---|---|---|
 | App Sandbox | **Off** | Sandboxed apps cannot use `AXUIElementSetAttributeValue` on other apps' processes (Dictation paste). Single-user hand-shared app — sandboxing is theatre without code signing |
 | Hardened Runtime | **Off** | Hardened runtime requires entitlement allow-listing for `AVAudioEngine`, `ScreenCaptureKit`, etc. Adds friction without meaningful benefit for unsigned binary |
-| `JarvisNote.entitlements` | **Empty file present** | Required by Xcode build phase even when sandbox is off; just a minimal `<plist><dict></dict></plist>` |
+| `KosmoNotes.entitlements` | **Empty file present** | Required by Xcode build phase even when sandbox is off; just a minimal `<plist><dict></dict></plist>` |
 | `Info.plist` usage descriptions | Two required | `NSMicrophoneUsageDescription` + `NSScreenCaptureUsageDescription`. **Do NOT declare `NSAppleEventsUsageDescription`** (AppleEvents ≠ AX API; AX uses `AXIsProcessTrusted()` for permission, no usage-description needed) and **do NOT declare `NSCameraUsageDescription`** (declaring without using surfaces a spurious Privacy entry — add when v1.1 webcam ships) |
 | Accessibility System Settings flow | **Manual user action** | First Dictation press: detect missing AX permission via `AXIsProcessTrusted()`; show modal with [Open System Settings → Privacy → Accessibility] button calling `NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)`. User toggles app on, then **must Cmd+Q and relaunch** for AX trust to take effect. Document this in onboarding |
-| Bundle identifier (locks Keychain service) | **`dev.jarvisnote.studio`** | Locked Day 1 of Phase 0. Display name ("Jarvis Note" working title) is mutable post-ship; bundle ID is **not** — Keychain entries are tied to it |
+| Bundle identifier (locks Keychain service) | **`dev.kosmonotes.studio`** | Locked Day 1 of Phase 0. Display name ("Jarvis Note" working title) is mutable post-ship; bundle ID is **not** — Keychain entries are tied to it |
 
 ---
 
@@ -101,11 +101,11 @@ This was missing from the previous plan and would have surfaced as a blocker on 
 jarvis-studio/                        # repo dir name preserved (matches archive branch)
 ├── Package.swift                     # SwiftPM manifest — library targets
 ├── project.yml                       # XcodeGen spec
-├── JarvisNote.xcodeproj/             # gitignored, generated
+├── KosmoNotes.xcodeproj/             # gitignored, generated
 ├── App/
-│   ├── JarvisNoteApp.swift           # @main, MenuBarExtra
+│   ├── KosmoNotesApp.swift           # @main, MenuBarExtra
 │   ├── Info.plist
-│   ├── JarvisNote.entitlements       # empty <plist><dict></dict></plist>
+│   ├── KosmoNotes.entitlements       # empty <plist><dict></dict></plist>
 │   ├── Resources/
 │   ├── Views/
 │   │   ├── Popover/                  # mode picker, Record button, mic level
@@ -195,9 +195,9 @@ Three phases. Realistic timeline includes 30–50 % surcharge for Swift unfamili
 - `project.yml` (XcodeGen)
 - `xcodegen generate` → `.xcodeproj`
 - `.gitignore` already covers Xcode/SwiftPM artifacts
-- `App/JarvisNoteApp.swift` — `@main` with `MenuBarExtra("Jarvis Note", systemImage: "waveform.circle")` + empty popover (just a "Record" placeholder button)
+- `App/KosmoNotesApp.swift` — `@main` with `MenuBarExtra("Jarvis Note", systemImage: "waveform.circle")` + empty popover (just a "Record" placeholder button)
 - `App/Info.plist` — usage descriptions per §3
-- `App/JarvisNote.entitlements` — empty plist
+- `App/KosmoNotes.entitlements` — empty plist
 - `App/Resources/Assets.xcassets` — placeholder menu-bar icon
 
 **Day 2 (single engineer):** smallest concrete code
@@ -421,10 +421,10 @@ Reduced from previous plan after Critic feedback. Remaining:
 | Final product name | Pre-tag | User picks; bundle ID locked Day 1 of Phase 0 regardless |
 
 **Resolved (no longer boundary items):**
-- Repo rename: keep `jarvis-studio` dir on disk; product is `JarvisNote.app`. Locked
+- Repo rename: keep `jarvis-studio` dir on disk; product is `KosmoNotes.app`. Locked
 - aws-sdk-swift vs hand-roll: N/A — Sharing cut from v1.0
 - Embedding provider: N/A — semantic search deferred to v1.1
-- Bundle identifier: `dev.jarvisnote.studio` (Phase 0 Day 1)
+- Bundle identifier: `dev.kosmonotes.studio` (Phase 0 Day 1)
 - Sandboxing: off; hardened runtime: off; entitlements: empty plist (Phase 0 Day 2 — see §3)
 - **Stereo vs 2-track audio output (Phase A Week 1):** picked **2-track** per AC-5; mic = track 0, SCKit mixdown = track 1. Implementation in `Sources/CaptureKit/SegmentWriter.swift`
 - **Encoder choice / ffmpeg-vs-Ogg-stdlib for recovery (Phase A Week 1–2):** picked **AAC in `.m4a`** (Opus needs macOS 14+, deployment is 12.3+); `RecoveryService` uses `AVMutableComposition` + `AVAssetExportSession` passthrough — no bundled ffmpeg, no Ogg-stdlib fallback. See "Implementation deviation" banner at the top
@@ -466,7 +466,7 @@ v1.0.0 ships when:
 
 1. All 18 acceptance criteria pass (AC-9b is manual-measured, attached to release notes)
 2. A user can:
-   - Receive `JarvisNote.app.zip` via Dropbox / file share
+   - Receive `KosmoNotes.app.zip` via Dropbox / file share
    - Run `xattr -d com.apple.quarantine` per README → double-click `.app`
    - Configure providers in Settings (Anthropic + Deepgram minimum; Ollama optional)
    - Record a 5-min Meeting → get a structured summary in their target language
@@ -489,14 +489,14 @@ Anything beyond (Voice Note, Sharing, per-process Tap, semantic search, third-pa
 Critic-fix: not parallel-dispatchable. One engineer end-to-end Day 1.
 
 1. Create `Package.swift` with library targets per §4 layout
-2. Create `project.yml` (XcodeGen) with `JarvisNote` app target + linked SwiftPM library targets
+2. Create `project.yml` (XcodeGen) with `KosmoNotes` app target + linked SwiftPM library targets
 3. Run `brew install xcodegen`; document in README
-4. `xcodegen generate` → `JarvisNote.xcodeproj`
-5. `App/JarvisNoteApp.swift` — `@main` `MenuBarExtra` skeleton with empty popover
+4. `xcodegen generate` → `KosmoNotes.xcodeproj`
+5. `App/KosmoNotesApp.swift` — `@main` `MenuBarExtra` skeleton with empty popover
 6. `App/Info.plist` — `NSMicrophoneUsageDescription`, `NSScreenCaptureUsageDescription`, `NSAppleEventsUsageDescription`, `NSCameraUsageDescription` (placeholder)
-7. `App/JarvisNote.entitlements` — empty `<plist><dict></dict></plist>`
+7. `App/KosmoNotes.entitlements` — empty `<plist><dict></dict></plist>`
 8. `App/Resources/Assets.xcassets` — placeholder menu-bar icon (16×16 SF Symbol export)
-9. Verify `xcodebuild -scheme JarvisNote build` succeeds locally
+9. Verify `xcodebuild -scheme KosmoNotes build` succeeds locally
 10. Verify launching the built `.app` shows menu-bar icon
 
 Day 2 starts with Storage primitives (`AtomicWriter`, `KeychainStore`); CI yaml lands Day 3.
@@ -565,7 +565,7 @@ Owner reversed the design-doc's "no-screen-recording" decision after using the a
 
 ### Verification checklist (owner must run locally)
 
-- [ ] `xcodegen generate && xcodebuild -scheme JarvisNote -configuration Debug build` exits 0
+- [ ] `xcodegen generate && xcodebuild -scheme KosmoNotes -configuration Debug build` exits 0
 - [ ] `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` shows ≥14 passing (all existing tests) + new AIKit multipart tests
 - [ ] Settings → Transcription → Recording mode picker appears and persists between launches
 - [ ] Start a recording in Audio + Screen mode → macOS prompts for Screen Recording permission → grant + relaunch → record → verify `<sessionDir>/screen.mp4` exists and plays in QuickTime

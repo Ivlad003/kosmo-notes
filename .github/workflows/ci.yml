@@ -6,16 +6,24 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # macos-15 runners ship Xcode 16.x (Swift 6 toolchain) — required because
+    # Package.swift declares `// swift-tools-version: 6.0`. macos-14 / Xcode 15.x
+    # comes with Swift 5.10 and refuses with "package is using Swift tools
+    # version 6.0.0 but the installed version is 5.10.0".
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
-        # Soft target: macos-14 runners ship Xcode 15.x; the exact patch may vary
-        # as GitHub updates runner images. Adjust the version here if CI fails on
-        # "xcode-select: error: invalid developer directory".
-        # Common fallbacks: Xcode_15.0.app, Xcode_15.2.app, Xcode_15.4.app
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode_15.2.app || sudo xcode-select -s /Applications/Xcode_15.0.app
+        # macos-15 ships Xcode 16.x. Pick the highest available; soft-fall to
+        # earlier 16.x patches (or the symlinked default) if the image rotates.
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app \
+            || sudo xcode-select -s /Applications/Xcode_16.2.app \
+            || sudo xcode-select -s /Applications/Xcode_16.1.app \
+            || sudo xcode-select -s /Applications/Xcode_16.app \
+            || sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
 
       - name: Install xcodegen
         run: brew install xcodegen
@@ -24,43 +32,79 @@ jobs:
         run: xcodegen generate
 
       - name: swift build
-        run: swift build
+        # DEVELOPER_DIR forces use of Xcode's Swift toolchain (Swift 6 on
+        # Xcode 16.x). Without it, swift falls back to /usr/bin which on
+        # newer runners may still be Swift 5.x and reject our 6.0
+        # swift-tools-version.
+        run: DEVELOPER_DIR=$(xcode-select -p) swift build
 
       - name: swift test
-        run: swift test
+        # Same DEVELOPER_DIR reasoning, plus Swift Testing's __swift5_tests
+        # section is only emitted by Xcode's toolchain — bare CLI swift
+        # would silently run zero tests.
+        run: DEVELOPER_DIR=$(xcode-select -p) swift test
 
       - name: xcodebuild build (Debug)
-        run: xcodebuild -scheme JarvisNote -configuration Debug -destination 'platform=macOS' build
+        # CI doesn't have Apple Development certs; project.yml pins
+        # DEVELOPMENT_TEAM + CODE_SIGN_STYLE=Automatic for local dev.
+        # Override here so xcodebuild builds without trying to sign.
+        run: |
+          xcodebuild \
+            -project KosmoNotes.xcodeproj \
+            -scheme KosmoNotes \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: xcodebuild build-for-testing (KosmoNotesUITests)
+        # Compile-only check on the XCUITest target. Actually executing UI
+        # tests requires Accessibility TCC for the runner, which is impossible
+        # to grant on a fresh GitHub Actions runner — but compiling them
+        # catches stale element queries / API changes before they hit a human.
+        run: |
+          xcodebuild build-for-testing \
+            -project KosmoNotes.xcodeproj \
+            -scheme KosmoNotesUITests \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO
 
       - name: xcodebuild build (Release, for size check)
         run: |
           xcodebuild \
-            -scheme JarvisNote \
+            -project KosmoNotes.xcodeproj \
+            -scheme KosmoNotes \
             -configuration Release \
             -derivedDataPath ./build-release \
-            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO \
             build
 
       - name: Bundle size check (AC-16)
-        # Fails CI if JarvisNote.app > 15 MB uncompressed or .app.zip > 8 MB.
+        # Fails CI if KosmoNotes.app > 15 MB uncompressed or .app.zip > 8 MB.
         # Echoes both numbers on every run so the trend is visible.
         run: |
           set -euo pipefail
-          APP="./build-release/Build/Products/Release/JarvisNote.app"
+          APP="./build-release/Build/Products/Release/KosmoNotes.app"
           if [ ! -d "$APP" ]; then
-            echo "::error::JarvisNote.app not found at $APP"
+            echo "::error::KosmoNotes.app not found at $APP"
             exit 1
           fi
 
           UNCOMPRESSED_KB=$(du -sk "$APP" | awk '{print $1}')
-          ditto -c -k --keepParent "$APP" ./JarvisNote.app.zip
-          COMPRESSED_KB=$(du -sk ./JarvisNote.app.zip | awk '{print $1}')
+          ditto -c -k --keepParent "$APP" ./KosmoNotes.app.zip
+          COMPRESSED_KB=$(du -sk ./KosmoNotes.app.zip | awk '{print $1}')
 
           UNCOMPRESSED_MAX=15360  # 15 MB
           COMPRESSED_MAX=8192     # 8 MB
 
-          echo "JarvisNote.app uncompressed: ${UNCOMPRESSED_KB} KB (cap: ${UNCOMPRESSED_MAX} KB)"
-          echo "JarvisNote.app.zip:          ${COMPRESSED_KB} KB (cap: ${COMPRESSED_MAX} KB)"
+          echo "KosmoNotes.app uncompressed: ${UNCOMPRESSED_KB} KB (cap: ${UNCOMPRESSED_MAX} KB)"
+          echo "KosmoNotes.app.zip:          ${COMPRESSED_KB} KB (cap: ${COMPRESSED_MAX} KB)"
 
           STATUS=0
           if [ "$UNCOMPRESSED_KB" -gt "$UNCOMPRESSED_MAX" ]; then

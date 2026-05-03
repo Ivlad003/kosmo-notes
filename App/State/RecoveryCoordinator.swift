@@ -58,6 +58,13 @@ final class RecoveryCoordinator {
                 // Update or insert the DB row so the Library reflects the recovered session.
                 await markSessionFailed(orphan: orphan)
                 recovered += 1
+            } catch RecoveryService.RecoveryError.noSegmentsFound {
+                // Truly empty orphan — segments dir contains only zero-frame
+                // .m4a stubs (user pressed Record then Stop instantly, or the
+                // app crashed before any PCM buffer arrived). There's nothing
+                // to salvage; purge the dir + DB row so it stops triggering
+                // recovery prompts on every launch.
+                await purgeEmptyOrphan(orphan)
             } catch {
                 // Partial failure — keep processing remaining orphans.
                 failed += 1
@@ -91,10 +98,16 @@ final class RecoveryCoordinator {
         return alert.runModal()
     }
 
-    /// Upsert the session DB row with status=.failed so the Library can display it.
+    /// Upsert the session DB row with status=.failed so the Library can display it,
+    /// AND rewrite session.json so the on-disk sidecar matches.
     ///
-    /// Reads session.json if present to preserve recordedAt/mode/language; falls back
-    /// to safe defaults when the sidecar is missing (crash before first write).
+    /// "Filesystem sidecars are source of truth, SQLite is rebuildable index" is
+    /// the project invariant. The previous version touched only the DB, leaving
+    /// session.json with status=.recording — a rebuild from sidecars would then
+    /// undo the recovery's status update.
+    ///
+    /// Reads session.json if present to preserve recordedAt/mode/language; falls
+    /// back to safe defaults when the sidecar is missing (crash before first write).
     private func markSessionFailed(orphan: RecoveryService.OrphanSession) async {
         let sessionJSONURL = orphan.sessionDir.appendingPathComponent("session.json")
 
@@ -113,6 +126,14 @@ final class RecoveryCoordinator {
             status: .failed
         )
 
+        // Rewrite the sidecar first (fs is source of truth). Atomic + durable.
+        do {
+            try AtomicWriter.writeJSON(record, to: sessionJSONURL)
+        } catch {
+            // Continue to DB update even if sidecar rewrite fails — the row at
+            // least gives the Library something to render. Recovery is best-effort.
+        }
+
         // Try update first; if the row doesn't exist yet, insert it.
         do {
             if try await database.session(id: orphan.id) != nil {
@@ -123,6 +144,15 @@ final class RecoveryCoordinator {
         } catch {
             // DB failure after successful finalize is non-fatal — audio.m4a is on disk.
         }
+    }
+
+    /// Wipe the orphan's session directory + any DB row for it. Called when
+    /// the segments are empty / unrecoverable — there's no transcript-able
+    /// audio to salvage, and leaving the dir behind would re-trigger the
+    /// "recover N interrupted recordings?" prompt on every future launch.
+    private func purgeEmptyOrphan(_ orphan: RecoveryService.OrphanSession) async {
+        try? FileManager.default.removeItem(at: orphan.sessionDir)
+        try? await database.deleteSession(id: orphan.id)
     }
 
     /// Returns the filesystem creation date of a directory, or now() as a fallback.

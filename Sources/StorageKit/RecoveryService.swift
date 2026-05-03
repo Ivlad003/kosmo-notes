@@ -47,7 +47,7 @@ public actor RecoveryService {
 
     // MARK: - Scan
 
-    /// Scan `rootDir` (e.g. `~/Library/Application Support/JarvisNote/recordings/`)
+    /// Scan `rootDir` (e.g. `~/Library/Application Support/KosmoNotes/recordings/`)
     /// for orphan sessions. A subdirectory `<sid>/` qualifies when:
     ///   - `<sid>/segments/` exists and contains at least one `.m4a` file, AND
     ///   - `<sid>/audio.m4a` does NOT exist.

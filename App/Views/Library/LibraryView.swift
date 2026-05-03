@@ -11,6 +11,7 @@ import TranscriptionKit
 struct LibraryView: View {
 
     @Bindable var state: LibraryState
+    @State private var confirmClearAll: Bool = false
 
     var body: some View {
         NavigationSplitView {
@@ -31,6 +32,29 @@ struct LibraryView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 500)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(role: .destructive) {
+                    confirmClearAll = true
+                } label: {
+                    Label("Clear All", systemImage: "trash.slash")
+                }
+                .help("Delete every recording, transcript, and screen capture from disk")
+                .disabled(state.sessions.isEmpty)
+            }
+        }
+        .confirmationDialog(
+            "Delete every session?",
+            isPresented: $confirmClearAll,
+            titleVisibility: .visible
+        ) {
+            Button("Delete All", role: .destructive) {
+                Task { await state.clearAllSessions() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("All audio, transcripts, summaries, and screen recordings will be removed permanently. The database will also be cleared. This cannot be undone.")
+        }
         .task {
             // Initial load when window opens.
             await state.refresh()
@@ -105,9 +129,10 @@ private struct SessionRowView: View {
 
     let session: SessionRecord
     @State private var hasScreenRecording: Bool = false
+    @State private var thumbImage: NSImage?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
                 Text(session.recordedAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.subheadline)
@@ -119,9 +144,24 @@ private struct SessionRowView: View {
                         .help("Screen recording available")
                 }
             }
+            // Waveform thumbnail (cached PNG; placeholder while loading).
+            if let img = thumbImage {
+                Image(nsImage: img)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(height: 18)
+                    .opacity(0.85)
+            } else {
+                // Placeholder: thin gray bar so the layout doesn't jump on render.
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.12))
+                    .frame(height: 4)
+                    .clipShape(RoundedRectangle(cornerRadius: 2))
+            }
             HStack(spacing: 6) {
-                Label(session.mode.rawValue.capitalized,
-                      systemImage: session.mode == .meeting ? "person.2" : "text.bubble")
+                Label(session.mode.displayName,
+                      systemImage: session.mode.iconName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("·")
@@ -138,12 +178,28 @@ private struct SessionRowView: View {
             let root = FileManager.default
                 .urls(for: .applicationSupportDirectory, in: .userDomainMask)
                 .first?
-                .appendingPathComponent("JarvisNote/recordings")
+                .appendingPathComponent("KosmoNotes/recordings")
                 .appendingPathComponent(session.id)
             let screenURL = root?.appendingPathComponent("screen.mp4")
             if let url = screenURL {
                 hasScreenRecording = FileManager.default.fileExists(atPath: url.path)
             }
+            await loadThumbnail(sessionDir: root)
+        }
+    }
+
+    /// Read or generate the waveform PNG and load it as an `NSImage`. Heavy work
+    /// runs inside the WaveformGenerator actor, off the main thread.
+    private func loadThumbnail(sessionDir: URL?) async {
+        guard let dir = sessionDir else { return }
+        // Prefer audio.m4a (always present); skip silently when the file is missing.
+        let audioURL = dir.appendingPathComponent("audio.m4a")
+        let generator = WaveformGenerator()
+        guard let pngURL = await generator.thumbnailURL(for: dir, audioFile: audioURL) else {
+            return
+        }
+        if let image = NSImage(contentsOf: pngURL) {
+            thumbImage = image
         }
     }
 
@@ -169,6 +225,7 @@ private struct SessionDetailView: View {
     @State private var segmentsLoading = true
     @State private var hasScreenVideo: Bool = false
     @State private var exportError: String?
+    @State private var confirmDelete: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -178,9 +235,10 @@ private struct SessionDetailView: View {
 
             Divider()
 
-            // Audio player
+            // Player. Tall enough to show the screen.mp4 frame at a usable
+            // size when one exists; collapsed to the audio scrubber bar otherwise.
             AVPlayerRepresentable(model: playerModel)
-                .frame(height: 44)
+                .frame(height: hasScreenVideo ? 280 : 44)
                 .padding(.horizontal)
                 .padding(.vertical, 8)
 
@@ -215,12 +273,30 @@ private struct SessionDetailView: View {
                 .buttonStyle(.borderless)
                 .menuStyle(.button)
 
+                if state.settings != nil {
+                    Button {
+                        Task { await runShare() }
+                    } label: {
+                        Label("Share", systemImage: "link")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Upload to S3 and copy a presigned link")
+                }
+
                 Button {
                     openInFinder()
                 } label: {
                     Label("Open in Finder", systemImage: "folder")
                 }
                 .buttonStyle(.borderless)
+
+                Button(role: .destructive) {
+                    confirmDelete = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Delete this session and its files")
             }
             .padding(.horizontal)
             .padding(.bottom, 8)
@@ -242,12 +318,8 @@ private struct SessionDetailView: View {
             }
         }
         .task {
-            await loadAudio()
+            await loadAudio()  // also sets hasScreenVideo
             await loadTranscript()
-            // Check for screen.mp4 sidecar to decide whether to show the export option.
-            let audioURL = await state.audioFileURL(for: session.id)
-            let screenURL = audioURL.deletingLastPathComponent().appendingPathComponent("screen.mp4")
-            hasScreenVideo = FileManager.default.fileExists(atPath: screenURL.path)
         }
         .alert("Export Failed", isPresented: Binding(
             get: { exportError != nil },
@@ -256,6 +328,18 @@ private struct SessionDetailView: View {
             Button("OK", role: .cancel) { exportError = nil }
         } message: {
             Text(exportError ?? "")
+        }
+        .confirmationDialog(
+            "Delete this session?",
+            isPresented: $confirmDelete,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                Task { await state.deleteSession(id: session.id) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the audio, transcript, summary, and any screen recording from disk. The action cannot be undone.")
         }
     }
 
@@ -266,12 +350,20 @@ private struct SessionDetailView: View {
         let urlToLoad: URL
         if FileManager.default.fileExists(atPath: screenURL.path) {
             urlToLoad = screenURL
+            // Toggle the video-sized panel BEFORE loading the asset so AVPlayerView
+            // is built with enough room to host the video layer instead of falling
+            // back to the audio-scrubber chrome and never re-laying out.
+            hasScreenVideo = true
         } else if FileManager.default.fileExists(atPath: audioURL.path) {
             urlToLoad = audioURL
+            hasScreenVideo = false
         } else {
             return
         }
         playerModel.load(url: urlToLoad)
+        // Force a seek to t=0 so the player paints the first frame as a poster
+        // image instead of staying blank until the user presses play.
+        playerModel.seek(to: 0)
     }
 
     private func loadTranscript() async {
@@ -298,6 +390,14 @@ private struct SessionDetailView: View {
             exportError = error.localizedDescription
         }
     }
+
+    /// Upload session audio + summary + transcript to S3 and present links.
+    /// Settings is required — the Share button is hidden when it's nil.
+    private func runShare() async {
+        guard let settings = state.settings else { return }
+        let coordinator = ShareCoordinator(settings: settings, sessionStore: state.sessionStore)
+        await coordinator.share(sessionId: session.id)
+    }
 }
 
 // MARK: - SessionHeaderView
@@ -316,8 +416,8 @@ private struct SessionHeaderView: View {
                 StatusBadge(status: session.status)
             }
             HStack(spacing: 12) {
-                Label(session.mode.rawValue.capitalized,
-                      systemImage: session.mode == .meeting ? "person.2" : "text.bubble")
+                Label(session.mode.displayName,
+                      systemImage: session.mode.iconName)
                 Label(formatDuration(session.durationSecs), systemImage: "clock")
                 if let lang = session.language {
                     Label(lang.uppercased(), systemImage: "globe")

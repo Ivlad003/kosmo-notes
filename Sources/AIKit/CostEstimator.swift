@@ -26,6 +26,11 @@ public enum CostEstimator {
     /// OpenAI gpt-4o-mini pricing as of 2026-04.
     public static let openai_gpt_4o_mini = Pricing(inputPerMillion: 0.15, outputPerMillion: 0.60)
 
+    /// OpenRouter passes through the upstream provider's pricing with a small surcharge.
+    /// We use a conservative rate matching their flagship Sonnet route as a safe upper bound;
+    /// users on cheaper models will under-spend the cap, which is the right direction.
+    public static let openrouter_default = Pricing(inputPerMillion: 3.5, outputPerMillion: 17.0)
+
     // MARK: - Token estimation
 
     /// Rough token count heuristic: ~4 chars/token for Latin scripts, ~3 for non-Latin

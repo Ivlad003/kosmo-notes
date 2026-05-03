@@ -1,4 +1,54 @@
 @preconcurrency import AVFoundation
+import Foundation
+import os
+
+// MARK: - AudioEngine
+
+/// Unified-log channel for capture-engine diagnostics. Filterable via
+/// `log show --predicate 'subsystem == "dev.kosmonotes.studio"' --info` or in
+/// Console.app. Emits at .info for routine state changes and .error for the
+/// silent-failure modes (degenerate input format, zero buffers in N seconds).
+private let audioEngineLog = Logger(subsystem: "dev.kosmonotes.studio", category: "AudioEngine")
+
+/// Real-time-thread-safe counter incremented by the tap closure. The actor
+/// can't be touched from the audio render thread, so the closure increments
+/// this `NSLock`-guarded counter directly and the actor polls it.
+private final class TapBufferCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count: Int = 0
+    private var _totalFrames: Int = 0
+
+    func increment(frames: Int) {
+        lock.lock()
+        _count += 1
+        _totalFrames += frames
+        lock.unlock()
+    }
+
+    var snapshot: (count: Int, totalFrames: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (_count, _totalFrames)
+    }
+}
+
+/// Real-time-safe mute flag. Read inside the tap closure (runs on the audio
+/// render thread) to decide whether to drop incoming PCM buffers; written
+/// from the actor (or any thread, really) when the user toggles mute.
+/// `NSLock` here is sub-microsecond and the tap callback runs at ~10 Hz, so
+/// contention is non-existent.
+final class TapMuteFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _muted: Bool = false
+
+    var isMuted: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _muted
+    }
+
+    func setMuted(_ muted: Bool) {
+        lock.lock(); _muted = muted; lock.unlock()
+    }
+}
 
 // MARK: - AudioEngine
 
@@ -25,6 +75,11 @@ public actor AudioEngine {
     private let config: Config
     private var engine: AVAudioEngine?
     private var continuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
+    /// Shared with the tap closure. Flip this to drop mic samples mid-recording
+    /// (live mute) without tearing down the engine — the tap closure reads it
+    /// every callback and silently skips yielding when true. The audio file
+    /// keeps growing during a mute (silent samples), so timestamps stay aligned.
+    private let muteFlag = TapMuteFlag()
 
     // MARK: Init
 
@@ -35,70 +90,185 @@ public actor AudioEngine {
     // MARK: Public API
 
     /// Start mic capture. Returns an AsyncStream of PCM buffers (~100 ms / 4800 frames each).
-    /// Throws if the audio engine cannot start (e.g. no input device).
+    /// Throws if the audio engine cannot start (e.g. no input device, or no buffers
+    /// arrive within 3 s of the tap being installed — the silent-TCC failure mode).
     public func start() async throws -> sending AsyncStream<AVAudioPCMBuffer> {
         // Stop any existing session
         if engine != nil {
             await stop()
         }
 
+        audioEngineLog.info("AudioEngine.start: requested sampleRate=\(self.config.sampleRate, privacy: .public) channels=\(self.config.channels, privacy: .public)")
+
         let engine = AVAudioEngine()
         self.engine = engine
 
-        let inputNode = engine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-
-        // Desired tap format: mono float32 at configured sample rate
-        guard let tapFormat = AVAudioFormat(
+        // Desired output format the rest of the pipeline expects.
+        guard let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: config.sampleRate,
             channels: config.channels,
             interleaved: false
         ) else {
+            audioEngineLog.error("AudioEngine.start: failed to build target AVAudioFormat")
             throw AudioEngineError.formatCreationFailed
         }
 
         let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
         self.continuation = continuation
 
-        // bufferSize: 4800 frames @ 48 kHz ≈ 100 ms
-        let bufferSize: AVAudioFrameCount = 4800
-        let cont = continuation
-        let targetFormat = tapFormat
-        let inputSampleRate = inputFormat.sampleRate
+        // Touch inputNode BEFORE prepare/start so AVAudioEngine instantiates
+        // its underlying AUHAL — otherwise engine.start() throws an
+        // "inputNode != nullptr || outputNode != nullptr" assertion because
+        // no nodes are in use yet. Just reading the property is enough.
+        let inputNode = engine.inputNode
 
-        if inputFormat.sampleRate != config.sampleRate || inputFormat.channelCount != config.channels {
-            guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-                throw AudioEngineError.converterCreationFailed
-            }
-            let converterRef = converter
+        // NOTE: setVoiceProcessingEnabled(true) (Apple's AEC + AGC + NS) was
+        // tried here as a fix for the speaker → mic echo loop you get when
+        // recording mic + system audio without headphones. It works, but it
+        // forces VoiceProcessingIO into mono 16 kHz with aggressive AGC that
+        // dropped mic gain to inaudible levels and broke our 48 kHz capture
+        // pipeline. Rolled back; the recommended workaround for echo is
+        // headphones (zero code, perfect cancellation).
 
-            inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { buffer, _ in
-                let frameCapacity = AVAudioFrameCount(
-                    Double(buffer.frameLength) * targetFormat.sampleRate / inputSampleRate
-                ) + 1
-                guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: max(1, frameCapacity)) else {
-                    return
-                }
-                var error: NSError?
-                // Use a local copy reference to avoid captured-var warnings
-                let src = buffer
-                let status = converterRef.convert(to: converted, error: &error) { _, outStatus in
-                    outStatus.pointee = .haveData
-                    return src
-                }
-                if status != .error, converted.frameLength > 0 {
-                    cont.yield(converted)
-                }
-            }
-        } else {
-            inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: tapFormat) { buffer, _ in
-                cont.yield(buffer)
-            }
+        // Force AUHAL to bind the default input device by preparing + starting
+        // the engine BEFORE installing the tap. Querying inputNode.outputFormat
+        // at engine-creation time (the obvious order) returns 0 input streams
+        // for ad-hoc-signed apps with freshly-granted Mic TCC — the audio HAL
+        // hasn't routed the mic yet. A tap installed against that degenerate
+        // format never fires its callback, so segments arrive at 0 bytes.
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            audioEngineLog.error("AudioEngine.start: engine.start() threw — \(error.localizedDescription, privacy: .public)")
+            self.engine = nil
+            continuation.finish()
+            self.continuation = nil
+            throw AudioEngineError.engineStartFailed(underlying: error)
+        }
+        audioEngineLog.info("AudioEngine.start: engine running, polling input format")
+
+        // Poll for the input bus format to stabilize. After mic-permission
+        // grant the AUHAL typically needs 1–3 polls to bind. Polling at 10 ms
+        // (was 50 ms) shaves the worst-case "first words eaten" window from
+        // ~150 ms down to ~30 ms while keeping the same 1 s ceiling
+        // (now 100 attempts × 10 ms instead of 20 × 50 ms).
+        var inputFormat = inputNode.outputFormat(forBus: 0)
+        var attempts = 0
+        while (inputFormat.channelCount == 0 || inputFormat.sampleRate == 0) && attempts < 100 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+            inputFormat = inputNode.outputFormat(forBus: 0)
+            attempts += 1
+        }
+        audioEngineLog.info("AudioEngine.start: input format after \(attempts, privacy: .public) polls — sampleRate=\(inputFormat.sampleRate, privacy: .public) channels=\(inputFormat.channelCount, privacy: .public)")
+
+        // If still degenerate after 1 s, mic isn't routed. Fail clearly
+        // instead of silently writing 0-byte segments.
+        guard inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
+            audioEngineLog.error("AudioEngine.start: input format never bound (channels=0 or sampleRate=0 after 1 s)")
+            engine.stop()
+            self.engine = nil
+            continuation.finish()
+            self.continuation = nil
+            throw AudioEngineError.engineStartFailed(underlying: NSError(
+                domain: "AudioEngine",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Default input device did not bind within 1 s. Microphone permission may be denied or no input device is available."]
+            ))
         }
 
-        try engine.start()
+        // bufferSize: 4800 frames @ 48 kHz ≈ 100 ms.
+        let bufferSize: AVAudioFrameCount = 4800
+        let cont = continuation
+        let converterCache = ConverterCache()
+        let counter = TapBufferCounter()
+
+        // Install with the validated input format. Convert lazily in the
+        // callback to the target format only when they don't already match.
+        // The closure runs on the audio render thread — keep it real-time-safe:
+        // no actor hops, no allocations beyond the converted PCM buffer, and
+        // os.Logger is lock-free at the .debug level.
+        let mute = muteFlag
+        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { buffer, _ in
+            // Live mic-mute: drop the buffer entirely so the AsyncStream stays
+            // silent without tearing down the engine. counter still increments
+            // so the "buffers received" diagnostic doesn't lie.
+            counter.increment(frames: Int(buffer.frameLength))
+            if mute.isMuted { return }
+            let bufferFormat = buffer.format
+            if bufferFormat.sampleRate == targetFormat.sampleRate
+                && bufferFormat.channelCount == targetFormat.channelCount
+                && bufferFormat.commonFormat == targetFormat.commonFormat {
+                cont.yield(buffer)
+                return
+            }
+            guard let converter = converterCache.converter(from: bufferFormat, to: targetFormat) else {
+                audioEngineLog.error("AudioEngine.tap: converter creation failed")
+                return
+            }
+            let frameCapacity = AVAudioFrameCount(
+                Double(buffer.frameLength) * targetFormat.sampleRate / bufferFormat.sampleRate
+            ) + 1
+            guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: max(1, frameCapacity)) else {
+                return
+            }
+            var error: NSError?
+            let src = buffer
+            let status = converter.convert(to: converted, error: &error) { _, outStatus in
+                outStatus.pointee = .haveData
+                return src
+            }
+            if status != .error, converted.frameLength > 0 {
+                cont.yield(converted)
+            }
+        }
+        audioEngineLog.info("AudioEngine.start: tap installed, awaiting first buffer")
+
+        // Wait up to 3 s for the tap callback to actually fire. If it doesn't,
+        // the audio HAL never routed real audio to our process — typically a
+        // stale/ambiguous TCC entry on ad-hoc-signed dev builds. Failing here
+        // yields a clear error message instead of letting the recording finish
+        // with zero segments and a misleading "check Microphone permission"
+        // message in RecorderState.
+        let deadline = Date().addingTimeInterval(3.0)
+        while counter.snapshot.count == 0 && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let snap = counter.snapshot
+        if snap.count == 0 {
+            audioEngineLog.error("AudioEngine.start: tap callback did not fire within 3 s — TCC trust likely stale; tccutil reset Microphone dev.kosmonotes.studio + relaunch")
+            inputNode.removeTap(onBus: 0)
+            engine.stop()
+            self.engine = nil
+            continuation.finish()
+            self.continuation = nil
+            throw AudioEngineError.engineStartFailed(underlying: NSError(
+                domain: "AudioEngine",
+                code: -2,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Microphone tap installed but no audio buffers arrived in 3 s. macOS reports permission as granted, but the audio HAL is not delivering data to this build. Run `tccutil reset Microphone dev.kosmonotes.studio`, relaunch the app, and grant the prompt again."]
+            ))
+        }
+        audioEngineLog.info("AudioEngine.start: first buffers received — count=\(snap.count, privacy: .public) totalFrames=\(snap.totalFrames, privacy: .public)")
+
         return stream
+    }
+
+    /// Live-toggle mic mute. When true, the tap callback drops every PCM
+    /// buffer it receives, so the segment writer keeps growing with whatever
+    /// the system is feeding (silence) but the user's voice goes nowhere.
+    /// The engine itself stays running — toggling back to false resumes
+    /// capture instantly without re-arming permissions / re-binding AUHAL.
+    public func setMuted(_ muted: Bool) {
+        muteFlag.setMuted(muted)
+    }
+
+    /// Snapshot of the current mute state. Useful for UI sync after a
+    /// pause/resume that may have lost client-side state.
+    public var isMuted: Bool {
+        muteFlag.isMuted
     }
 
     /// Stop mic capture, remove tap, finish the stream.
@@ -117,4 +287,28 @@ public enum AudioEngineError: Error, Sendable {
     case formatCreationFailed
     case converterCreationFailed
     case engineStartFailed(underlying: Error)
+}
+
+// MARK: - ConverterCache
+
+/// Small reference holder for an AVAudioConverter that gets built on demand
+/// when the first PCM buffer arrives. Used by AudioEngine's tap callback,
+/// which runs on a real-time audio thread — building once and reusing.
+private final class ConverterCache: @unchecked Sendable {
+    private var converter: AVAudioConverter?
+    private var sourceFormat: AVAudioFormat?
+
+    func converter(from source: AVAudioFormat, to target: AVAudioFormat) -> AVAudioConverter? {
+        if let existing = converter,
+           let cachedSource = sourceFormat,
+           cachedSource.sampleRate == source.sampleRate,
+           cachedSource.channelCount == source.channelCount,
+           cachedSource.commonFormat == source.commonFormat {
+            return existing
+        }
+        let new = AVAudioConverter(from: source, to: target)
+        converter = new
+        sourceFormat = source
+        return new
+    }
 }

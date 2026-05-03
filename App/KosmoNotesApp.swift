@@ -1,9 +1,11 @@
 import SwiftUI
 import AppKit
+import KeyboardShortcuts
 import StorageKit
+import DictationKit
 
 @main
-struct JarvisNoteApp: App {
+struct KosmoNotesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
@@ -31,17 +33,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessionStoreHolder: AnyObject?   // SessionStore
     private var chatHolder: AnyObject?           // ChatState (macOS 14+)
     private var dictationHolder: AnyObject?      // DictationState (macOS 14+)
+    private var pushToMarkdownHolder: AnyObject? // PushToMarkdownState (macOS 14+)
+    private var agentSessionHolder: AnyObject?   // AgentSessionState (macOS 14+)
+    private var agentHotkeyHolder: AnyObject?    // AgentHotkeyState (macOS 14+)
+    private var agentConsoleHolder: AnyObject?   // AgentConsoleWindowController (macOS 14+)
 
     // Library window controller. Stored as AnyObject to avoid @available on
     // a stored property (Swift disallows that). Cast at use-site with #available.
     private var libraryControllerHolder: AnyObject?
 
+    /// Active KeyTriggerEngine subscription for the optional Library
+    /// double-tap shortcut. Stored as `Any?` (rather than the strongly-typed
+    /// optional) because Swift disallows `@available` on a stored property
+    /// and SubscriptionID is itself macOS-14-gated.
+    private var libraryDoubleTapSub: Any?
+    private var libraryDoubleTapObserver: NSObjectProtocol?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // AC-6: minimum-OS gate. Deployment target is 12.3+; Recording / Library / Settings
+        // require 14.0+. Anything older surfaces a single explanatory modal then quits.
+        if !checkMinimumOS() {
+            return
+        }
+
+        // One-shot rename migration: copy `JarvisNote` AppSupport dir +
+        // Keychain entries to `KosmoNotes` ones so existing users keep their
+        // recordings, sessions, and API keys after the bundle-ID rename.
+        // Idempotent — flips a UserDefault flag once done.
+        MigrationService.runIfNeeded()
+
         configureStatusItem()
         configureMenu()
 
         if #available(macOS 14.0, *) {
             bootstrapAppState()
+            bootstrapHotkeys()
         }
 
         if !UserDefaults.standard.bool(forKey: "didOnboard") {
@@ -49,14 +75,119 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Register global hotkeys for Meeting / Voice Note record + Library open.
+    /// Defaults: ⌘⇧R / ⌘⇧N / ⌘⇧L. Users can rebind via System Settings (Wallop's
+    /// approach — KeyboardShortcuts persists overrides in UserDefaults under the
+    /// shortcut's name).
+    @available(macOS 14.0, *)
+    private func bootstrapHotkeys() {
+        KeyboardShortcuts.onKeyDown(for: .toggleMeeting) { [weak self] in
+            Task { @MainActor in self?.recordToggleAction() }
+        }
+        KeyboardShortcuts.onKeyDown(for: .toggleVoiceNote) { [weak self] in
+            Task { @MainActor in self?.voiceNoteToggleAction() }
+        }
+        KeyboardShortcuts.onKeyDown(for: .openLibrary) { [weak self] in
+            Task { @MainActor in self?.openLibraryAction() }
+        }
+
+        // Optional one-shot double-tap shortcut for the Library window. Off by
+        // default; user opts in via Settings → Hotkeys → "Library double-tap".
+        // The combo .openLibrary stays wired regardless.
+        applyLibraryDoubleTap()
+        libraryDoubleTapObserver = NotificationCenter.default.addObserver(
+            forName: AppSettings.libraryDoubleTapModifierDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.applyLibraryDoubleTap() }
+        }
+    }
+
+    /// (Re-)register the Library double-tap shortcut from current settings.
+    /// Idempotent — drops any previous subscription first.
+    @available(macOS 14.0, *)
+    @MainActor
+    private func applyLibraryDoubleTap() {
+        if let existing = libraryDoubleTapSub as? KeyTriggerEngine.SubscriptionID {
+            KeyTriggerEngine.shared.unregister(existing)
+            libraryDoubleTapSub = nil
+        }
+        guard let mod = appSettings?.libraryDoubleTapModifier else { return }
+        // 350 ms double-tap window — fast enough not to clash with deliberate
+        // single taps, slow enough that a double-tap actually feels intentional.
+        libraryDoubleTapSub = KeyTriggerEngine.shared.register(
+            trigger: .doubleTapModifier(mod, withinMs: 350),
+            onPress: { [weak self] in self?.openLibraryAction() },
+            onRelease: { /* one-shot — no release work */ }
+        )
+    }
+
+    @MainActor
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // If a recording is in progress, defer termination until stop() finishes
+        // so segments are finalized and SleepAssertion is released. Returning
+        // .terminateLater suspends the quit until we call NSApp.reply(...).
+        if #available(macOS 14.0, *), let recorder = recorderState, recorder.status.isBusy {
+            Task { @MainActor in
+                await recorder.stop()
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
+        }
+        return .terminateNow
+    }
+
+    /// Returns true when the OS is supported. On unsupported OS, surfaces a
+    /// modal and terminates the app.
+    @MainActor
+    private func checkMinimumOS() -> Bool {
+        let info = ProcessInfo.processInfo.operatingSystemVersion
+        let major = info.majorVersion
+        let minor = info.minorVersion
+
+        // <12.3 — strictly unsupported (binary is built for 12.3+, but defensive).
+        let isBelow12_3 = (major < 12) || (major == 12 && minor < 3)
+        // 12.3-13.x — "best-effort" but the recorder/library/settings gate on 14.0+,
+        // so the app is functionally inert. Tell the user clearly.
+        let isBelow14 = major < 14
+
+        if isBelow12_3 {
+            let alert = NSAlert()
+            alert.messageText = "macOS 12.3 or newer required"
+            alert.informativeText = "KosmoNotes needs macOS 12.3 or newer for system audio capture. The recorder, Library, and Settings additionally require macOS 14.0 — please upgrade to use this build."
+            alert.alertStyle = .critical
+            alert.addButton(withTitle: "Quit")
+            alert.runModal()
+            NSApp.terminate(nil)
+            return false
+        }
+
+        if isBelow14 {
+            let alert = NSAlert()
+            alert.messageText = "macOS 14.0 or newer recommended"
+            alert.informativeText = "You're on macOS \(major).\(minor). Recording, Library, and Settings require macOS 14.0+. The menu-bar icon will appear, but core features will be disabled. [Quit] to upgrade, [Continue] to inspect a stub UI."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Continue")
+            alert.addButton(withTitle: "Quit")
+            let response = alert.runModal()
+            if response == .alertSecondButtonReturn {
+                NSApp.terminate(nil)
+                return false
+            }
+        }
+
+        return true
+    }
+
     // MARK: - Status item + menu
 
     private func configureStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let image = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "Jarvis Note") {
+        if let image = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "KosmoNotes") {
             item.button?.image = image
         }
-        item.button?.title = "JN"
+        item.button?.title = "KN"
         item.button?.imagePosition = .imageLeading
         item.length = NSStatusItem.variableLength
         item.isVisible = true
@@ -67,6 +198,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.delegate = self
 
+        // Version header — disabled menu item that shows what build is actually
+        // running. Useful when rebuilding ad-hoc dev binaries: confirms whether
+        // the app you're talking to is the latest one or a stale relaunch.
+        let versionItem = NSMenuItem(title: "KosmoNotes \(Self.appVersionLine())", action: nil, keyEquivalent: "")
+        versionItem.isEnabled = false
+        menu.addItem(versionItem)
+
+        let copyVersionItem = NSMenuItem(title: "Copy version info",
+                                         action: #selector(copyVersionAction),
+                                         keyEquivalent: "")
+        copyVersionItem.target = self
+        menu.addItem(copyVersionItem)
+
+        menu.addItem(.separator())
+
         let recordItem = NSMenuItem(title: "Start Recording",
                                     action: #selector(recordToggleAction),
                                     keyEquivalent: "r")
@@ -74,6 +220,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordItem.target = self
         recordItem.identifier = NSUserInterfaceItemIdentifier("recordToggle")
         menu.addItem(recordItem)
+
+        let voiceNoteItem = NSMenuItem(title: "Start Voice Note",
+                                       action: #selector(voiceNoteToggleAction),
+                                       keyEquivalent: "n")
+        voiceNoteItem.keyEquivalentModifierMask = [.command, .shift]
+        voiceNoteItem.target = self
+        voiceNoteItem.identifier = NSUserInterfaceItemIdentifier("voiceNoteToggle")
+        menu.addItem(voiceNoteItem)
+
+        // Live mic mute — only meaningful while a recording is active.
+        // menuNeedsUpdate enables / disables it based on RecorderState.status
+        // and toggles the title between "Mute mic" and "Unmute mic".
+        let muteItem = NSMenuItem(title: "Mute mic",
+                                  action: #selector(toggleMicMuteAction),
+                                  keyEquivalent: "m")
+        muteItem.keyEquivalentModifierMask = [.command, .shift]
+        muteItem.target = self
+        muteItem.identifier = NSUserInterfaceItemIdentifier("toggleMicMute")
+        menu.addItem(muteItem)
 
         menu.addItem(.separator())
 
@@ -99,6 +264,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         chatItem.target = self
         menu.addItem(chatItem)
 
+        let agentItem = NSMenuItem(title: "Agent Console…",
+                                   action: #selector(openAgentConsole),
+                                   keyEquivalent: "")
+        agentItem.target = self
+        menu.addItem(agentItem)
+
         menu.addItem(.separator())
 
         let settingsItem = NSMenuItem(title: "Settings…",
@@ -109,7 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "Quit Jarvis Note",
+        let quitItem = NSMenuItem(title: "Quit KosmoNotes",
                                   action: #selector(NSApplication.terminate(_:)),
                                   keyEquivalent: "q")
         // Leave target = nil so the responder chain reaches NSApp.terminate(_:).
@@ -136,7 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let appDir = appSupport.appendingPathComponent("JarvisNote", isDirectory: true)
+        let appDir = appSupport.appendingPathComponent("KosmoNotes", isDirectory: true)
         let recordingsDir = appDir.appendingPathComponent("recordings", isDirectory: true)
         let dbPath = appDir.appendingPathComponent("sessions.sqlite")
 
@@ -154,7 +325,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             presentFatalSetupError("Could not open database at \(dbPath.path).", error: error)
             return
         }
-        self.databaseHolder = database
 
         let sessionStore: SessionStore
         do {
@@ -163,20 +333,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             presentFatalSetupError("Could not create session store at \(recordingsDir.path).", error: error)
             return
         }
-        self.sessionStoreHolder = sessionStore
 
+        // Settings load from UserDefaults / Keychain — pure read, safe to do
+        // before migration. Stored on the side so the migration Task can pick
+        // it up without recapturing.
         let settings = AppSettings()
         self.sharedSettings = settings
 
-        let recorder = RecorderState(database: database, sessionStore: sessionStore, settings: settings)
-        self.recorderHolder = recorder
-
-        // Dictation: register the global hotkey monitor. The pipeline itself is
-        // built lazily on first hotkey press (no API call until then).
-        let dictation = DictationState(settings: settings)
-        dictation.install()
-        self.dictationHolder = dictation
-
+        // CRITICAL: do NOT publish recorder/dictation/database/sessionStore until
+        // database.migrate() finishes. menuNeedsUpdate, hotkeys, and UI all read
+        // recorderState; the moment that returns non-nil, an INSERT INTO sessions
+        // can race the schema migration. Holding back the assignment is the only
+        // reliable way to gate that path.
         Task { @MainActor in
             do {
                 try await database.migrate()
@@ -184,6 +352,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 presentFatalSetupError("Could not migrate database.", error: error)
                 return
             }
+
+            // Migration complete — publish everything.
+            self.databaseHolder = database
+            self.sessionStoreHolder = sessionStore
+
+            let recorder = RecorderState(database: database, sessionStore: sessionStore, settings: settings)
+            self.recorderHolder = recorder
+
+            // Dictation: register the global hotkey monitor. The pipeline itself
+            // is rebuilt on every press so settings changes apply without relaunch.
+            let dictation = DictationState(settings: settings)
+            dictation.install()
+            self.dictationHolder = dictation
+
+            // Push-to-Markdown: same press/hold/release shape as Dictation,
+            // saves a `.md` file at markdownExportFolder via MarkdownExporter
+            // instead of pasting into the focused field.
+            let p2md = PushToMarkdownState(settings: settings, sessionStore: sessionStore)
+            p2md.install()
+            self.pushToMarkdownHolder = p2md
+
+            // Autonomous agent: voice instruction → tool-using Claude loop
+            // restricted to the workspace folder. Hotkey installs even when
+            // disabled (it bails inside handlePress on the toggle), so a
+            // future enable doesn't require relaunch.
+            let agentSession = AgentSessionState(settings: settings)
+            self.agentSessionHolder = agentSession
+            let agentHotkey = AgentHotkeyState(settings: settings, agentSession: agentSession)
+            agentHotkey.install()
+            self.agentHotkeyHolder = agentHotkey
+
+            // Force a menu refresh so any stale "Recording requires macOS 14+"
+            // labels flip to the real recorder-ready titles.
+            statusItem?.menu?.update()
 
             // After migration, scan for orphan sessions and offer recovery.
             let coordinator = RecoveryCoordinator(sessionStore: sessionStore, database: database)
@@ -209,7 +411,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func presentFatalSetupError(_ message: String, error: Error) {
         let alert = NSAlert()
-        alert.messageText = "Jarvis Note setup failed"
+        alert.messageText = "KosmoNotes setup failed"
         alert.informativeText = "\(message)\n\n\(error.localizedDescription)"
         alert.alertStyle = .critical
         alert.runModal()
@@ -248,6 +450,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu actions
 
+    /// "0.0.2 (build 2)" — read at runtime from the bundle's Info.plist so the
+    /// menu always reflects what's actually loaded, not a stale source-coded
+    /// constant. Sole reason this exists: rebuild loops where the user can't
+    /// tell whether the running instance is the latest binary or a stale one.
+    @MainActor
+    static func appVersionLine() -> String {
+        let info = Bundle.main.infoDictionary
+        let short = (info?["CFBundleShortVersionString"] as? String) ?? "?"
+        let build = (info?["CFBundleVersion"] as? String) ?? "?"
+        return "\(short) (build \(build))"
+    }
+
+    /// Copy a one-line version + system summary to the clipboard. Useful when
+    /// reporting issues — paste it into chat / GitHub and the recipient knows
+    /// exactly which build of which OS produced the problem.
+    @MainActor
+    @objc private func copyVersionAction() {
+        let line = "KosmoNotes \(Self.appVersionLine()) on macOS \(ProcessInfo.processInfo.operatingSystemVersionString)"
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(line, forType: .string)
+    }
+
+    @MainActor
+    @objc private func toggleMicMuteAction() {
+        guard #available(macOS 14.0, *), let recorder = recorderState else { return }
+        Task { @MainActor in await recorder.toggleMicMute() }
+    }
+
     @objc private func recordToggleAction() {
         guard #available(macOS 14.0, *) else {
             let alert = NSAlert()
@@ -285,6 +516,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Toggle Voice Note Mode recording (⌘⇧N). Same lifecycle as Meeting toggle,
+    /// but starts the recorder in `.voiceNote` mode so the post-process pipeline
+    /// uses the voice-note prompt template.
+    @MainActor
+    @objc private func voiceNoteToggleAction() {
+        guard #available(macOS 14.0, *) else { return }
+        guard let recorder = recorderState else { return }
+        Task { @MainActor in
+            switch recorder.status {
+            case .idle, .complete, .failed:
+                await recorder.start(mode: .voiceNote)
+            case .recording:
+                await recorder.stop()
+            case .transcribing:
+                break
+            }
+        }
+    }
+
     @MainActor
     @objc private func openLibraryAction() {
         guard #available(macOS 14.0, *) else {
@@ -295,7 +545,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let database = databaseHolder as? AppDatabase,
               let sessionStore = sessionStoreHolder as? SessionStore else { return }
-        libraryWindowController.open(database: database, sessionStore: sessionStore, windowDelegate: self)
+        libraryWindowController.open(
+            database: database,
+            sessionStore: sessionStore,
+            settings: appSettings,
+            windowDelegate: self
+        )
     }
 
     @MainActor
@@ -318,7 +573,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = SettingsView(settings: settings)
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        window.title = "Jarvis Note Settings"
+        window.title = "KosmoNotes Settings"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
         window.center()
@@ -327,6 +582,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
 
         self.settingsWindow = window
+    }
+
+    @MainActor
+    @objc private func openAgentConsole() {
+        guard #available(macOS 14.0, *) else { return }
+        guard let session = agentSessionHolder as? AgentSessionState else { return }
+        let controller: AgentConsoleWindowController
+        if let existing = agentConsoleHolder as? AgentConsoleWindowController {
+            controller = existing
+        } else {
+            controller = AgentConsoleWindowController()
+            agentConsoleHolder = controller
+        }
+        controller.open(session: session, windowDelegate: self)
     }
 
     @MainActor
@@ -365,7 +634,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = ChatView(chat: chatState, settings: settings)
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        window.title = "Jarvis Note Chat"
+        window.title = "KosmoNotes Chat"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
         window.setContentSize(NSSize(width: 540, height: 700))
@@ -397,7 +666,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingController = NSHostingController(rootView: contentView)
 
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "Welcome to Jarvis Note"
+        window.title = "Welcome to KosmoNotes"
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
         window.level = .floating
@@ -419,25 +688,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 extension AppDelegate: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard let recordItem = menu.items.first(where: { $0.identifier?.rawValue == "recordToggle" }) else { return }
+        let voiceNoteItem = menu.items.first(where: { $0.identifier?.rawValue == "voiceNoteToggle" })
+        let muteItem = menu.items.first(where: { $0.identifier?.rawValue == "toggleMicMute" })
         guard let openLastItem = menu.items.first(where: { $0.identifier?.rawValue == "openLastSession" }) else { return }
+
+        // Mute item: only meaningful while a recording is in flight.
+        if #available(macOS 14.0, *), let recorder = recorderState, case .recording = recorder.status {
+            muteItem?.isEnabled = true
+            muteItem?.title = recorder.micMuted ? "Unmute mic" : "Mute mic"
+        } else {
+            muteItem?.isEnabled = false
+            muteItem?.title = "Mute mic"
+        }
 
         if #available(macOS 14.0, *), let recorder = recorderState {
             switch recorder.status {
             case .idle:
                 recordItem.title = "Start Recording"
                 recordItem.isEnabled = true
+                voiceNoteItem?.title = "Start Voice Note"
+                voiceNoteItem?.isEnabled = true
             case .recording:
                 recordItem.title = "Stop Recording"
                 recordItem.isEnabled = true
+                voiceNoteItem?.title = "Stop Voice Note"
+                voiceNoteItem?.isEnabled = true
             case .transcribing:
                 recordItem.title = "Transcribing…"
                 recordItem.isEnabled = false
+                voiceNoteItem?.isEnabled = false
             case .complete:
                 recordItem.title = "Start Recording"
                 recordItem.isEnabled = true
+                voiceNoteItem?.title = "Start Voice Note"
+                voiceNoteItem?.isEnabled = true
             case .failed:
                 recordItem.title = "Start Recording (last failed — see Settings)"
                 recordItem.isEnabled = true
+                voiceNoteItem?.title = "Start Voice Note"
+                voiceNoteItem?.isEnabled = true
             }
 
             if case .complete = recorder.status {
@@ -448,6 +737,7 @@ extension AppDelegate: NSMenuDelegate {
         } else {
             recordItem.title = "Recording (macOS 14+ required)"
             recordItem.isEnabled = false
+            voiceNoteItem?.isEnabled = false
             openLastItem.isEnabled = false
         }
     }
@@ -461,27 +751,53 @@ extension AppDelegate: NSWindowDelegate {
         switch window.identifier?.rawValue {
         case "settings":
             settingsWindow = nil
-            if onboardingWindow == nil && chatWindow == nil {
-                NSApp.setActivationPolicy(.accessory)
-            }
         case "library":
             if #available(macOS 14.0, *) {
                 // Only call didClose if the controller was actually created.
                 (libraryControllerHolder as? LibraryWindowController)?.didClose()
-            }
-            if settingsWindow == nil, onboardingWindow == nil {
-                NSApp.setActivationPolicy(.accessory)
             }
         case "onboarding":
             onboardingWindow = nil
         case "chat":
             chatWindow = nil
             chatHolder = nil
-            if settingsWindow == nil && onboardingWindow == nil {
-                NSApp.setActivationPolicy(.accessory)
+        case "agentConsole":
+            if #available(macOS 14.0, *) {
+                (agentConsoleHolder as? AgentConsoleWindowController)?.didClose()
             }
         default:
             break
+        }
+        maybeDemoteToAccessory()
+    }
+
+    /// Demote the app to .accessory only when no app-owned window is still on
+    /// screen. The previous per-case checks each only knew about a subset of the
+    /// other windows, so closing Settings while the Library was open would
+    /// demote and yank the Library out of the foreground.
+    @MainActor
+    private func maybeDemoteToAccessory() {
+        let libraryVisible: Bool = {
+            if #available(macOS 14.0, *),
+               let controller = libraryControllerHolder as? LibraryWindowController {
+                return controller.isVisible
+            }
+            return false
+        }()
+        let agentConsoleVisible: Bool = {
+            if #available(macOS 14.0, *),
+               let controller = agentConsoleHolder as? AgentConsoleWindowController {
+                return controller.isVisible
+            }
+            return false
+        }()
+        let anyVisible = settingsWindow != nil
+            || onboardingWindow != nil
+            || chatWindow != nil
+            || libraryVisible
+            || agentConsoleVisible
+        if !anyVisible {
+            NSApp.setActivationPolicy(.accessory)
         }
     }
 }

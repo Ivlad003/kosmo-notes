@@ -2,7 +2,7 @@
 import Foundation
 
 #if canImport(ScreenCaptureKit)
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 
 // MARK: - SCKitAudioCapture
 

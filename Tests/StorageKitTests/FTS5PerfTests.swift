@@ -49,7 +49,7 @@ struct FTS5PerfTests {
     func searchPerfWithinBudgets() async throws {
         // Stable working directory we control — survives close+reopen of the DB.
         let tmpDir = URL.temporaryDirectory.appendingPathComponent(
-            "JarvisNoteFTS5Perf-\(UUID().uuidString)"
+            "KosmoNotesFTS5Perf-\(UUID().uuidString)"
         )
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }

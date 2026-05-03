@@ -16,19 +16,26 @@ final class LibraryWindowController {
     private weak var window: NSWindow?
 
     /// Open the Library window. If it already exists, bring it to front.
-    func open(database: AppDatabase, sessionStore: SessionStore, windowDelegate: NSWindowDelegate) {
+    /// `settings` is optional so tests / previews can build a window without
+    /// constructing a full AppSettings (semantic search just stays off).
+    func open(
+        database: AppDatabase,
+        sessionStore: SessionStore,
+        settings: AppSettings? = nil,
+        windowDelegate: NSWindowDelegate
+    ) {
         if let existing = window {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
 
-        let libraryState = LibraryState(database: database, sessionStore: sessionStore)
+        let libraryState = LibraryState(database: database, sessionStore: sessionStore, settings: settings)
         let view = LibraryView(state: libraryState)
         let hosting = NSHostingController(rootView: view)
 
         let win = NSWindow(contentViewController: hosting)
-        win.title = "Jarvis Note Library"
+        win.title = "KosmoNotes Library"
         win.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         win.isReleasedWhenClosed = false
         win.setContentSize(NSSize(width: 1100, height: 700))
@@ -47,5 +54,12 @@ final class LibraryWindowController {
     /// Called by AppDelegate's windowWillClose to nil the reference.
     func didClose() {
         window = nil
+    }
+
+    /// True when the Library window is open and visible. Used by AppDelegate's
+    /// activation-policy bookkeeping so closing Settings or Chat doesn't demote
+    /// the app while the Library is still on screen.
+    var isVisible: Bool {
+        window?.isVisible == true
     }
 }

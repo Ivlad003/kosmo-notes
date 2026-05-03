@@ -9,7 +9,7 @@ struct SegmentWriterTests {
     // MARK: - Helpers
 
     private func makeTempDir() throws -> URL {
-        let dir = URL.temporaryDirectory.appendingPathComponent("JarvisNoteTests-\(UUID().uuidString)")
+        let dir = URL.temporaryDirectory.appendingPathComponent("KosmoNotesTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

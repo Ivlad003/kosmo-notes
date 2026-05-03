@@ -1,8 +1,8 @@
-name: JarvisNote
+name: KosmoNotes
 xcodeVersion: "16.3"
 
 options:
-  bundleIdPrefix: dev.jarvisnote
+  bundleIdPrefix: dev.kosmonotes
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -17,11 +17,11 @@ packages:
   KeyboardShortcuts:
     url: https://github.com/sindresorhus/KeyboardShortcuts
     from: 2.2.0
-  JarvisNoteCore:
+  KosmoNotesCore:
     path: .
 
 targets:
-  JarvisNote:
+  KosmoNotes:
     type: application
     platform: macOS
     deploymentTarget: "14.0"
@@ -32,32 +32,38 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleName: Jarvis Note
-        CFBundleDisplayName: Jarvis Note
-        CFBundleIdentifier: dev.jarvisnote.studio
-        CFBundleVersion: "1"
-        CFBundleShortVersionString: "0.0.1"
+        CFBundleName: KosmoNotes
+        CFBundleDisplayName: KosmoNotes
+        CFBundleIdentifier: dev.kosmonotes.studio
+        CFBundleVersion: "12"
+        CFBundleShortVersionString: "0.0.2"
         CFBundlePackageType: APPL
         CFBundleExecutable: "$(EXECUTABLE_NAME)"
         LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
         LSUIElement: true
-        NSMicrophoneUsageDescription: "Jarvis Note records your microphone for meeting notes and dictation."
-        NSScreenCaptureUsageDescription: "Jarvis Note records system audio (e.g. participants in a Meet/Zoom call) when system audio is enabled."
+        NSMicrophoneUsageDescription: "KosmoNotes records your microphone for meeting notes and dictation."
+        NSScreenCaptureUsageDescription: "KosmoNotes records system audio (e.g. participants in a Meet/Zoom call) when system audio is enabled."
+        NSCameraUsageDescription: "KosmoNotes shows a floating webcam bubble during screen recording so your face is captured alongside your screen."
     entitlements:
-      path: App/JarvisNote.entitlements
+      path: App/KosmoNotes.entitlements
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.jarvisnote.studio
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kosmonotes.studio
         SWIFT_VERSION: "5.10"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
-        # Ad-hoc signing ("-") is required for XCUITest to attach the runner
-        # to the app's process. The distribution `.app.zip` is shipped
-        # ad-hoc-signed too — it's still unsigned by an Apple Developer ID
-        # so users still need `xattr -d com.apple.quarantine` per README.
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGNING_REQUIRED: "YES"
-        CODE_SIGNING_ALLOWED: "YES"
-        CODE_SIGN_STYLE: "Manual"
+        # Sign with a stable Apple Development identity (free Apple ID auto-cert).
+        # Without a real Team ID, TCC keys grants by binary cdhash — every rebuild
+        # invalidates the previous Microphone / Screen Recording grant. With this
+        # Team ID + bundle ID combo, TCC keys by identity instead and grants
+        # persist across rebuilds.
+        # CODE_SIGN_IDENTITY left empty: with Automatic style + DEVELOPMENT_TEAM
+        # set, Xcode picks the right cert ("Apple Development" on Xcode 26+,
+        # "Mac Development" on older toolchains) and provisions automatically.
+        # If you don't have a cert, run `security find-identity -v -p codesigning`
+        # — it must list "Apple Development: <name> (<TeamID>)". Set up via
+        # Xcode → Settings → Accounts → Apple ID → Manage Certificates → +.
+        DEVELOPMENT_TEAM: "7CP69K73N6"
+        CODE_SIGN_STYLE: "Automatic"
         ENABLE_HARDENED_RUNTIME: "NO"
         ENABLE_APP_SANDBOX: "NO"
         OTHER_LDFLAGS: ""
@@ -68,37 +74,37 @@ targets:
         product: KeychainAccess
       - package: KeyboardShortcuts
         product: KeyboardShortcuts
-      - package: JarvisNoteCore
+      - package: KosmoNotesCore
         product: CaptureKit
-      - package: JarvisNoteCore
+      - package: KosmoNotesCore
         product: TranscriptionKit
-      - package: JarvisNoteCore
+      - package: KosmoNotesCore
         product: StorageKit
-      - package: JarvisNoteCore
+      - package: KosmoNotesCore
         product: AIKit
-      - package: JarvisNoteCore
+      - package: KosmoNotesCore
         product: DictationKit
+      - package: KosmoNotesCore
+        product: SharingKit
 
-  JarvisNoteUITests:
+  KosmoNotesUITests:
     type: bundle.ui-testing
     platform: macOS
     deploymentTarget: "14.0"
     sources:
       - UITests
     dependencies:
-      - target: JarvisNote
+      - target: KosmoNotes
     settings:
       base:
         SWIFT_VERSION: "5.10"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
-        TEST_TARGET_NAME: JarvisNote
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGNING_REQUIRED: "YES"
-        CODE_SIGNING_ALLOWED: "YES"
-        CODE_SIGN_STYLE: "Manual"
+        TEST_TARGET_NAME: KosmoNotes
+        DEVELOPMENT_TEAM: "7CP69K73N6"
+        CODE_SIGN_STYLE: "Automatic"
         GENERATE_INFOPLIST_FILE: "YES"
-        PRODUCT_BUNDLE_IDENTIFIER: dev.jarvisnote.studio.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kosmonotes.studio.uitests
     scheme:
       testTargets:
-        - JarvisNoteUITests
+        - KosmoNotesUITests
       gatherCoverageData: false

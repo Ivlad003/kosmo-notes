@@ -129,7 +129,7 @@ public final class OllamaProvider: AIProvider, Sendable {
 
     // MARK: - Endpoint validation
 
-    static func validate(endpoint: URL) throws {
+    public static func validate(endpoint: URL) throws {
         guard let scheme = endpoint.scheme?.lowercased() else { throw AIError.invalidEndpoint }
         if scheme == "https" { return }
         if scheme == "http" {
