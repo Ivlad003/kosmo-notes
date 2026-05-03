@@ -418,6 +418,18 @@ final class RecorderState {
                 sourceLanguage: result.language
             )
 
+            // Optional Markdown export — runs the cleaned transcript through
+            // the user's custom system + user prompts and writes a `.md` to
+            // their chosen folder. Independent of summary.md (which uses our
+            // built-in PromptTemplates). Non-fatal if it fails.
+            _ = await MarkdownExporter.export(
+                transcript: cleanedText,
+                settings: settings,
+                sessionID: sessionId,
+                sessionMode: activeMode,
+                recordedAt: Date()
+            )
+
             try await sessionStore.finalize(id: sessionId, status: .complete, durationSecs: duration)
 
             let preview = previewText(cleanedText)

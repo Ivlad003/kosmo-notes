@@ -34,6 +34,9 @@ struct SettingsView: View {
             SharingTab(settings: settings)
                 .tabItem { Label("Sharing", systemImage: "square.and.arrow.up") }
 
+            MarkdownExportTab(settings: settings)
+                .tabItem { Label("Markdown", systemImage: "doc.text") }
+
             PrivacyTab()
                 .tabItem { Label("Privacy", systemImage: "lock.shield") }
         }
@@ -1103,6 +1106,93 @@ private extension AudioInputDevice {
     /// touching the enumerator directly.
     static func fresh() -> [AudioInputDevice] {
         AudioDeviceEnumerator.inputDevices()
+    }
+}
+
+// MARK: - MarkdownExportTab
+
+/// Settings tab for the post-recording Markdown export pipeline. Lets the
+/// user toggle the feature, pick an output folder via NSOpenPanel, and
+/// edit the system + user prompts that drive formatting. Works alongside
+/// (not instead of) the built-in `summary.md` — those use our PromptTemplates
+/// in `Sources/AIKit/`; this tab is whatever the user wants their .md to
+/// look like.
+@available(macOS 14.0, *)
+private struct MarkdownExportTab: View {
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        Form {
+            Section("Markdown export") {
+                Toggle("Save formatted Markdown after every recording", isOn: $settings.markdownExportEnabled)
+                Text("After transcription + cleanup, the cleaned transcript is sent through your configured LLM (AI Providers tab) with the prompts below, and the result is written as a .md file at the folder you pick. Independent of summary.md inside the session folder. Failures are non-fatal — recording stays usable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Output folder") {
+                HStack(alignment: .top) {
+                    TextField("Path", text: $settings.markdownExportFolder, prompt: Text("~/Documents/JarvisNote (default)"))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.callout, design: .monospaced))
+                    Button("Choose…") { pickFolder() }
+                }
+                Text("Empty = use the default `~/Documents/JarvisNote`. Filenames are auto-generated as `<date>_<mode>_<short-id>.md` so two recordings in the same minute don't collide.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("System prompt") {
+                TextEditor(text: $settings.markdownExportSystemPrompt)
+                    .font(.system(.callout, design: .monospaced))
+                    .frame(minHeight: 160)
+                    .border(Color(NSColor.separatorColor), width: 1)
+                HStack {
+                    Text("This is what the LLM gets as `system`. Sets the formatter persona and structural rules.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Reset to default") {
+                        settings.markdownExportSystemPrompt = AppSettings.defaultMarkdownExportSystemPrompt
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                }
+            }
+
+            Section("User prompt template") {
+                TextEditor(text: $settings.markdownExportUserPrompt)
+                    .font(.system(.callout, design: .monospaced))
+                    .frame(minHeight: 100)
+                    .border(Color(NSColor.separatorColor), width: 1)
+                HStack {
+                    Text("Use the placeholder `{transcript}` — it's replaced with the actual cleaned transcript at send time. If you remove the placeholder the transcript is still appended at the end.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Reset to default") {
+                        settings.markdownExportUserPrompt = AppSettings.defaultMarkdownExportUserPrompt
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    /// NSOpenPanel folder picker. Sandbox is OFF (project.yml), so we don't
+    /// need security-scoped bookmarks — the raw path string survives reboots.
+    private func pickFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.title = "Pick the Markdown export folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            settings.markdownExportFolder = url.path
+        }
     }
 }
 

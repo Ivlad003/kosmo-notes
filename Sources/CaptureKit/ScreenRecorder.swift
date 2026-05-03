@@ -3,7 +3,7 @@ import Foundation
 import os
 
 #if canImport(ScreenCaptureKit)
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 
 /// Diagnostics channel for screen recording. Until this was added, ScreenRecorder
 /// failed completely silently — start could "succeed" but no frames ever wrote,
@@ -295,6 +295,13 @@ public actor ScreenRecorder: NSObject {
             if let adjusted = sampleBuffer.copyWithAdjustedPTS(offset: firstSampleTime!) {
                 aInput.append(adjusted)
             }
+
+        case .microphone:
+            // Added in macOS 15 SDK — SCStream can emit a synchronized mic
+            // track. We don't enable it (capturesAudio is the only output
+            // type we configure), but the case must exist to keep Swift 6's
+            // exhaustive-switch happy.
+            break
 
         @unknown default:
             break

@@ -183,6 +183,13 @@ final class AppSettings {
         // timestamp-extracted frames).
         static let chatVideoAutoFramesEnabled = "chatVideoAutoFramesEnabled"
         static let chatVideoAutoFramesCount = "chatVideoAutoFramesCount"
+        // Markdown export — at the end of every recording, run the cleaned
+        // transcript through an LLM with the user-defined prompts and write
+        // the result as a .md file at the chosen folder.
+        static let markdownExportEnabled = "markdownExportEnabled"
+        static let markdownExportFolder = "markdownExportFolder"
+        static let markdownExportSystemPrompt = "markdownExportSystemPrompt"
+        static let markdownExportUserPrompt = "markdownExportUserPrompt"
         // S3 sharing
         static let s3Endpoint = "s3Endpoint"
         static let s3Region = "s3Region"
@@ -257,6 +264,35 @@ final class AppSettings {
     /// hard-capped (in ChatState) to keep request size reasonable.
     var chatVideoAutoFramesCount: Int {
         didSet { UserDefaults.standard.set(chatVideoAutoFramesCount, forKey: Defaults.chatVideoAutoFramesCount) }
+    }
+
+    /// When ON, every finished recording is also formatted into a custom
+    /// `.md` file via the user-defined system + user prompts (below) and
+    /// saved to `markdownExportFolder`. Independent of the built-in
+    /// `summary.md` — that uses our PromptTemplates; this one is whatever
+    /// the user wants ("turn into Notion-style notes", "extract action
+    /// items as JIRA tickets", "translate to English while reformatting").
+    var markdownExportEnabled: Bool {
+        didSet { UserDefaults.standard.set(markdownExportEnabled, forKey: Defaults.markdownExportEnabled) }
+    }
+    /// Filesystem path where exported `.md` files land. Empty = use the
+    /// default `~/Documents/JarvisNote`. Stored as POSIX path string;
+    /// MarkdownExporter creates the dir if missing.
+    var markdownExportFolder: String {
+        didSet { UserDefaults.standard.set(markdownExportFolder, forKey: Defaults.markdownExportFolder) }
+    }
+    /// System prompt for the Markdown export pass. Editable in Settings.
+    /// Defaults to a meeting-formatter prompt; user can replace with
+    /// anything (the LLM gets `system` + `user{transcript}` and returns
+    /// the `.md` body).
+    var markdownExportSystemPrompt: String {
+        didSet { UserDefaults.standard.set(markdownExportSystemPrompt, forKey: Defaults.markdownExportSystemPrompt) }
+    }
+    /// User-prompt template. Must contain `{transcript}` — that token is
+    /// substituted with the actual cleaned transcript before sending to
+    /// the LLM. Default keeps it simple: "Here is the transcript: {transcript}".
+    var markdownExportUserPrompt: String {
+        didSet { UserDefaults.standard.set(markdownExportUserPrompt, forKey: Defaults.markdownExportUserPrompt) }
     }
 
     var transcriptionProvider: TranscriptionProviderChoice {
@@ -425,6 +461,43 @@ final class AppSettings {
         }
     }
 
+    // MARK: - Default prompts (Markdown export)
+
+    /// Sane starter for the Markdown export system prompt. The user can
+    /// fully replace it in Settings → Markdown Export. Kept generic on
+    /// purpose so it works for meetings, voice notes, and dictation.
+    static let defaultMarkdownExportSystemPrompt: String = """
+    You are a transcript-to-Markdown formatter. The user gives you a raw \
+    transcript from a meeting, voice note, or dictation. Produce a clean \
+    Markdown document that is easy to skim later.
+
+    Required structure:
+    1. `# <Concise title>` — invent one from the content; no boilerplate.
+    2. A 2–4 sentence executive summary, italicized.
+    3. `## Key points` — bullet list of the main ideas.
+    4. `## Decisions` — bullet list, only if any were made; omit otherwise.
+    5. `## Action items` — checkbox list (`- [ ] …`), with owner in **bold** \
+       when nameable; omit if none.
+    6. `## Open questions` — bullet list, only if any were raised.
+    7. `## Full transcript (cleaned)` — copy the transcript with light \
+       cleanup: punctuation, paragraph breaks, removed filler words.
+
+    Rules:
+    - Output language: same as the transcript.
+    - Use only standard CommonMark; no front matter, no HTML, no code fences \
+      around the whole document.
+    - Do not invent facts. If a section would be empty, leave it out.
+    - Keep headings consistent so the file is greppable.
+    """
+
+    /// User-message template. `{transcript}` is substituted at send-time.
+    /// Kept short — the system prompt does the heavy lifting.
+    static let defaultMarkdownExportUserPrompt: String = """
+    Transcript follows. Format it according to the rules.
+
+    {transcript}
+    """
+
     // MARK: Init
 
     private let keychain: Keychain
@@ -451,6 +524,13 @@ final class AppSettings {
         self.chatVideoAutoFramesEnabled = (UserDefaults.standard.object(forKey: Defaults.chatVideoAutoFramesEnabled) as? Bool) ?? false
         let savedFrames = UserDefaults.standard.integer(forKey: Defaults.chatVideoAutoFramesCount)
         self.chatVideoAutoFramesCount = savedFrames > 0 ? savedFrames : 4
+
+        self.markdownExportEnabled = (UserDefaults.standard.object(forKey: Defaults.markdownExportEnabled) as? Bool) ?? false
+        self.markdownExportFolder = UserDefaults.standard.string(forKey: Defaults.markdownExportFolder) ?? ""
+        self.markdownExportSystemPrompt = UserDefaults.standard.string(forKey: Defaults.markdownExportSystemPrompt)
+            ?? AppSettings.defaultMarkdownExportSystemPrompt
+        self.markdownExportUserPrompt = UserDefaults.standard.string(forKey: Defaults.markdownExportUserPrompt)
+            ?? AppSettings.defaultMarkdownExportUserPrompt
 
         let llmRaw = UserDefaults.standard.string(forKey: Defaults.llmProvider) ?? LLMProviderChoice.anthropic.rawValue
         self.llmProvider = LLMProviderChoice(rawValue: llmRaw) ?? .anthropic
