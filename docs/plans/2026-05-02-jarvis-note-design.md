@@ -156,6 +156,10 @@ The deferred-and-resurrected Jarvis Studio was 24 days of plan, ~5 weeks of buil
 - **No web server.** No `localhost:N` port. Avoids macOS firewall prompts (a Jarvis Studio §5 trap).
 - **No FFI boundary.** Everything is Swift. The cost is reimplementing a few primitives (audio fragmentation, segment integrity) but it's small.
 
+### Implementation note: app shell (shipped 2026-05-03)
+
+The diagram above shows `MenuBarExtra`. **What shipped uses `NSStatusItem` + `NSMenu`** (`App/KosmoNotesApp.swift`). Reason: `MenuBarExtra` is unreliable under `LSUIElement` apps that wake from sleep — the SwiftUI scene gets torn down and re-created on wake, which intermittently loses the status-item icon and dismisses any open popover. `NSStatusItem` is the AppKit-level primitive `MenuBarExtra` wraps, and managing it directly avoids the wake-from-sleep race. Functionally identical surface (icon, popover, mode picker, record button, mic level); architecturally one layer lower.
+
 ---
 
 ## 4. Capture Modes
@@ -1055,7 +1059,7 @@ On version bump, run a migration function. v1 ships with `schema_version: 1`; fu
 | D2 | Cloud-only transcription. No local Whisper. | OpenAI Whisper Pro Tier or equivalent at-cost local-quality model that's <500 MB and ships in our binary — none exists today. |
 | D3 | Ollama via REST is the ONE local-LLM path. No bundled inference. | Apple ships an MLX framework with a stable model-pull API + sub-15-MB inference engine for chat models. Currently MLX requires the model artifacts live in the app or be downloaded — not v1-friendly. |
 | D4 | No code signing, no notarization, no auto-update. Manual `.app` replacement. | User base exceeds ~10 people OR Apple's Gatekeeper friction increases (Apple has been tightening; if quarantine bypass becomes harder than `xattr -d`, revisit). |
-| D5 | macOS 12.3+ supported, 14.4+ preferred. <12.3 unsupported. | Significant fraction of personal-use audience on <12.3. Currently macOS Ventura is on 12.x and most likely already migrated. |
+| D5 | ~~macOS 12.3+ supported, 14.4+ preferred. <12.3 unsupported.~~ **Superseded 2026-05-03 — actual deployment target is macOS 14.0+** (`Package.swift` and `project.yml` pin `.macOS(.v14)`; `LSMinimumSystemVersion` blocks launch on <14). The 12.3–13.x "best-effort" path was never implemented — Recorder, Library, Settings, RecorderState, AudioEngine etc. are all gated behind `@available(macOS 14.0, *)`. Within 14.x: Core Audio Tap is 14.4+, ScreenCaptureKit audio fallback covers 14.0–14.3. See `CLAUDE.md` "Stack invariants" for the active contract. | Lowering to 12.3+ requires removing every `@available(macOS 14.0, *)` and replacing `@Observable` / `KeyboardShortcuts` 2.x APIs — large surgery. |
 | D6 | Default transcription provider: Deepgram Nova-2 with EU residency on. | Deepgram pricing change, sustained outage, or a Whisper-class on-device model that ships under our binary-size limit. |
 | D7 | Default LLM provider: Anthropic Claude Sonnet (latest). | Anthropic pricing change or capability regression vs OpenAI / OpenRouter. |
 | D8 | No telemetry. No analytics. No auth. No payments. | Single-user product positioning changes (e.g., starts charging). Personal use only — no revisit expected. |
