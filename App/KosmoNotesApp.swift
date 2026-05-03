@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var agentSessionHolder: AnyObject?   // AgentSessionState (macOS 14+)
     private var agentHotkeyHolder: AnyObject?    // AgentHotkeyState (macOS 14+)
     private var agentConsoleHolder: AnyObject?   // AgentConsoleWindowController (macOS 14+)
+    private var audioStreamingBridgeHolder: AnyObject? // AudioStreamingBridge (macOS 14+)
 
     // Library window controller. Stored as AnyObject to avoid @available on
     // a stored property (Swift disallows that). Cast at use-site with #available.
@@ -338,7 +339,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.databaseHolder = database
             self.sessionStoreHolder = sessionStore
 
-            let recorder = RecorderState(database: database, sessionStore: sessionStore, settings: settings)
+            // RTMP live-streaming bridge — owns the RTMPStreamer and acts as
+            // the audioTee target on RecorderState's CaptureSession. Lifecycle
+            // mirrors the recording: starts when streamingEnabled + URL/key
+            // are set, stops at recording teardown.
+            let streamingBridge = AudioStreamingBridge()
+            self.audioStreamingBridgeHolder = streamingBridge
+
+            let recorder = RecorderState(
+                database: database,
+                sessionStore: sessionStore,
+                settings: settings,
+                audioStreamingBridge: streamingBridge
+            )
             self.recorderHolder = recorder
 
             // Dictation: register the global hotkey monitor. The pipeline itself

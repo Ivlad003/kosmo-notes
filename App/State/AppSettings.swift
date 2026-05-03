@@ -247,6 +247,12 @@ final class AppSettings {
         static let s3Region = "s3Region"
         static let s3Bucket = "s3Bucket"
         static let s3PresignTTLHours = "s3PresignTTLHours"
+        // RTMP live streaming (Phase 2b — sync-with-recording mode only).
+        // streamKey ships in UserDefaults for now; Phase 4 polish will move
+        // it to the Keychain alongside the other secrets.
+        static let streamingEnabled = "streamingEnabled"
+        static let rtmpURL = "rtmpURL"
+        static let rtmpStreamKey = "rtmpStreamKey"
         // Storage profile + codec overrides
         static let storageProfile = "storageProfile"
         static let audioCodec = "audioCodec"
@@ -551,6 +557,25 @@ final class AppSettings {
     var s3Bucket: String {
         didSet { UserDefaults.standard.set(s3Bucket, forKey: Defaults.s3Bucket) }
     }
+
+    /// Live RTMP streaming toggle. When ON and `rtmpURL` + `rtmpStreamKey` are
+    /// non-empty, every recording also publishes audio to the RTMP endpoint
+    /// (Phase 2b is sync-with-recording only — standalone "stream-only" mode
+    /// lands in Phase 2c). Off by default.
+    var streamingEnabled: Bool {
+        didSet { UserDefaults.standard.set(streamingEnabled, forKey: Defaults.streamingEnabled) }
+    }
+    /// RTMP ingest URL, e.g. `rtmp://a.rtmp.youtube.com/live2` or `rtmp://localhost:1935/live`
+    /// when testing against MediaMTX.
+    var rtmpURL: String {
+        didSet { UserDefaults.standard.set(rtmpURL, forKey: Defaults.rtmpURL) }
+    }
+    /// Stream key (provider-issued secret). **Stored in UserDefaults for
+    /// Phase 2b**; Phase 4 polish moves this to the Keychain alongside the
+    /// other secrets. Treat as sensitive in the meantime.
+    var rtmpStreamKey: String {
+        didSet { UserDefaults.standard.set(rtmpStreamKey, forKey: Defaults.rtmpStreamKey) }
+    }
     /// Presigned URL TTL in hours. Default 168 (7 days, the S3 max for sigv4).
     var s3PresignTTLHours: Int {
         didSet { UserDefaults.standard.set(s3PresignTTLHours, forKey: Defaults.s3PresignTTLHours) }
@@ -782,6 +807,10 @@ final class AppSettings {
         self.s3Bucket = UserDefaults.standard.string(forKey: Defaults.s3Bucket) ?? ""
         let ttl = UserDefaults.standard.integer(forKey: Defaults.s3PresignTTLHours)
         self.s3PresignTTLHours = ttl > 0 ? ttl : 168
+
+        self.streamingEnabled = UserDefaults.standard.bool(forKey: Defaults.streamingEnabled)
+        self.rtmpURL = UserDefaults.standard.string(forKey: Defaults.rtmpURL) ?? ""
+        self.rtmpStreamKey = UserDefaults.standard.string(forKey: Defaults.rtmpStreamKey) ?? ""
 
         // Storage profile defaults to .balanced for new installs (50 % smaller than
         // the legacy "Quality" default). Existing installs that have no UserDefaults
