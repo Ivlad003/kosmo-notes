@@ -59,6 +59,20 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      - name: xcodebuild build-for-testing (KosmoNotesUITests)
+        # Compile-only check on the XCUITest target. Actually executing UI
+        # tests requires Accessibility TCC for the runner, which is impossible
+        # to grant on a fresh GitHub Actions runner — but compiling them
+        # catches stale element queries / API changes before they hit a human.
+        run: |
+          xcodebuild build-for-testing \
+            -project KosmoNotes.xcodeproj \
+            -scheme KosmoNotesUITests \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO
+
       - name: xcodebuild build (Release, for size check)
         run: |
           xcodebuild \

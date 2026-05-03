@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Jarvis Note</string>
+	<string>KosmoNotes</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -13,7 +13,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Jarvis Note</string>
+	<string>KosmoNotes</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -25,10 +25,10 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>Jarvis Note shows a floating webcam bubble during screen recording so your face is captured alongside your screen.</string>
+	<string>KosmoNotes shows a floating webcam bubble during screen recording so your face is captured alongside your screen.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Jarvis Note records your microphone for meeting notes and dictation.</string>
+	<string>KosmoNotes records your microphone for meeting notes and dictation.</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>Jarvis Note records system audio (e.g. participants in a Meet/Zoom call) when system audio is enabled.</string>
+	<string>KosmoNotes records system audio (e.g. participants in a Meet/Zoom call) when system audio is enabled.</string>
 </dict>
 </plist>

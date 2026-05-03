@@ -116,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if isBelow12_3 {
             let alert = NSAlert()
             alert.messageText = "macOS 12.3 or newer required"
-            alert.informativeText = "Jarvis Note needs macOS 12.3 or newer for system audio capture. The recorder, Library, and Settings additionally require macOS 14.0 — please upgrade to use this build."
+            alert.informativeText = "KosmoNotes needs macOS 12.3 or newer for system audio capture. The recorder, Library, and Settings additionally require macOS 14.0 — please upgrade to use this build."
             alert.alertStyle = .critical
             alert.addButton(withTitle: "Quit")
             alert.runModal()
@@ -145,10 +145,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let image = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "Jarvis Note") {
+        if let image = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "KosmoNotes") {
             item.button?.image = image
         }
-        item.button?.title = "JN"
+        item.button?.title = "KN"
         item.button?.imagePosition = .imageLeading
         item.length = NSStatusItem.variableLength
         item.isVisible = true
@@ -162,7 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Version header — disabled menu item that shows what build is actually
         // running. Useful when rebuilding ad-hoc dev binaries: confirms whether
         // the app you're talking to is the latest one or a stale relaunch.
-        let versionItem = NSMenuItem(title: "Jarvis Note \(Self.appVersionLine())", action: nil, keyEquivalent: "")
+        let versionItem = NSMenuItem(title: "KosmoNotes \(Self.appVersionLine())", action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
         menu.addItem(versionItem)
 
@@ -241,7 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "Quit Jarvis Note",
+        let quitItem = NSMenuItem(title: "Quit KosmoNotes",
                                   action: #selector(NSApplication.terminate(_:)),
                                   keyEquivalent: "q")
         // Leave target = nil so the responder chain reaches NSApp.terminate(_:).
@@ -372,7 +372,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func presentFatalSetupError(_ message: String, error: Error) {
         let alert = NSAlert()
-        alert.messageText = "Jarvis Note setup failed"
+        alert.messageText = "KosmoNotes setup failed"
         alert.informativeText = "\(message)\n\n\(error.localizedDescription)"
         alert.alertStyle = .critical
         alert.runModal()
@@ -428,7 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// exactly which build of which OS produced the problem.
     @MainActor
     @objc private func copyVersionAction() {
-        let line = "Jarvis Note \(Self.appVersionLine()) on macOS \(ProcessInfo.processInfo.operatingSystemVersionString)"
+        let line = "KosmoNotes \(Self.appVersionLine()) on macOS \(ProcessInfo.processInfo.operatingSystemVersionString)"
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(line, forType: .string)
@@ -534,7 +534,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = SettingsView(settings: settings)
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        window.title = "Jarvis Note Settings"
+        window.title = "KosmoNotes Settings"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
         window.center()
@@ -595,7 +595,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = ChatView(chat: chatState, settings: settings)
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        window.title = "Jarvis Note Chat"
+        window.title = "KosmoNotes Chat"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
         window.setContentSize(NSSize(width: 540, height: 700))
@@ -627,7 +627,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingController = NSHostingController(rootView: contentView)
 
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "Welcome to Jarvis Note"
+        window.title = "Welcome to KosmoNotes"
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
         window.level = .floating

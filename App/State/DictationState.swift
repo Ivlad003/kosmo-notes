@@ -75,7 +75,7 @@ final class DictationState {
         if !PermissionsHelper.accessibilityGranted() {
             dictationLog.error("Dictation.handlePress: Accessibility not granted — showing alert")
             PermissionsHelper.showMissingAlert(.accessibility)
-            uiStatus = .failed("Accessibility access required. Grant in System Settings, then quit and relaunch Jarvis Note.")
+            uiStatus = .failed("Accessibility access required. Grant in System Settings, then quit and relaunch KosmoNotes.")
             return
         }
 

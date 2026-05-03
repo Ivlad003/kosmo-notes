@@ -9,7 +9,7 @@ final class SleepAssertion: @unchecked Sendable {
     private var held = false
 
     /// Acquire a "prevent user idle system sleep" assertion. No-op if already held.
-    func hold(reason: String = "Jarvis Note recording in progress") {
+    func hold(reason: String = "KosmoNotes recording in progress") {
         guard !held else { return }
         let result = IOPMAssertionCreateWithName(
             kIOPMAssertPreventUserIdleSystemSleep as CFString,

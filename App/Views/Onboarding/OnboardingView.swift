@@ -6,11 +6,11 @@ struct OnboardingView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Welcome to Jarvis Note")
+            Text("Welcome to KosmoNotes")
                 .font(.title)
                 .bold()
 
-            Text("Jarvis Note will request three permissions as you use it. You can grant them now or later when prompted.")
+            Text("KosmoNotes will request three permissions as you use it. You can grant them now or later when prompted.")
                 .foregroundStyle(.secondary)
 
             permissionRow(

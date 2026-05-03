@@ -35,7 +35,7 @@ final class LibraryWindowController {
         let hosting = NSHostingController(rootView: view)
 
         let win = NSWindow(contentViewController: hosting)
-        win.title = "Jarvis Note Library"
+        win.title = "KosmoNotes Library"
         win.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         win.isReleasedWhenClosed = false
         win.setContentSize(NSSize(width: 1100, height: 700))

@@ -605,7 +605,7 @@ private struct DictationTab: View {
             }
 
             Section("Permission") {
-                Text("First press triggers a macOS Accessibility permission prompt. Grant in System Settings → Privacy & Security → Accessibility, then quit + relaunch Jarvis Note for the trust to take effect.")
+                Text("First press triggers a macOS Accessibility permission prompt. Grant in System Settings → Privacy & Security → Accessibility, then quit + relaunch KosmoNotes for the trust to take effect.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -839,7 +839,7 @@ private struct PrivacyTab: View {
                 Text(resetResult ?? "")
             }
 
-            Section("How Jarvis Note handles your audio") {
+            Section("How KosmoNotes handles your audio") {
                 Text("""
                 Recordings stay on your Mac at:
 
@@ -859,7 +859,7 @@ private struct PrivacyTab: View {
 
             Section("Screen recording") {
                 Text("""
-                When "Audio + Screen" mode is enabled, Jarvis Note captures your \
+                When "Audio + Screen" mode is enabled, KosmoNotes captures your \
                 entire display alongside audio and saves a screen.mp4 sidecar next \
                 to the audio file. Screen content is used locally for vision-chat \
                 frame extraction — it is never uploaded to any cloud service. \

@@ -32,8 +32,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleName: Jarvis Note
-        CFBundleDisplayName: Jarvis Note
+        CFBundleName: KosmoNotes
+        CFBundleDisplayName: KosmoNotes
         CFBundleIdentifier: dev.kosmonotes.studio
         CFBundleVersion: "12"
         CFBundleShortVersionString: "0.0.2"
@@ -41,9 +41,9 @@ targets:
         CFBundleExecutable: "$(EXECUTABLE_NAME)"
         LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
         LSUIElement: true
-        NSMicrophoneUsageDescription: "Jarvis Note records your microphone for meeting notes and dictation."
-        NSScreenCaptureUsageDescription: "Jarvis Note records system audio (e.g. participants in a Meet/Zoom call) when system audio is enabled."
-        NSCameraUsageDescription: "Jarvis Note shows a floating webcam bubble during screen recording so your face is captured alongside your screen."
+        NSMicrophoneUsageDescription: "KosmoNotes records your microphone for meeting notes and dictation."
+        NSScreenCaptureUsageDescription: "KosmoNotes records system audio (e.g. participants in a Meet/Zoom call) when system audio is enabled."
+        NSCameraUsageDescription: "KosmoNotes shows a floating webcam bubble during screen recording so your face is captured alongside your screen."
     entitlements:
       path: App/KosmoNotes.entitlements
     settings:
