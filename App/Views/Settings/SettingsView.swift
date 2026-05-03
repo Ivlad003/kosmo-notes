@@ -28,7 +28,7 @@ struct SettingsView: View {
             VoiceNoteTab(settings: settings)
                 .tabItem { Label("Voice Note", systemImage: "note.text") }
 
-            HotkeysTab()
+            HotkeysTab(settings: settings)
                 .tabItem { Label("Hotkeys", systemImage: "command") }
 
             SharingTab(settings: settings)
@@ -781,6 +781,25 @@ private struct VoiceNoteTab: View {
 
 @available(macOS 14.0, *)
 private struct HotkeysTab: View {
+    @Bindable var settings: AppSettings
+
+    /// Picker option type — `nil` modifier collapses to "Disabled" so the
+    /// optional `DoubleTapModifier?` round-trips through SwiftUI tagging.
+    private enum LibraryDoubleTapChoice: Hashable, Identifiable {
+        case disabled
+        case modifier(DoubleTapModifier)
+        var id: String {
+            if case .modifier(let m) = self { return m.rawValue }
+            return "disabled"
+        }
+        var displayName: String {
+            switch self {
+            case .disabled: return "Disabled"
+            case .modifier(let m): return "Double-tap \(m.displayName)"
+            }
+        }
+    }
+
     var body: some View {
         Form {
             Section("Global hotkeys") {
@@ -792,6 +811,19 @@ private struct HotkeysTab: View {
                 KeyboardShortcuts.Recorder("Agent (hold + speak → autonomous agent)", name: .agentTrigger)
             }
 
+            Section("Library double-tap (optional)") {
+                Picker("Open Library on", selection: libraryDoubleTapBinding) {
+                    Text(LibraryDoubleTapChoice.disabled.displayName).tag(LibraryDoubleTapChoice.disabled)
+                    ForEach(DoubleTapModifier.allCases, id: \.self) { mod in
+                        Text(LibraryDoubleTapChoice.modifier(mod).displayName)
+                            .tag(LibraryDoubleTapChoice.modifier(mod))
+                    }
+                }
+                Text("Quick one-shot shortcut alongside the combo. Tap twice within 350 ms — either side counts. Routed through the same CGEventTap as Dictation hold-key, so it needs Accessibility permission to fire (System Settings → Privacy & Security → Accessibility).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Defaults") {
                 Text("⌘⇧R — Meeting record · ⌘⇧N — Voice Note · ⌘⇧L — Library · ⌘⇧D — Dictation")
                     .font(.caption)
@@ -799,6 +831,21 @@ private struct HotkeysTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var libraryDoubleTapBinding: Binding<LibraryDoubleTapChoice> {
+        Binding(
+            get: {
+                if let mod = settings.libraryDoubleTapModifier { return .modifier(mod) }
+                return .disabled
+            },
+            set: { newChoice in
+                switch newChoice {
+                case .disabled:           settings.libraryDoubleTapModifier = nil
+                case .modifier(let mod):  settings.libraryDoubleTapModifier = mod
+                }
+            }
+        )
     }
 }
 

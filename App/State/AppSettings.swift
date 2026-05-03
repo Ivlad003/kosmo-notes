@@ -193,6 +193,10 @@ final class AppSettings {
         static let dictationTrigger = "dictationTrigger"
         static let pushToMarkdownTrigger = "pushToMarkdownTrigger"
         static let agentTrigger = "agentTriggerKind"  // "agentTrigger" is a KeyboardShortcuts.Name; rename here to avoid collision
+        // Optional double-tap-modifier shortcut for the Library window. Stored
+        // as the raw string of DoubleTapModifier; empty / missing = disabled.
+        // The combo `.openLibrary` (default ⌘⇧L) stays wired regardless.
+        static let libraryDoubleTapModifier = "libraryDoubleTapModifier"
         static let voiceNoteKind = "voiceNoteKind"
         static let openrouterModel = "openrouterModel"
         static let semanticSearchEnabled = "semanticSearchEnabled"
@@ -473,12 +477,28 @@ final class AppSettings {
         }
     }
 
+    /// Optional double-tap-modifier shortcut for opening the Library window.
+    /// `nil` = feature disabled; only the combo `.openLibrary` is active.
+    /// Routed through `KeyTriggerEngine` (CGEventTap), so it needs Accessibility
+    /// permission to actually fire — the combo path keeps working without it.
+    var libraryDoubleTapModifier: DoubleTapModifier? {
+        didSet {
+            if let mod = libraryDoubleTapModifier {
+                UserDefaults.standard.set(mod.rawValue, forKey: Defaults.libraryDoubleTapModifier)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Defaults.libraryDoubleTapModifier)
+            }
+            NotificationCenter.default.post(name: AppSettings.libraryDoubleTapModifierDidChange, object: nil)
+        }
+    }
+
     /// Posted on the default NotificationCenter whenever the matching trigger
     /// is reassigned (e.g. via the Settings UI). The owning state class
     /// subscribes and re-registers its hotkey without requiring an app relaunch.
-    static let dictationTriggerDidChange     = Notification.Name("dev.kosmonotes.studio.dictationTriggerDidChange")
+    static let dictationTriggerDidChange      = Notification.Name("dev.kosmonotes.studio.dictationTriggerDidChange")
     static let pushToMarkdownTriggerDidChange = Notification.Name("dev.kosmonotes.studio.pushToMarkdownTriggerDidChange")
-    static let agentTriggerDidChange         = Notification.Name("dev.kosmonotes.studio.agentTriggerDidChange")
+    static let agentTriggerDidChange          = Notification.Name("dev.kosmonotes.studio.agentTriggerDidChange")
+    static let libraryDoubleTapModifierDidChange = Notification.Name("dev.kosmonotes.studio.libraryDoubleTapModifierDidChange")
 
     /// Run the long-form meeting / voice-note transcript through an LLM cleanup
     /// pass after Whisper / Deepgram / Gemini transcribes. Reuses the configured
@@ -739,6 +759,13 @@ final class AppSettings {
         self.dictationTrigger = AppSettings.loadTrigger(forKey: Defaults.dictationTrigger)
         self.pushToMarkdownTrigger = AppSettings.loadTrigger(forKey: Defaults.pushToMarkdownTrigger)
         self.agentTrigger = AppSettings.loadTrigger(forKey: Defaults.agentTrigger)
+
+        // libraryDoubleTapModifier: optional rawValue string in UserDefaults.
+        if let raw = UserDefaults.standard.string(forKey: Defaults.libraryDoubleTapModifier) {
+            self.libraryDoubleTapModifier = DoubleTapModifier(rawValue: raw)
+        } else {
+            self.libraryDoubleTapModifier = nil
+        }
 
         let kindRaw = UserDefaults.standard.string(forKey: Defaults.voiceNoteKind) ?? PromptTemplates.VoiceNoteKind.freeform.rawValue
         self.voiceNoteKind = PromptTemplates.VoiceNoteKind(rawValue: kindRaw) ?? .freeform

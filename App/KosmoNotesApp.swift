@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import KeyboardShortcuts
 import StorageKit
+import DictationKit
 
 @main
 struct KosmoNotesApp: App {
@@ -40,6 +41,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Library window controller. Stored as AnyObject to avoid @available on
     // a stored property (Swift disallows that). Cast at use-site with #available.
     private var libraryControllerHolder: AnyObject?
+
+    /// Active KeyTriggerEngine subscription for the optional Library
+    /// double-tap shortcut. Stored as `Any?` (rather than the strongly-typed
+    /// optional) because Swift disallows `@available` on a stored property
+    /// and SubscriptionID is itself macOS-14-gated.
+    private var libraryDoubleTapSub: Any?
+    private var libraryDoubleTapObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // AC-6: minimum-OS gate. Deployment target is 12.3+; Recording / Library / Settings
@@ -82,6 +90,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         KeyboardShortcuts.onKeyDown(for: .openLibrary) { [weak self] in
             Task { @MainActor in self?.openLibraryAction() }
         }
+
+        // Optional one-shot double-tap shortcut for the Library window. Off by
+        // default; user opts in via Settings → Hotkeys → "Library double-tap".
+        // The combo .openLibrary stays wired regardless.
+        applyLibraryDoubleTap()
+        libraryDoubleTapObserver = NotificationCenter.default.addObserver(
+            forName: AppSettings.libraryDoubleTapModifierDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.applyLibraryDoubleTap() }
+        }
+    }
+
+    /// (Re-)register the Library double-tap shortcut from current settings.
+    /// Idempotent — drops any previous subscription first.
+    @available(macOS 14.0, *)
+    @MainActor
+    private func applyLibraryDoubleTap() {
+        if let existing = libraryDoubleTapSub as? KeyTriggerEngine.SubscriptionID {
+            KeyTriggerEngine.shared.unregister(existing)
+            libraryDoubleTapSub = nil
+        }
+        guard let mod = appSettings?.libraryDoubleTapModifier else { return }
+        // 350 ms double-tap window — fast enough not to clash with deliberate
+        // single taps, slow enough that a double-tap actually feels intentional.
+        libraryDoubleTapSub = KeyTriggerEngine.shared.register(
+            trigger: .doubleTapModifier(mod, withinMs: 350),
+            onPress: { [weak self] in self?.openLibraryAction() },
+            onRelease: { /* one-shot — no release work */ }
+        )
     }
 
     @MainActor
