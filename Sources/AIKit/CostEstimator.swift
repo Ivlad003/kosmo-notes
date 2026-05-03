@@ -55,4 +55,42 @@ public enum CostEstimator {
         let outputCost = Double(outputTokens) / 1_000_000.0 * pricing.outputPerMillion
         return inputCost + outputCost
     }
+
+    // MARK: - Transcription pricing (per-minute audio)
+
+    /// USD pricing per minute of audio for hosted speech-to-text providers.
+    /// Used by RecorderState to gate `provider.transcribe(...)` against the
+    /// per-session cost cap before paying the upload + transcription bill on
+    /// long recordings.
+    public struct TranscriptionPricing: Sendable {
+        public let perMinute: Double
+
+        public init(perMinute: Double) {
+            self.perMinute = perMinute
+        }
+    }
+
+    /// OpenAI `whisper-1` (legacy hosted Whisper Large-v2). $0.006 / minute as
+    /// of 2026-04 — unchanged since Whisper API launch.
+    public static let openai_whisper_1 = TranscriptionPricing(perMinute: 0.006)
+
+    /// OpenAI `gpt-4o-transcribe`. Released March 2025; ~$0.006 / minute audio
+    /// input plus a small text-output charge folded into the per-minute rate
+    /// here for simplicity. Conservative upper bound.
+    public static let openai_gpt_4o_transcribe = TranscriptionPricing(perMinute: 0.006)
+
+    /// OpenAI `gpt-4o-mini-transcribe`. Released March 2025; ~$0.003 / minute —
+    /// roughly half of `gpt-4o-transcribe` at comparable accuracy, which is why
+    /// it's the default in `AppSettings.openaiTranscribeModel`.
+    public static let openai_gpt_4o_mini_transcribe = TranscriptionPricing(perMinute: 0.003)
+
+    /// Deepgram Nova-2 batch (`/v1/listen`). $0.0043 / minute as of 2026-04.
+    public static let deepgram_nova_2_batch = TranscriptionPricing(perMinute: 0.0043)
+
+    /// Estimate USD cost for transcribing `durationSec` of audio at the given
+    /// per-minute rate.
+    public static func estimateTranscription(durationSec: Double, pricing: TranscriptionPricing) -> Double {
+        guard durationSec > 0 else { return 0 }
+        return (durationSec / 60.0) * pricing.perMinute
+    }
 }

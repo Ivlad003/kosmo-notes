@@ -93,3 +93,70 @@ struct CostEstimatorCostTests {
         #expect(abs(cost - 15.0) < 0.0001)
     }
 }
+
+// MARK: - Transcription pricing
+
+@Suite("CostEstimator.estimateTranscription")
+struct CostEstimatorTranscriptionTests {
+
+    @Test("60 s of audio at $0.006/min costs exactly $0.006")
+    func oneMinuteWhisper1() {
+        let cost = CostEstimator.estimateTranscription(
+            durationSec: 60,
+            pricing: CostEstimator.openai_whisper_1
+        )
+        #expect(abs(cost - 0.006) < 0.000001)
+    }
+
+    @Test("5-minute meeting at gpt-4o-mini-transcribe = $0.015")
+    func fiveMinutesGpt4oMini() {
+        let cost = CostEstimator.estimateTranscription(
+            durationSec: 300,
+            pricing: CostEstimator.openai_gpt_4o_mini_transcribe
+        )
+        #expect(abs(cost - 0.015) < 0.000001)
+    }
+
+    @Test("Zero-duration audio costs $0")
+    func zeroDurationFree() {
+        let cost = CostEstimator.estimateTranscription(
+            durationSec: 0,
+            pricing: CostEstimator.openai_whisper_1
+        )
+        #expect(cost == 0)
+    }
+
+    @Test("Negative duration is clamped to $0 (defensive)")
+    func negativeDurationFree() {
+        let cost = CostEstimator.estimateTranscription(
+            durationSec: -10,
+            pricing: CostEstimator.openai_whisper_1
+        )
+        #expect(cost == 0)
+    }
+
+    @Test("Sub-second durations scale proportionally")
+    func subSecondScales() {
+        let cost = CostEstimator.estimateTranscription(
+            durationSec: 30,
+            pricing: CostEstimator.openai_whisper_1
+        )
+        #expect(abs(cost - 0.003) < 0.000001)
+    }
+
+    @Test("gpt-4o-mini-transcribe is cheaper than gpt-4o-transcribe at the same duration")
+    func miniIsCheaper() {
+        let dur: Double = 600  // 10 minutes
+        let mini = CostEstimator.estimateTranscription(durationSec: dur, pricing: CostEstimator.openai_gpt_4o_mini_transcribe)
+        let full = CostEstimator.estimateTranscription(durationSec: dur, pricing: CostEstimator.openai_gpt_4o_transcribe)
+        #expect(mini < full)
+    }
+
+    @Test("Deepgram Nova-2 batch is cheaper than whisper-1 at the same duration")
+    func deepgramCheaperThanWhisper1() {
+        let dur: Double = 600
+        let deepgram = CostEstimator.estimateTranscription(durationSec: dur, pricing: CostEstimator.deepgram_nova_2_batch)
+        let whisper = CostEstimator.estimateTranscription(durationSec: dur, pricing: CostEstimator.openai_whisper_1)
+        #expect(deepgram < whisper)
+    }
+}

@@ -400,6 +400,41 @@ final class RecorderState {
                     )
                 }
             }()
+
+            // Pre-flight cost gate. Long recordings + a per-minute pricing
+            // model can push past the user's cap silently — surface the same
+            // "increase cap or cancel" modal we already use for summary /
+            // cleanup. Providers without a known per-minute price (Gemini,
+            // OpenRouter) are estimated at 0 and skip the gate.
+            let txPricing: CostEstimator.TranscriptionPricing? = {
+                switch settings.transcriptionProvider {
+                case .openaiWhisper:
+                    switch settings.openaiTranscribeModel {
+                    case .whisper1:           return CostEstimator.openai_whisper_1
+                    case .gpt4oTranscribe:    return CostEstimator.openai_gpt_4o_transcribe
+                    case .gpt4oMiniTranscribe: return CostEstimator.openai_gpt_4o_mini_transcribe
+                    }
+                case .deepgram:               return CostEstimator.deepgram_nova_2_batch
+                case .gemini, .openrouterAudio: return nil
+                }
+            }()
+            if let pricing = txPricing {
+                let estimated = CostEstimator.estimateTranscription(durationSec: duration, pricing: pricing)
+                if estimated > settings.costCapUSD {
+                    let proceed = await Self.confirmCostOverage(
+                        kind: "Transcription",
+                        estimated: estimated,
+                        cap: settings.costCapUSD,
+                        onIncrease: { [weak self] newCap in self?.settings.costCapUSD = newCap }
+                    )
+                    if !proceed {
+                        status = .failed(message: "Transcription cancelled — estimated cost exceeded the cap.")
+                        await teardown()
+                        return
+                    }
+                }
+            }
+
             let result = try await provider.transcribe(
                 audioFile: audioFile,
                 config: TranscriptionConfig(language: language)
@@ -699,20 +734,24 @@ final class RecorderState {
     // MARK: - Cost-cap modal
 
     /// Surface "estimate exceeds cap" modal. Returns true if the user agreed
-    /// to proceed (after raising the cap), false on cancel.
+    /// to proceed (after raising the cap), false on cancel. `kind` controls
+    /// the modal title ("AI summary", "Transcription", "Cleanup", …) so the
+    /// same chrome surfaces all three cost-cap gates with stage-specific text.
     /// Static so it doesn't capture `self` weakly across the alert presentation.
     @MainActor
     private static func confirmCostOverage(
+        kind: String = "AI summary",
         estimated: Double,
         cap: Double,
         onIncrease: (Double) -> Void
     ) async -> Bool {
         let alert = NSAlert()
-        alert.messageText = "AI summary cost exceeds cap"
+        alert.messageText = "\(kind) cost exceeds cap"
         alert.informativeText = String(
-            format: "Estimated cost $%.4f exceeds your per-session cap $%.2f.\n\nIncrease the cap to allow this summary, or cancel to skip it.",
+            format: "Estimated cost $%.4f exceeds your per-session cap $%.2f.\n\nIncrease the cap to allow this %@, or cancel to skip it.",
             estimated,
-            cap
+            cap,
+            kind.lowercased()
         )
         alert.alertStyle = .warning
         let increaseTitle = String(format: "Increase cap to $%.2f", estimated)
