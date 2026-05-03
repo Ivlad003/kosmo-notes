@@ -295,10 +295,18 @@ public enum AudioEngineError: Error, Sendable {
 /// when the first PCM buffer arrives. Used by AudioEngine's tap callback,
 /// which runs on a real-time audio thread — building once and reusing.
 private final class ConverterCache: @unchecked Sendable {
+    private let lock = NSLock()
     private var converter: AVAudioConverter?
     private var sourceFormat: AVAudioFormat?
 
     func converter(from source: AVAudioFormat, to target: AVAudioFormat) -> AVAudioConverter? {
+        // Locking even though the tap callback is the dominant caller —
+        // future audio-format changes (sample-rate switch on a connected
+        // device) trigger writes from a different thread, and the
+        // unsynchronized read+write was a Swift 6 strict-concurrency data
+        // race. NSLock here is sub-microsecond; tap fires at ~10 Hz; lock
+        // contention is non-existent.
+        lock.lock(); defer { lock.unlock() }
         if let existing = converter,
            let cachedSource = sourceFormat,
            cachedSource.sampleRate == source.sampleRate,

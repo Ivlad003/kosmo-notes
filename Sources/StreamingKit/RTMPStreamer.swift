@@ -62,6 +62,14 @@ public actor RTMPStreamer {
     deinit {
         stateContinuation.finish()
         eventTask?.cancel()
+        // Close the transport asynchronously so a dropped streamer doesn't leak
+        // the underlying RTMPConnection / RTMPStream until the transport itself
+        // deinits (which can be much later — HaishinKit holds onto its socket
+        // queue). `Task.detached` captures `transport` strongly; the close
+        // call yields .closed onto an already-finished event stream, which is
+        // a no-op.
+        let transport = self.transport
+        Task.detached { await transport.close() }
     }
 
     // MARK: Public API

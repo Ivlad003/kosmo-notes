@@ -384,7 +384,17 @@ private final class EngineBox: @unchecked Sendable {
             }
         }
 
-        try engine.start()
+        // engine.start() can throw on permission denial / no input device.
+        // The tap is already installed on inputNode at this point — without
+        // explicit cleanup the AVAudioEngine retains the tap until the engine
+        // itself is deallocated. Removing it before re-throw is the only path
+        // that doesn't leak the tap callback closure (which captures self).
+        do {
+            try engine.start()
+        } catch {
+            engine.inputNode.removeTap(onBus: 0)
+            throw error
+        }
     }
 
     func stop() async -> Data {

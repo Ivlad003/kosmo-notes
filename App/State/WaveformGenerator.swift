@@ -71,6 +71,15 @@ public actor WaveformGenerator {
         output.alwaysCopiesSampleData = false
         reader.add(output)
         reader.startReading()
+        // Cancel-on-throw insurance — if the bucket-fill loop below throws or
+        // returns early, AVAssetReader's internal I/O resources stay alive
+        // until the object is deallocated. cancelReading on a .completed
+        // reader is a documented no-op, so it's safe to always run.
+        defer {
+            if reader.status != .completed {
+                reader.cancelReading()
+            }
+        }
 
         // Stream-fill `bucketCount` slots. We don't know the total sample count up
         // front, so we use an online algorithm: keep a running sum + count per

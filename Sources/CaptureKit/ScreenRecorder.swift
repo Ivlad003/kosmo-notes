@@ -216,6 +216,13 @@ public actor ScreenRecorder: NSObject {
 
         guard let w = writer, let cfg = config else { throw ScreenRecorderError.notStarted }
 
+        // Drain any handleSampleBuffer Tasks that were queued behind the actor
+        // before the SCStream actually stopped — without this, late frames
+        // arrive AFTER finishWriting() and corrupt the tail of screen.mp4.
+        for task in pendingSampleTasks.drain() {
+            _ = await task.value
+        }
+
         videoInput?.markAsFinished()
         audioInput?.markAsFinished()
 
@@ -235,13 +242,24 @@ public actor ScreenRecorder: NSObject {
 
     // MARK: - Internal: called from ScreenStreamOutput
 
+    /// Bag of in-flight `_handleSampleBuffer` tasks. The bag is recorded
+    /// synchronously inside the nonisolated entry point (no actor hop), so
+    /// `stop()` can `await` every queued task before tearing down the writer.
+    /// Without this, Tasks queued behind the actor could land *after*
+    /// `writer.finishWriting()` and corrupt the tail of `screen.mp4`.
+    private let pendingSampleTasks = SCSampleTaskBag()
+
     /// Routes a sample buffer from the stream delegate into the correct writer input.
     nonisolated func handleSampleBuffer(_ sampleBuffer: CMSampleBuffer, ofType type: SCStreamOutputType) {
         // CMSampleBuffer is not Sendable; wrap in an unchecked-Sendable box.
         // The delegate callback owns the buffer for the duration of the closure
         // call, so the cross-actor hop is safe in practice.
         let box = SBBox(buffer: sampleBuffer, type: type)
-        Task { await self._handleSampleBuffer(box.buffer, ofType: box.type) }
+        let bag = pendingSampleTasks
+        let task = Task<Void, Never> { [weak self] in
+            await self?._handleSampleBuffer(box.buffer, ofType: box.type)
+        }
+        bag.add(task)
     }
 
     private var screenFrameCount: Int = 0
@@ -338,6 +356,27 @@ private final class SBBox: @unchecked Sendable {
     init(buffer: CMSampleBuffer, type: SCStreamOutputType) {
         self.buffer = buffer
         self.type = type
+    }
+}
+
+/// Lock-protected bag of in-flight sample-handler Tasks. Recorded
+/// synchronously inside `ScreenRecorder.handleSampleBuffer` (which is
+/// `nonisolated`) so `stop()` can `drain()` and `await` every queued task
+/// before tearing down the writer. Without this, Tasks queued behind the
+/// actor land *after* `writer.finishWriting()` and corrupt the tail of
+/// `screen.mp4`.
+@available(macOS 12.3, *)
+final class SCSampleTaskBag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tasks: [Task<Void, Never>] = []
+
+    func add(_ task: Task<Void, Never>) {
+        lock.lock(); tasks.append(task); lock.unlock()
+    }
+
+    func drain() -> [Task<Void, Never>] {
+        lock.lock(); let out = tasks; tasks.removeAll(); lock.unlock()
+        return out
     }
 }
 

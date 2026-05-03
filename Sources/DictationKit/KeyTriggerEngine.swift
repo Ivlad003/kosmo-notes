@@ -50,7 +50,12 @@ public final class KeyTriggerEngine {
     private var subs: [SubscriptionID: Subscription] = [:]
 
     /// Per-key timer for hold detection: started on press, cancels on release.
-    private var holdTimers: [String: DispatchWorkItem] = [:]
+    /// Was previously `DispatchWorkItem` scheduled via `DispatchQueue.main.asyncAfter`
+    /// — Swift 6 strict concurrency rejects that path because the closure
+    /// captures `self` (an `@MainActor` type) without an isolation guarantee
+    /// on the dispatch queue itself. `Task { @MainActor in ... await Task.sleep
+    /// ... }` is the actor-correct equivalent.
+    private var holdTimers: [String: Task<Void, Never>] = [:]
     /// Tracks which (subscriptionID, key) pairs are currently in their "held →
     /// fired onPress" state so we know to fire onRelease later.
     private var firedHolds: Set<String> = []
@@ -265,17 +270,23 @@ public final class KeyTriggerEngine {
         // Cancel any existing pending timer for this id+key (defensive — a
         // duplicate down before up would otherwise leak).
         holdTimers[token]?.cancel()
-        let work = DispatchWorkItem { [weak self] in
+        let ms = max(50, minHoldMs)
+        // Task captures self weakly + sleeps + checks cancellation. Whole
+        // body runs inside the @MainActor isolation domain (KeyTriggerEngine
+        // itself is @MainActor) so the property accesses are safe. Cancel
+        // path comes from `endHold` which calls task.cancel() — Task.sleep
+        // throws on cancel, the try? swallows it, the isCancelled check
+        // skips the fire body.
+        let task = Task<Void, Never> { [weak self] in
+            try? await Task.sleep(for: .milliseconds(ms))
+            if Task.isCancelled { return }
             guard let self else { return }
-            // The DispatchWorkItem hops back to main via the queue; verify
-            // we're still subscribed and key is still considered held.
             self.holdTimers.removeValue(forKey: token)
             guard self.subs[id] != nil else { return }
             self.firedHolds.insert(token)
             sub.onPress()
         }
-        holdTimers[token] = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(max(50, minHoldMs)), execute: work)
+        holdTimers[token] = task
     }
 
     private func endHold(id: SubscriptionID, key: String, sub: Subscription) {

@@ -3,6 +3,9 @@ import AIKit
 import DictationKit
 @preconcurrency import KeychainAccess
 import Observation
+import os
+
+private let appSettingsLog = Logger(subsystem: "dev.kosmonotes.studio", category: "AppSettings")
 
 // MARK: - AppSettings
 //
@@ -944,8 +947,12 @@ final class AppSettings {
                 try keychain.set(trimmed, key: account.rawValue)
             }
         } catch {
-            // Surfacing per-key save errors goes through the UI banner once that exists.
-            // For v0 we silently swallow — the next read will show whether it stuck.
+            // Log so failures are visible in Console.app (subsystem
+            // dev.kosmonotes.studio, category AppSettings). Common causes:
+            // device locked + .afterFirstUnlockThisDeviceOnly not yet reached,
+            // ACL change, Keychain corruption. The user-visible "I saved a key
+            // but auth still fails" symptom is otherwise impossible to debug.
+            appSettingsLog.error("Keychain commit failed for account \(account.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }
 }
