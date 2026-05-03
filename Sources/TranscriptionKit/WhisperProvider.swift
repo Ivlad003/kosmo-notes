@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let whisperLog = Logger(subsystem: "dev.kosmonotes.studio", category: "WhisperProvider")
 
 // MARK: - WhisperProvider
 
@@ -79,9 +82,17 @@ public final class WhisperProvider: BatchTranscriptionProvider, Sendable {
         case 200:
             return try Self.parse(data: data)
         case 401:
+            // Log the actual response body so users debugging via Console.app
+            // see the exact OpenAI message ("Invalid API key", "model not
+            // available to your tier", etc). The user-facing alert text comes
+            // from TranscriptionError.errorDescription which already mentions
+            // the gpt-4o-transcribe org-verification gotcha.
+            let body = String(data: data, encoding: .utf8) ?? "<unreadable body>"
+            whisperLog.error("Whisper 401 with model=\(self.model, privacy: .public). Response body: \(body, privacy: .public)")
             throw TranscriptionError.authenticationFailed
         default:
             let body = String(data: data, encoding: .utf8) ?? "<unreadable body>"
+            whisperLog.error("Whisper \(httpResponse.statusCode, privacy: .public) with model=\(self.model, privacy: .public). Response body: \(body, privacy: .public)")
             throw TranscriptionError.receiveFailed(message: "HTTP \(httpResponse.statusCode): \(body)")
         }
     }

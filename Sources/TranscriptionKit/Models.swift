@@ -84,11 +84,28 @@ public struct TranscriptionConfig: Sendable, Equatable {
 
 // MARK: - Errors
 
-public enum TranscriptionError: Error, Sendable, Equatable {
+public enum TranscriptionError: Error, Sendable, Equatable, LocalizedError {
     case invalidEndpoint
     case authenticationFailed
     case sendFailed(message: String)
     case receiveFailed(message: String)
     case decodingFailed(message: String)
     case alreadyClosed
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidEndpoint:
+            return "Transcription endpoint URL is invalid."
+        case .authenticationFailed:
+            return "Authentication failed (HTTP 401). Check your API key in Settings → AI Providers, or, if using a newer model like gpt-4o-transcribe, verify your OpenAI organization has access to it (https://platform.openai.com/settings/organization/general)."
+        case .sendFailed(let message):
+            return "Could not send audio to the transcription service: \(message)"
+        case .receiveFailed(let message):
+            return "Transcription service returned an error: \(message)"
+        case .decodingFailed(let message):
+            return "Could not decode the transcription response: \(message)"
+        case .alreadyClosed:
+            return "Transcription session is already closed."
+        }
+    }
 }
