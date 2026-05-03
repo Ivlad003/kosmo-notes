@@ -210,10 +210,14 @@ struct RTMPStreamerEventTests {
     /// Helper: spin until the streamer reaches a target state or we time out.
     /// Polls at 10 ms — fast enough that healthy state transitions resolve in
     /// a single iteration, and slow enough to never busy-loop noticeably.
+    /// Default timeout is 3 s because CI runners (macos-15 GH Actions) under
+    /// load can take >500 ms to round-trip an event from `simulate(_:)`
+    /// through the AsyncStream → eventTask → actor → state-mutation chain;
+    /// 3 s is still fast enough that legitimate failures fail fast.
     private static func waitForState(
         _ streamer: RTMPStreamer,
         matching predicate: @escaping (RTMPStreamer.State) -> Bool,
-        timeout: Duration = .milliseconds(500)
+        timeout: Duration = .seconds(3)
     ) async -> RTMPStreamer.State? {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
