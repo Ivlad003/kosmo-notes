@@ -269,15 +269,19 @@ final class RecorderState {
                 }
             }
 
-            // audioTee fans every mic + system PCM buffer into the RTMP bridge
-            // (when wired). Bridge is nil-tolerant; bridge itself is no-op
-            // when streamingEnabled is off — both layers fail-soft, so a
+            // audioTee + videoTee fan every mic / system PCM buffer and every
+            // screen-video CMSampleBuffer into the RTMP bridge (when wired).
+            // Bridge is nil-tolerant; bridge itself is no-op when
+            // streamingEnabled is off — both layers fail-soft so a
             // misconfigured RTMP destination never breaks the recording.
             let teeBridge = audioStreamingBridge
-            let tee: (@Sendable (AVAudioPCMBuffer) -> Void)? = teeBridge.map { bridge in
+            let audioTee: (@Sendable (AVAudioPCMBuffer) -> Void)? = teeBridge.map { bridge in
                 { buffer in bridge.ingest(buffer) }
             }
-            let capture = CaptureSession(config: config, audioTee: tee)
+            let videoTee: (@Sendable (CMSampleBuffer) -> Void)? = teeBridge.map { bridge in
+                { buffer in bridge.ingestVideo(buffer) }
+            }
+            let capture = CaptureSession(config: config, audioTee: audioTee, videoTee: videoTee)
             try await capture.start()
             self.captureSession = capture
 

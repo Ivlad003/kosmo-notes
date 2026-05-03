@@ -88,6 +88,19 @@ final class AudioStreamingBridge {
             await streamer.appendAudio(buffer, when: when)
         }
     }
+
+    /// Video tee callback. Wire as `videoTee` on `CaptureSession.init`.
+    /// CMSampleBuffer carries its own PTS from SCStream; HaishinKit's
+    /// IOStream rebases internally, so we don't touch the timeline here.
+    /// Runs on ScreenRecorder's SCStream sample-handler queue (off-actor) —
+    /// dispatch into the streamer actor via Task.detached, same shape as
+    /// `ingest(_:)`.
+    nonisolated func ingestVideo(_ buffer: CMSampleBuffer) {
+        let streamer = self.streamer
+        Task.detached {
+            await streamer.appendVideo(buffer)
+        }
+    }
 }
 
 // MARK: - SampleClock

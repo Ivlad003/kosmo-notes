@@ -32,6 +32,7 @@ final class AppSettings {
         case gemini = "gemini.api_key"
         case s3AccessKey = "s3.access_key_id"
         case s3SecretKey = "s3.secret_access_key"
+        case rtmpStreamKey = "rtmp.stream_key"
     }
 
     enum TranscriptionProviderChoice: String, CaseIterable, Identifiable {
@@ -247,12 +248,11 @@ final class AppSettings {
         static let s3Region = "s3Region"
         static let s3Bucket = "s3Bucket"
         static let s3PresignTTLHours = "s3PresignTTLHours"
-        // RTMP live streaming (Phase 2b — sync-with-recording mode only).
-        // streamKey ships in UserDefaults for now; Phase 4 polish will move
-        // it to the Keychain alongside the other secrets.
+        // RTMP live streaming. streamKey moved to Keychain in Phase 4 polish;
+        // only the toggle and URL stay in UserDefaults (URL is not a secret —
+        // OBS, MediaMTX, YouTube ingest URLs are public).
         static let streamingEnabled = "streamingEnabled"
         static let rtmpURL = "rtmpURL"
-        static let rtmpStreamKey = "rtmpStreamKey"
         // Storage profile + codec overrides
         static let storageProfile = "storageProfile"
         static let audioCodec = "audioCodec"
@@ -570,12 +570,11 @@ final class AppSettings {
     var rtmpURL: String {
         didSet { UserDefaults.standard.set(rtmpURL, forKey: Defaults.rtmpURL) }
     }
-    /// Stream key (provider-issued secret). **Stored in UserDefaults for
-    /// Phase 2b**; Phase 4 polish moves this to the Keychain alongside the
-    /// other secrets. Treat as sensitive in the meantime.
-    var rtmpStreamKey: String {
-        didSet { UserDefaults.standard.set(rtmpStreamKey, forKey: Defaults.rtmpStreamKey) }
-    }
+    /// Stream key (provider-issued secret). Loaded from Keychain on init via
+    /// `loadKeysFromKeychain`; persisted via `commit(.rtmpStreamKey, value:)`
+    /// when the user finishes editing in Settings → Streaming. Same pattern
+    /// as `s3SecretKey` and the API keys.
+    var rtmpStreamKey: String = ""
     /// Presigned URL TTL in hours. Default 168 (7 days, the S3 max for sigv4).
     var s3PresignTTLHours: Int {
         didSet { UserDefaults.standard.set(s3PresignTTLHours, forKey: Defaults.s3PresignTTLHours) }
@@ -810,7 +809,8 @@ final class AppSettings {
 
         self.streamingEnabled = UserDefaults.standard.bool(forKey: Defaults.streamingEnabled)
         self.rtmpURL = UserDefaults.standard.string(forKey: Defaults.rtmpURL) ?? ""
-        self.rtmpStreamKey = UserDefaults.standard.string(forKey: Defaults.rtmpStreamKey) ?? ""
+        // rtmpStreamKey is read from Keychain at the end of init via
+        // loadKeysFromKeychain — see the openaiApiKey / s3SecretKey pattern.
 
         // Storage profile defaults to .balanced for new installs (50 % smaller than
         // the legacy "Quality" default). Existing installs that have no UserDefaults
@@ -869,6 +869,7 @@ final class AppSettings {
         geminiApiKey = (try? keychain.get(KeychainAccount.gemini.rawValue)) ?? ""
         s3AccessKey = (try? keychain.get(KeychainAccount.s3AccessKey.rawValue)) ?? ""
         s3SecretKey = (try? keychain.get(KeychainAccount.s3SecretKey.rawValue)) ?? ""
+        rtmpStreamKey = (try? keychain.get(KeychainAccount.rtmpStreamKey.rawValue)) ?? ""
     }
 
     /// Persist all currently-loaded values to Keychain. Empty strings are
@@ -882,6 +883,7 @@ final class AppSettings {
         commit(.gemini, value: geminiApiKey)
         commit(.s3AccessKey, value: s3AccessKey)
         commit(.s3SecretKey, value: s3SecretKey)
+        commit(.rtmpStreamKey, value: rtmpStreamKey)
     }
 
     func commit(_ account: KeychainAccount, value: String) {

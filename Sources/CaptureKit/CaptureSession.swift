@@ -118,6 +118,9 @@ public actor CaptureSession {
     /// drains the AsyncStream — single-consumer, so the closure is free to
     /// dispatch onto its own actor without re-locking. nil = no tee, no cost.
     private let audioTee: (@Sendable (AVAudioPCMBuffer) -> Void)?
+    /// Optional fan-out for every screen-video CMSampleBuffer. Wired into
+    /// ScreenRecorder when screen recording is enabled; nil = no tee.
+    private let videoTee: (@Sendable (CMSampleBuffer) -> Void)?
     private var recordingState: RecordingState = .idle
     private var audioEngine: AudioEngine?
     private var segmentWriter: SegmentWriter?
@@ -136,9 +139,14 @@ public actor CaptureSession {
 
     // MARK: - Init
 
-    public init(config: Config, audioTee: (@Sendable (AVAudioPCMBuffer) -> Void)? = nil) {
+    public init(
+        config: Config,
+        audioTee: (@Sendable (AVAudioPCMBuffer) -> Void)? = nil,
+        videoTee: (@Sendable (CMSampleBuffer) -> Void)? = nil
+    ) {
         self.config = config
         self.audioTee = audioTee
+        self.videoTee = videoTee
     }
 
     // MARK: - Public API
@@ -203,7 +211,7 @@ public actor CaptureSession {
 
         if config.screenRecordingEnabled, let outputURL = config.screenOutputURL {
             if #available(macOS 12.3, *) {
-                let recorder = ScreenRecorder()
+                let recorder = ScreenRecorder(videoTee: videoTee)
                 let srConfig = ScreenRecorder.Config(
                     outputURL: outputURL,
                     useHEVC: config.videoUseHEVC,

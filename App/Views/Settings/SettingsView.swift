@@ -809,6 +809,7 @@ private struct HotkeysTab: View {
                 KeyboardShortcuts.Recorder("Meeting record toggle", name: .toggleMeeting)
                 KeyboardShortcuts.Recorder("Voice Note toggle", name: .toggleVoiceNote)
                 KeyboardShortcuts.Recorder("Open Library", name: .openLibrary)
+                KeyboardShortcuts.Recorder("Standalone RTMP stream toggle (mic-only)", name: .toggleStandaloneStreaming)
                 KeyboardShortcuts.Recorder("Dictation (push-to-talk)", name: .dictation)
                 KeyboardShortcuts.Recorder("Push-to-Markdown (hold + speak → save .md)", name: .pushToMarkdown)
                 KeyboardShortcuts.Recorder("Agent (hold + speak → autonomous agent)", name: .agentTrigger)
@@ -926,14 +927,12 @@ private struct StreamingTab: View {
                         .textFieldStyle(.roundedBorder)
                 }
 
-                HStack {
-                    Text("Stream key")
-                    Spacer()
-                    SecureField("stream-key", text: $settings.rtmpStreamKey)
-                        .frame(width: 320)
-                        .textFieldStyle(.roundedBorder)
-                }
-                Text("⚠️ Stream key is currently stored in UserDefaults — Phase 4 polish will move it to the Keychain alongside other secrets. Treat as sensitive in the meantime.")
+                APIKeyField(
+                    title: "Stream key",
+                    text: $settings.rtmpStreamKey,
+                    onCommit: { settings.commit(.rtmpStreamKey, value: settings.rtmpStreamKey) }
+                )
+                Text("Stream key is stored in the macOS Keychain under service `dev.kosmonotes.studio`, account `rtmp.stream_key` — same security posture as the other API keys. Press Enter or focus-out to save.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
