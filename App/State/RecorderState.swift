@@ -25,17 +25,20 @@ private extension AppSettings.AudioCodec {
 
 /// The single mutable record-time state object for the app.
 ///
-/// Wires together CaptureKit (audio in), StorageKit (sessions on disk + DB),
-/// and TranscriptionKit (Whisper batch transcription). The popover / menu
-/// observe `status` and `micLevel` to render UI. Errors are surfaced via
+/// Wires together CaptureKit (audio in — mic, optional system audio via
+/// Core Audio Tap on 14.4+ or ScreenCaptureKit mixdown, optional screen
+/// capture), StorageKit (sessions on disk + DB), and TranscriptionKit
+/// (batch transcription via the user-selected provider — Whisper /
+/// AssemblyAI / Deepgram batch). The popover / menu observe `status` and
+/// `micLevel` to render UI. Errors are surfaced via
 /// `status = .failed(message:)` so the UI can show the user a single line.
 ///
-/// v0 limits — explicit:
-///   - **Whisper-only batch transcription.** Deepgram streaming requires PCM
-///     tee'd from the capture engine, which the current `CaptureSession` API
-///     doesn't expose. v1.1 of capture lands the tee.
-///   - **Mic only.** System audio (SCKit mixdown) needs Screen Recording TCC
-///     prompts that v0 doesn't set up cleanly.
+/// Transcription is **batch** in v1.0 (per design-doc Decision Log D15):
+/// the recorded `audio.m4a` is submitted to the provider's batch endpoint
+/// once `stop()` finishes. Deepgram streaming infrastructure exists
+/// (`DeepgramProvider.openResilientSession`) and is unit-tested, but is
+/// not wired into the recorder UI — that lands in v1.1 alongside a
+/// CaptureSession PCM tee and a live-transcript surface.
 @available(macOS 14.0, *)
 @Observable
 @MainActor

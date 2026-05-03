@@ -50,8 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var libraryDoubleTapObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // AC-6: minimum-OS gate. Deployment target is 12.3+; Recording / Library / Settings
-        // require 14.0+. Anything older surfaces a single explanatory modal then quits.
+        // AC-6: minimum-OS gate. Deployment target is 14.0+ (LSMinimumSystemVersion
+        // pins this, so macOS will refuse to launch on <14). The remaining check
+        // surfaces a defensive warning if somehow the gate didn't fire.
         if !checkMinimumOS() {
             return
         }
@@ -138,46 +139,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return .terminateNow
     }
 
-    /// Returns true when the OS is supported. On unsupported OS, surfaces a
-    /// modal and terminates the app.
+    /// Returns true when the OS is supported. The actual deployment target is
+    /// macOS 14.0+ — `LSMinimumSystemVersion` should already block launch on
+    /// anything older, but this is a belt-and-suspenders modal in case the
+    /// binary somehow runs on a downgraded system.
     @MainActor
     private func checkMinimumOS() -> Bool {
         let info = ProcessInfo.processInfo.operatingSystemVersion
         let major = info.majorVersion
         let minor = info.minorVersion
 
-        // <12.3 — strictly unsupported (binary is built for 12.3+, but defensive).
-        let isBelow12_3 = (major < 12) || (major == 12 && minor < 3)
-        // 12.3-13.x — "best-effort" but the recorder/library/settings gate on 14.0+,
-        // so the app is functionally inert. Tell the user clearly.
-        let isBelow14 = major < 14
+        guard major < 14 else { return true }
 
-        if isBelow12_3 {
-            let alert = NSAlert()
-            alert.messageText = "macOS 12.3 or newer required"
-            alert.informativeText = "KosmoNotes needs macOS 12.3 or newer for system audio capture. The recorder, Library, and Settings additionally require macOS 14.0 — please upgrade to use this build."
-            alert.alertStyle = .critical
-            alert.addButton(withTitle: "Quit")
-            alert.runModal()
-            NSApp.terminate(nil)
-            return false
-        }
-
-        if isBelow14 {
-            let alert = NSAlert()
-            alert.messageText = "macOS 14.0 or newer recommended"
-            alert.informativeText = "You're on macOS \(major).\(minor). Recording, Library, and Settings require macOS 14.0+. The menu-bar icon will appear, but core features will be disabled. [Quit] to upgrade, [Continue] to inspect a stub UI."
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "Continue")
-            alert.addButton(withTitle: "Quit")
-            let response = alert.runModal()
-            if response == .alertSecondButtonReturn {
-                NSApp.terminate(nil)
-                return false
-            }
-        }
-
-        return true
+        let alert = NSAlert()
+        alert.messageText = "macOS 14.0 or newer required"
+        alert.informativeText = "KosmoNotes requires macOS 14.0 or newer. You're on macOS \(major).\(minor). Recording, Library, Settings, and Dictation all require 14.0+; the app cannot run on this system."
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Quit")
+        alert.runModal()
+        NSApp.terminate(nil)
+        return false
     }
 
     // MARK: - Status item + menu

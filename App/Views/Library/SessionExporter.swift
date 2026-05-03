@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 import StorageKit
+import TranscriptionKit
 
 // MARK: - SessionExporter
 
@@ -112,13 +113,53 @@ enum SessionExporter {
             parts.append(summary)
         }
 
-        // Transcript block
-        let transcriptURL = sessionDir.appendingPathComponent("transcript.txt")
-        if let transcript = try? String(contentsOf: transcriptURL, encoding: .utf8), !transcript.isEmpty {
-            parts.append("## Transcript\n\n\(transcript)")
+        // Transcript block: prefer timestamped segments from `transcript.jsonl`
+        // (per AC-13 — `[mm:ss]` markers per segment). Fall back to plain
+        // `transcript.txt` for sessions whose JSONL is missing or unreadable
+        // (e.g. transcription failed, or the user had us overwrite the txt
+        // with an LLM-cleaned version via TranscriptStore.close(overrideText:)).
+        if let timestamped = formattedTranscript(sessionDir: sessionDir) {
+            parts.append("## Transcript\n\n\(timestamped)")
+        } else {
+            let transcriptURL = sessionDir.appendingPathComponent("transcript.txt")
+            if let transcript = try? String(contentsOf: transcriptURL, encoding: .utf8), !transcript.isEmpty {
+                parts.append("## Transcript\n\n\(transcript)")
+            }
         }
 
         return parts.joined(separator: "\n\n")
+    }
+
+    /// Read `transcript.jsonl` and render one `[mm:ss] text` line per final
+    /// segment. Returns nil when the JSONL is missing, empty, or undecodable —
+    /// callers fall back to the plain `transcript.txt` rendering.
+    static func formattedTranscript(sessionDir: URL) -> String? {
+        let jsonlURL = sessionDir.appendingPathComponent("transcript.jsonl")
+        guard let data = try? Data(contentsOf: jsonlURL), !data.isEmpty else { return nil }
+
+        let decoder = JSONDecoder()
+        var lines: [String] = []
+        // JSONL = one JSON object per line, separated by \n. Skip blank lines
+        // and any line that fails to decode (defensive — the file is append-only
+        // and a torn write at SIGKILL could leave a partial trailing line).
+        for raw in data.split(separator: 0x0A, omittingEmptySubsequences: true) {
+            let lineData = Data(raw)
+            guard let segment = try? decoder.decode(TranscriptSegment.self, from: lineData) else { continue }
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            lines.append("\(formatTimestamp(segment.start)) \(text)")
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
+    /// Format `seconds` as `[mm:ss]` (zero-padded). Minutes can exceed 60 for
+    /// long sessions — `[90:42]` for a 1.5-hour meeting is intentionally
+    /// readable rather than wrapped to `[01:30:42]`.
+    static func formatTimestamp(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded(.down)))
+        let mm = total / 60
+        let ss = total % 60
+        return String(format: "[%02d:%02d]", mm, ss)
     }
 
     // Copy src to destination, replacing any existing file at destination.
