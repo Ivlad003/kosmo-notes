@@ -86,10 +86,14 @@ final class RecorderState {
 
     // MARK: - Dependencies
 
-    private let database: AppDatabase
+    // `database` and `settings` are module-internal (not private) so the
+    // post-stop extension files (RecorderState+Summary, +Cleanup, +SemanticIndex)
+    // can read them. RecorderState itself is internal-default, so these stay
+    // invisible to anything outside the App target.
+    let database: AppDatabase
     private let sessionStore: SessionStore
     private let recoveryService = RecoveryService()
-    private let settings: AppSettings
+    let settings: AppSettings
 
     // MARK: - Recording-time state
 
@@ -127,7 +131,8 @@ final class RecorderState {
 
     /// Tracks the mode of the active session so the post-process pipeline
     /// can pick the right prompt (Meeting summary vs. Voice Note).
-    private var activeMode: SessionMode = .meeting
+    /// Module-internal so RecorderState+Summary can read it.
+    var activeMode: SessionMode = .meeting
 
     /// Live-toggle mic mute during an in-flight recording. No-op when
     /// nothing is recording. UI calls this from the menu item / popover.
@@ -480,161 +485,12 @@ final class RecorderState {
         }
     }
 
-    // MARK: - LLM transcript cleanup
-
-    /// Optional post-ASR pass that fixes recognition mistakes (numbers, names,
-    /// double-words, missing punctuation) without touching segment boundaries.
-    /// Returns `nil` on any failure — caller falls back to the raw transcript.
-    /// Cost-capped via the same mechanism as summary generation.
-    private func tryCleanupTranscript(
-        rawText: String,
-        sourceLanguage: String?
-    ) async -> String? {
-        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        // Same target-language resolution rule as the summary pass.
-        let target: String? = settings.summaryLanguage == "auto" ? nil : settings.summaryLanguage
-        let system = PromptTemplates.transcriptCleanup(sourceLanguage: sourceLanguage, targetLanguage: target)
-        let userMsg = PromptTemplates.transcriptCleanupUserMessage(rawTranscript: trimmed)
-
-        // Build the LLM provider per current settings. Mirror of tryGenerateSummary.
-        guard let resolved = AIProviderResolver.resolve(settings.aiProviderConfig) else {
-            return nil
-        }
-        let provider = resolved.provider
-        let model = resolved.model
-        let pricing = resolved.pricing
-
-        // Cost estimate. Cleanup output is roughly the same length as input,
-        // so cap maxTokens at ~1.2× input-token estimate to leave headroom.
-        let inputTokens = CostEstimator.estimateTokens(text: system) + CostEstimator.estimateTokens(text: userMsg)
-        let outputTokensCap = max(512, Int(Double(inputTokens) * 1.2))
-        let estimatedCost = CostEstimator.estimate(
-            inputTokens: inputTokens,
-            outputTokens: outputTokensCap,
-            pricing: pricing
-        )
-        if estimatedCost > settings.costCapUSD {
-            // Don't pop a modal for cleanup — silently skip if the cap is too
-            // low. Summary already has a "increase cap?" interaction.
-            return nil
-        }
-
-        let messages: [ChatMessage] = [ChatMessage(role: .user, content: userMsg)]
-        let config = AIConfig(model: model, temperature: 0.0, maxTokens: outputTokensCap, systemPrompt: system)
-
-        do {
-            let cleaned = try await provider.chat(messages: messages, config: config)
-            let trimmedClean = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmedClean.isEmpty ? nil : trimmedClean
-        } catch {
-            return nil
-        }
-    }
-
-    // MARK: - AI Summary
-
-    /// Calls the configured LLM to produce a Markdown summary and atomically
-    /// writes it to `<sessionDir>/summary.md`. Returns the file URL on success,
-    /// nil on any failure (missing key, cost cap exceeded, network error, etc.).
-    private func tryGenerateSummary(
-        transcript: String,
-        sessionDir: URL,
-        sourceLanguage: String?
-    ) async -> URL? {
-        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        // Resolve target language: nil means "auto" — let PromptTemplates decide.
-        let target: String? = settings.summaryLanguage == "auto" ? nil : settings.summaryLanguage
-        let system: String
-        let userMsg: String
-        switch activeMode {
-        case .voiceNote:
-            system = PromptTemplates.voiceNote(
-                kind: settings.voiceNoteKind,
-                sourceLanguage: sourceLanguage,
-                targetLanguage: target
-            )
-            userMsg = PromptTemplates.voiceNoteUserMessage(transcript: trimmed)
-        case .meeting, .dictation:
-            system = PromptTemplates.meetingSummary(sourceLanguage: sourceLanguage, targetLanguage: target)
-            userMsg = PromptTemplates.meetingUserMessage(transcript: trimmed)
-        }
-
-        // Select provider and pricing based on user preference.
-        guard let resolved = AIProviderResolver.resolve(settings.aiProviderConfig) else {
-            return nil
-        }
-        let provider = resolved.provider
-        let model = resolved.model
-        let pricing = resolved.pricing
-
-        // Estimate cost before sending. If it exceeds the cap, surface a modal
-        // so the user can either bump the cap or skip this run. Ollama is free
-        // (pricing zero), so this branch is a no-op for local inference.
-        let inputTokens = CostEstimator.estimateTokens(text: system) + CostEstimator.estimateTokens(text: userMsg)
-        let outputTokensCap = 1500
-        let estimatedCost = CostEstimator.estimate(
-            inputTokens: inputTokens,
-            outputTokens: outputTokensCap,
-            pricing: pricing
-        )
-        if estimatedCost > settings.costCapUSD {
-            let proceed = await Self.confirmCostOverage(
-                estimated: estimatedCost,
-                cap: settings.costCapUSD,
-                onIncrease: { [weak self] newCap in
-                    self?.settings.costCapUSD = newCap
-                }
-            )
-            if !proceed { return nil }
-        }
-
-        let messages: [ChatMessage] = [ChatMessage(role: .user, content: userMsg)]
-        let config = AIConfig(model: model, temperature: 0.3, maxTokens: outputTokensCap, systemPrompt: system)
-
-        do {
-            let summary = try await provider.chat(messages: messages, config: config)
-            let summaryURL = sessionDir.appendingPathComponent("summary.md")
-            try AtomicWriter.write(Data(summary.utf8), to: summaryURL)
-            return summaryURL
-        } catch {
-            // Summary failures are non-fatal; the session is still usable without one.
-            return nil
-        }
-    }
-
-    // MARK: - Semantic indexing
-
-    /// Embed the transcript and persist the vector under the session ID.
-    /// Best-effort: any failure (no API key, network, etc) is silently skipped.
-    private func indexSemantic(sid: String, transcript: String) async {
-        let key = settings.openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { return }
-        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        // Truncate at ~6000 chars (~1500 tokens at 4 chars/tok ratio for Latin)
-        // — enough for a meaningful semantic vector without going near the
-        // 8192-token API limit. Long meetings still get a single vector that
-        // captures the overall topic.
-        let snippet = String(trimmed.prefix(6000))
-
-        let provider = OpenAIEmbeddingProvider(apiKey: key)
-        do {
-            let vector = try await provider.embed(snippet)
-            let blob = EmbeddingMath.pack(vector)
-            try await database.upsertEmbedding(
-                sid: sid,
-                vector: blob,
-                model: provider.modelIdentifier
-            )
-        } catch {
-            // Silent failure — FTS5 still works.
-        }
-    }
+    // tryCleanupTranscript / tryGenerateSummary / indexSemantic live in
+    // RecorderState+Cleanup.swift / +Summary.swift / +SemanticIndex.swift
+    // so this file stays focused on capture lifecycle. confirmCostOverage
+    // is kept here since it's also called from `stop()` (transcription
+    // cost-cap gate); module-internal so the +Summary extension can call
+    // it across files.
 
     // MARK: - Cost-cap modal
 
@@ -644,7 +500,7 @@ final class RecorderState {
     /// same chrome surfaces all three cost-cap gates with stage-specific text.
     /// Static so it doesn't capture `self` weakly across the alert presentation.
     @MainActor
-    private static func confirmCostOverage(
+    static func confirmCostOverage(
         kind: String = "AI summary",
         estimated: Double,
         cap: Double,
