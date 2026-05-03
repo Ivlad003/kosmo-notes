@@ -188,8 +188,11 @@ final class AppSettings {
         static let dictationMaxSeconds = "dictationMaxSeconds"
         // How the Dictation hotkey is delivered. JSON-encoded HotkeyTrigger
         // because the enum carries associated values (hold ms, etc) so a plain
-        // raw-value can't round-trip it.
+        // raw-value can't round-trip it. Same JSON pattern for the parallel
+        // Push-to-Markdown and Agent triggers.
         static let dictationTrigger = "dictationTrigger"
+        static let pushToMarkdownTrigger = "pushToMarkdownTrigger"
+        static let agentTrigger = "agentTriggerKind"  // "agentTrigger" is a KeyboardShortcuts.Name; rename here to avoid collision
         static let voiceNoteKind = "voiceNoteKind"
         static let openrouterModel = "openrouterModel"
         static let semanticSearchEnabled = "semanticSearchEnabled"
@@ -450,10 +453,32 @@ final class AppSettings {
         }
     }
 
-    /// Posted on the default NotificationCenter whenever `dictationTrigger`
-    /// is reassigned (e.g. via the Settings UI). DictationState subscribes to
-    /// re-register the hotkey without requiring an app relaunch.
-    static let dictationTriggerDidChange = Notification.Name("dev.kosmonotes.studio.dictationTriggerDidChange")
+    /// Same shape as `dictationTrigger`, for the Push-to-Markdown hotkey.
+    var pushToMarkdownTrigger: HotkeyTrigger {
+        didSet {
+            if let data = try? JSONEncoder().encode(pushToMarkdownTrigger) {
+                UserDefaults.standard.set(data, forKey: Defaults.pushToMarkdownTrigger)
+            }
+            NotificationCenter.default.post(name: AppSettings.pushToMarkdownTriggerDidChange, object: nil)
+        }
+    }
+
+    /// Same shape as `dictationTrigger`, for the autonomous-agent hotkey.
+    var agentTrigger: HotkeyTrigger {
+        didSet {
+            if let data = try? JSONEncoder().encode(agentTrigger) {
+                UserDefaults.standard.set(data, forKey: Defaults.agentTrigger)
+            }
+            NotificationCenter.default.post(name: AppSettings.agentTriggerDidChange, object: nil)
+        }
+    }
+
+    /// Posted on the default NotificationCenter whenever the matching trigger
+    /// is reassigned (e.g. via the Settings UI). The owning state class
+    /// subscribes and re-registers its hotkey without requiring an app relaunch.
+    static let dictationTriggerDidChange     = Notification.Name("dev.kosmonotes.studio.dictationTriggerDidChange")
+    static let pushToMarkdownTriggerDidChange = Notification.Name("dev.kosmonotes.studio.pushToMarkdownTriggerDidChange")
+    static let agentTriggerDidChange         = Notification.Name("dev.kosmonotes.studio.agentTriggerDidChange")
 
     /// Run the long-form meeting / voice-note transcript through an LLM cleanup
     /// pass after Whisper / Deepgram / Gemini transcribes. Reuses the configured
@@ -708,13 +733,12 @@ final class AppSettings {
         let maxSecs = UserDefaults.standard.integer(forKey: Defaults.dictationMaxSeconds)
         self.dictationMaxSeconds = maxSecs > 0 ? maxSecs : 60
 
-        // dictationTrigger: JSON blob in UserDefaults, .combo if absent / corrupt.
-        if let data = UserDefaults.standard.data(forKey: Defaults.dictationTrigger),
-           let decoded = try? JSONDecoder().decode(HotkeyTrigger.self, from: data) {
-            self.dictationTrigger = decoded
-        } else {
-            self.dictationTrigger = .combo
-        }
+        // dictationTrigger / pushToMarkdownTrigger / agentTrigger: each is a
+        // JSON blob in UserDefaults; .combo if absent or corrupt so existing
+        // installs see no behaviour change at upgrade.
+        self.dictationTrigger = AppSettings.loadTrigger(forKey: Defaults.dictationTrigger)
+        self.pushToMarkdownTrigger = AppSettings.loadTrigger(forKey: Defaults.pushToMarkdownTrigger)
+        self.agentTrigger = AppSettings.loadTrigger(forKey: Defaults.agentTrigger)
 
         let kindRaw = UserDefaults.standard.string(forKey: Defaults.voiceNoteKind) ?? PromptTemplates.VoiceNoteKind.freeform.rawValue
         self.voiceNoteKind = PromptTemplates.VoiceNoteKind(rawValue: kindRaw) ?? .freeform
@@ -764,6 +788,18 @@ final class AppSettings {
         self.videoBitrate = vbr > 0 ? vbr : 2_000_000
 
         loadKeysFromKeychain()
+    }
+
+    /// Decode a stored HotkeyTrigger from UserDefaults under the given key.
+    /// Returns `.combo` when the key is missing OR the JSON is corrupt — that
+    /// way an upgrade adding new associated values to a HotkeyTrigger case
+    /// can't lock the user out by failing to decode an old preference.
+    private static func loadTrigger(forKey key: String) -> HotkeyTrigger {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode(HotkeyTrigger.self, from: data) else {
+            return .combo
+        }
+        return decoded
     }
 
     // MARK: Persistence

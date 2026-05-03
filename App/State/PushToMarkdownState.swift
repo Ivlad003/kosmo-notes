@@ -44,7 +44,8 @@ final class PushToMarkdownState {
     private let settings: AppSettings
     private let sessionStore: SessionStore
     private var pipeline: DictationPipeline?
-    private let hotkeyMonitor = HotkeyMonitor(name: .pushToMarkdown)
+    private let installer = TriggerHotkeyInstaller(comboName: .pushToMarkdown, label: "PushToMarkdown")
+    private var triggerChangeObserver: NSObjectProtocol?
 
     // MARK: - Init
 
@@ -54,8 +55,11 @@ final class PushToMarkdownState {
     }
 
     /// Wire up the global hotkey. Call once on launch alongside DictationState.
+    /// Also observes the trigger-change notification so a Settings edit takes
+    /// effect without relaunching.
     func install() {
-        hotkeyMonitor.startMonitoring(
+        installer.install(
+            trigger: settings.pushToMarkdownTrigger,
             onPress: { [weak self] in
                 Task { @MainActor [weak self] in await self?.handlePress() }
             },
@@ -63,10 +67,32 @@ final class PushToMarkdownState {
                 Task { @MainActor [weak self] in await self?.handleRelease() }
             }
         )
+        triggerChangeObserver = NotificationCenter.default.addObserver(
+            forName: AppSettings.pushToMarkdownTriggerDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.installer.reinstall(
+                    trigger: self.settings.pushToMarkdownTrigger,
+                    onPress: { [weak self] in
+                        Task { @MainActor [weak self] in await self?.handlePress() }
+                    },
+                    onRelease: { [weak self] in
+                        Task { @MainActor [weak self] in await self?.handleRelease() }
+                    }
+                )
+            }
+        }
     }
 
     func uninstall() {
-        hotkeyMonitor.stopMonitoring()
+        installer.uninstall()
+        if let token = triggerChangeObserver {
+            NotificationCenter.default.removeObserver(token)
+            triggerChangeObserver = nil
+        }
     }
 
     // MARK: - Private

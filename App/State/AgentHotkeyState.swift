@@ -45,7 +45,8 @@ final class AgentHotkeyState {
     private let settings: AppSettings
     private let agentSession: AgentSessionState
     private var pipeline: DictationPipeline?
-    private let hotkeyMonitor = HotkeyMonitor(name: .agentTrigger)
+    private let installer = TriggerHotkeyInstaller(comboName: .agentTrigger, label: "Agent")
+    private var triggerChangeObserver: NSObjectProtocol?
 
     init(settings: AppSettings, agentSession: AgentSessionState) {
         self.settings = settings
@@ -53,7 +54,8 @@ final class AgentHotkeyState {
     }
 
     func install() {
-        hotkeyMonitor.startMonitoring(
+        installer.install(
+            trigger: settings.agentTrigger,
             onPress: { [weak self] in
                 Task { @MainActor [weak self] in await self?.handlePress() }
             },
@@ -61,9 +63,33 @@ final class AgentHotkeyState {
                 Task { @MainActor [weak self] in await self?.handleRelease() }
             }
         )
+        triggerChangeObserver = NotificationCenter.default.addObserver(
+            forName: AppSettings.agentTriggerDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.installer.reinstall(
+                    trigger: self.settings.agentTrigger,
+                    onPress: { [weak self] in
+                        Task { @MainActor [weak self] in await self?.handlePress() }
+                    },
+                    onRelease: { [weak self] in
+                        Task { @MainActor [weak self] in await self?.handleRelease() }
+                    }
+                )
+            }
+        }
     }
 
-    func uninstall() { hotkeyMonitor.stopMonitoring() }
+    func uninstall() {
+        installer.uninstall()
+        if let token = triggerChangeObserver {
+            NotificationCenter.default.removeObserver(token)
+            triggerChangeObserver = nil
+        }
+    }
 
     // MARK: - Private
 

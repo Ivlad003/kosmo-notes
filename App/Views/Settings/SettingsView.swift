@@ -577,68 +577,15 @@ private struct ConnectionTestRow: View {
 private struct DictationTab: View {
     @Bindable var settings: AppSettings
 
-    /// Categorised picker value — collapses HotkeyTrigger's enum cases into the
-    /// two variants Dictation supports (push-to-talk has no meaning for double-
-    /// tap). Bound to settings.dictationTrigger via `triggerKindBinding` below.
-    private enum TriggerKind: String, CaseIterable, Identifiable {
-        case combo
-        case holdKey
-        var id: String { rawValue }
-        var displayName: String {
-            switch self {
-            case .combo:   return "Key combination"
-            case .holdKey: return "Hold a key"
-            }
-        }
-    }
-
-    /// Default ms threshold for fresh .holdKey selections. 200 ms is short
-    /// enough to feel instant but long enough that a stray brush of the key
-    /// doesn't fire dictation.
-    private static let defaultHoldMs = 200
-
     var body: some View {
         Form {
-            Section("Hotkey") {
-                Text("Press and hold the global hotkey to dictate. Release to paste a cleaned transcript into the focused text field.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-
-                Picker("Trigger type", selection: triggerKindBinding) {
-                    ForEach(TriggerKind.allCases) { kind in
-                        Text(kind.displayName).tag(kind)
-                    }
-                }
-
-                switch settings.dictationTrigger {
-                case .combo:
-                    KeyboardShortcuts.Recorder("Combination", name: .dictation)
-                    Text("Default: ⌘⇧D. Click the recorder to rebind. Uses the system hotkey API — no extra permissions required.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                case .holdKey(let key, let ms):
-                    Picker("Key", selection: holdKeyBinding(currentMs: ms)) {
-                        ForEach(HoldKey.allCases, id: \.self) { k in
-                            Text(k.displayName).tag(k)
-                        }
-                    }
-                    Stepper(value: holdMsBinding(currentKey: key), in: 50...2000, step: 50) {
-                        Text("Hold for \(ms) ms")
-                    }
-                    Text("Hold the chosen key past the threshold to start; release to stop. Requires Accessibility permission (System Settings → Privacy & Security → Accessibility) — first install will prompt.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                case .doubleTapModifier:
-                    // Defensive: if a stale pref lands here, .install() falls
-                    // back to .combo at runtime. Show a hint so the UI doesn't
-                    // look broken.
-                    Text("Double-tap is not supported for push-to-talk dictation. Pick Combination or Hold instead.")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-            }
+            TriggerPickerSection(
+                title: "Hotkey",
+                description: "Press and hold the global hotkey to dictate. Release to paste a cleaned transcript into the focused text field.",
+                trigger: $settings.dictationTrigger,
+                comboName: .dictation,
+                comboHint: "Default: ⌘⇧D. Click the recorder to rebind. Uses the system hotkey API — no extra permissions required."
+            )
 
             Section("Cleanup") {
                 Toggle("Run LLM cleanup pass before pasting", isOn: $settings.dictationLLMCleanup)
@@ -664,63 +611,120 @@ private struct DictationTab: View {
         }
         .formStyle(.grouped)
     }
+}
+
+// MARK: - TriggerPickerSection (reusable)
+
+/// One Form Section that surfaces the configurable HotkeyTrigger for any
+/// press/hold/release feature (Dictation, Push-to-Markdown, Agent). The
+/// .doubleTapModifier variant is intentionally hidden from the picker —
+/// none of the consumers support it (they all need a release event), and
+/// TriggerHotkeyInstaller falls back to .combo at install time if a stale
+/// pref ever lands there.
+@available(macOS 14.0, *)
+private struct TriggerPickerSection: View {
+    let title: String
+    let description: String
+    @Binding var trigger: HotkeyTrigger
+    let comboName: KeyboardShortcuts.Name
+    /// Sub-caption shown under the combo Recorder (e.g. "Default: ⌘⇧D").
+    let comboHint: String
+
+    /// 200 ms is short enough to feel instant but long enough that a stray
+    /// brush of the key doesn't fire accidentally.
+    private static let defaultHoldMs = 200
+
+    private enum Kind: String, CaseIterable, Identifiable {
+        case combo, holdKey
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .combo:   return "Key combination"
+            case .holdKey: return "Hold a key"
+            }
+        }
+    }
+
+    var body: some View {
+        Section(title) {
+            Text(description)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            Picker("Trigger type", selection: kindBinding) {
+                ForEach(Kind.allCases) { Text($0.displayName).tag($0) }
+            }
+
+            switch trigger {
+            case .combo:
+                KeyboardShortcuts.Recorder("Combination", name: comboName)
+                Text(comboHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+            case .holdKey(let key, let ms):
+                Picker("Key", selection: holdKeyBinding(currentMs: ms)) {
+                    ForEach(HoldKey.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                }
+                Stepper(value: holdMsBinding(currentKey: key), in: 50...2000, step: 50) {
+                    Text("Hold for \(ms) ms")
+                }
+                Text("Hold the chosen key past the threshold to start; release to stop. Requires Accessibility permission (System Settings → Privacy & Security → Accessibility) — first install will prompt.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+            case .doubleTapModifier:
+                // Defensive: a stale pref. install() falls back to .combo at
+                // runtime; show a hint so the UI doesn't look broken.
+                Text("Double-tap is not supported for press/hold/release. Pick Combination or Hold instead.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
 
     // MARK: - Bindings
 
-    /// Maps `settings.dictationTrigger` to the simplified `TriggerKind` picker.
-    /// Setting either case from the picker assigns a sensible default trigger
-    /// payload — the user can then refine the held key / threshold below.
-    private var triggerKindBinding: Binding<TriggerKind> {
+    private var kindBinding: Binding<Kind> {
         Binding(
             get: {
-                switch settings.dictationTrigger {
+                switch trigger {
                 case .combo:                return .combo
                 case .holdKey:              return .holdKey
-                case .doubleTapModifier:    return .combo  // unsupported variant collapses
+                case .doubleTapModifier:    return .combo  // unsupported collapses
                 }
             },
             set: { newKind in
                 switch newKind {
                 case .combo:
-                    settings.dictationTrigger = .combo
+                    trigger = .combo
                 case .holdKey:
-                    // Preserve any prior hold-key choice; default to Right ⌘
-                    // because it's the closest thing macOS has to a dedicated
+                    if case .holdKey = trigger { break }   // keep existing sub-config
+                    // Default to Right ⌘ — closest thing macOS has to a dedicated
                     // push-to-talk key (no accidental conflicts with text input).
-                    if case .holdKey = settings.dictationTrigger {
-                        // Already a holdKey — keep current sub-config.
-                        break
-                    }
-                    settings.dictationTrigger = .holdKey(.rightCommand, minHoldMs: Self.defaultHoldMs)
+                    trigger = .holdKey(.rightCommand, minHoldMs: Self.defaultHoldMs)
                 }
             }
         )
     }
 
-    /// Bind only the held-key sub-field of a `.holdKey` trigger; preserves the
-    /// caller-visible ms threshold so editing the key doesn't reset the timing.
     private func holdKeyBinding(currentMs: Int) -> Binding<HoldKey> {
         Binding(
             get: {
-                if case .holdKey(let k, _) = settings.dictationTrigger { return k }
+                if case .holdKey(let k, _) = trigger { return k }
                 return .rightCommand
             },
-            set: { newKey in
-                settings.dictationTrigger = .holdKey(newKey, minHoldMs: currentMs)
-            }
+            set: { newKey in trigger = .holdKey(newKey, minHoldMs: currentMs) }
         )
     }
 
-    /// Bind only the ms threshold of a `.holdKey` trigger; preserves the held key.
     private func holdMsBinding(currentKey: HoldKey) -> Binding<Int> {
         Binding(
             get: {
-                if case .holdKey(_, let ms) = settings.dictationTrigger { return ms }
+                if case .holdKey(_, let ms) = trigger { return ms }
                 return Self.defaultHoldMs
             },
-            set: { newMs in
-                settings.dictationTrigger = .holdKey(currentKey, minHoldMs: newMs)
-            }
+            set: { newMs in trigger = .holdKey(currentKey, minHoldMs: newMs) }
         )
     }
 }
@@ -1242,10 +1246,18 @@ private struct AgentTab: View {
         Form {
             Section("Autonomous agent") {
                 Toggle("Enable agent hotkey", isOn: $settings.agentEnabled)
-                Text("Hold ⌘⇧A (rebindable in Settings → Hotkeys), speak an instruction, release. Whisper transcribes; the chosen backend runs an autonomous loop. Open the console (menu → Agent Console…) to watch the live log and inject extra instructions mid-run.")
+                Text("Hold the hotkey, speak an instruction, release. Whisper transcribes; the chosen backend runs an autonomous loop. Open the console (menu → Agent Console…) to watch the live log and inject extra instructions mid-run.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            TriggerPickerSection(
+                title: "Agent trigger",
+                description: "How the autonomous-agent hotkey fires.",
+                trigger: $settings.agentTrigger,
+                comboName: .agentTrigger,
+                comboHint: "Default: ⌘⇧A. Click the recorder to rebind."
+            )
 
             Section("Backend") {
                 Picker("Driver", selection: $settings.agentBackend) {
@@ -1405,10 +1417,18 @@ private struct MarkdownExportTab: View {
 
             Section("Push-to-Markdown") {
                 Toggle("Enable push-to-Markdown hotkey", isOn: $settings.pushToMarkdownEnabled)
-                Text("Hold the hotkey (default ⌘⇧Y, rebindable in Settings → Hotkeys), speak, release. The cleaned transcript is run through the SAME prompts + saved into the SAME folder as the post-recording Markdown export above — but as a separate file per press. No popover, no library entry — fast \"voice → markdown note\" capture.")
+                Text("Hold the hotkey, speak, release. The cleaned transcript is run through the SAME prompts + saved into the SAME folder as the post-recording Markdown export above — but as a separate file per press. No popover, no library entry — fast \"voice → markdown note\" capture.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            TriggerPickerSection(
+                title: "Push-to-Markdown trigger",
+                description: "How the push-to-Markdown hotkey fires. Same options as Dictation — pick a combo (default ⌘⇧Y) or hold a single key.",
+                trigger: $settings.pushToMarkdownTrigger,
+                comboName: .pushToMarkdown,
+                comboHint: "Default: ⌘⇧Y. Click the recorder to rebind."
+            )
 
             Section("Output folder") {
                 HStack(alignment: .top) {
