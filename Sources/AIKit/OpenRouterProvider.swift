@@ -26,7 +26,7 @@ public final class OpenRouterProvider: AIProvider, Sendable {
     public init(
         apiKey: String,
         endpoint: URL = OpenRouterProvider.defaultEndpoint,
-        referer: String = "https://jarvisnote.studio",
+        referer: String = "https://kosmonotes.studio",
         title: String = "Jarvis Note",
         httpClient: @escaping HTTPClient = OpenRouterProvider.defaultHTTPClient
     ) {

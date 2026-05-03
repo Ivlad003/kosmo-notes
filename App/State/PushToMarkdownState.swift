@@ -6,7 +6,7 @@ import DictationKit
 import StorageKit
 import TranscriptionKit
 
-private let pushToMDLog = Logger(subsystem: "dev.jarvisnote.studio", category: "PushToMarkdown")
+private let pushToMDLog = Logger(subsystem: "dev.kosmonotes.studio", category: "PushToMarkdown")
 
 // MARK: - PushToMarkdownState
 

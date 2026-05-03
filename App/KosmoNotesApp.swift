@@ -4,7 +4,7 @@ import KeyboardShortcuts
 import StorageKit
 
 @main
-struct JarvisNoteApp: App {
+struct KosmoNotesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
@@ -47,6 +47,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !checkMinimumOS() {
             return
         }
+
+        // One-shot rename migration: copy `JarvisNote` AppSupport dir +
+        // Keychain entries to `KosmoNotes` ones so existing users keep their
+        // recordings, sessions, and API keys after the bundle-ID rename.
+        // Idempotent — flips a UserDefault flag once done.
+        MigrationService.runIfNeeded()
 
         configureStatusItem()
         configureMenu()
@@ -262,7 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let appDir = appSupport.appendingPathComponent("JarvisNote", isDirectory: true)
+        let appDir = appSupport.appendingPathComponent("KosmoNotes", isDirectory: true)
         let recordingsDir = appDir.appendingPathComponent("recordings", isDirectory: true)
         let dbPath = appDir.appendingPathComponent("sessions.sqlite")
 

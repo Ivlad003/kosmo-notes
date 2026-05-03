@@ -11,7 +11,7 @@ struct RecoveryServiceTests {
     // MARK: - Helpers
 
     private func makeRecordingsRoot() throws -> URL {
-        let dir = URL.temporaryDirectory.appendingPathComponent("JarvisNoteRecoveryTests-\(UUID().uuidString)")
+        let dir = URL.temporaryDirectory.appendingPathComponent("KosmoNotesRecoveryTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

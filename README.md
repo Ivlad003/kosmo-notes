@@ -12,7 +12,7 @@ macOS menu-bar voice-first AI capture tool. Records audio (mic + system), transc
 
 - macOS 14+ (to run the build toolchain; the built app targets macOS 12.3+)
 - Xcode 15.4+ (download from [developer.apple.com](https://developer.apple.com/xcode/))
-- `xcodegen` (generates `JarvisNote.xcodeproj` from `project.yml`)
+- `xcodegen` (generates `KosmoNotes.xcodeproj` from `project.yml`)
 
 ### One-time setup
 
@@ -23,14 +23,14 @@ brew install xcodegen
 ### Generate project and build
 
 ```bash
-# Generate JarvisNote.xcodeproj from project.yml (re-run whenever project.yml changes)
+# Generate KosmoNotes.xcodeproj from project.yml (re-run whenever project.yml changes)
 xcodegen generate
 
 # Debug build
-xcodebuild -scheme JarvisNote -configuration Debug build
+xcodebuild -scheme KosmoNotes -configuration Debug build
 
 # Release build
-xcodebuild -scheme JarvisNote -configuration Release build
+xcodebuild -scheme KosmoNotes -configuration Release build
 ```
 
 ### Run
@@ -38,7 +38,7 @@ xcodebuild -scheme JarvisNote -configuration Release build
 After a successful build, locate and open the app:
 
 ```bash
-find ~/Library/Developer/Xcode/DerivedData -name "JarvisNote.app" -type d | head -1
+find ~/Library/Developer/Xcode/DerivedData -name "KosmoNotes.app" -type d | head -1
 ```
 
 Open the resulting path in Finder or run `open <path>`. The app shows a menu-bar icon (waveform.circle); no Dock icon (it is an `LSUIElement` app).
@@ -46,18 +46,18 @@ Open the resulting path in Finder or run `open <path>`. The app shows a menu-bar
 ### Distribution
 
 ```bash
-ditto -c -k --keepParent JarvisNote.app JarvisNote.app.zip
+ditto -c -k --keepParent KosmoNotes.app KosmoNotes.app.zip
 ```
 
 Recipients who receive the zip via file share must bypass Gatekeeper:
 
 ```bash
-xattr -d com.apple.quarantine /Applications/JarvisNote.app
+xattr -d com.apple.quarantine /Applications/KosmoNotes.app
 ```
 
 ### Notes
 
-- `JarvisNote.xcodeproj` is **gitignored** — only `project.yml` is committed. Run `xcodegen generate` after cloning.
+- `KosmoNotes.xcodeproj` is **gitignored** — only `project.yml` is committed. Run `xcodegen generate` after cloning.
 - App Sandbox is **off** (required for Accessibility paste in Dictation Mode).
 - Hardened Runtime is **off** (unsigned binary; hand-shared distribution only).
 
@@ -104,11 +104,11 @@ xattr -d com.apple.quarantine /Applications/JarvisNote.app
 
 ## Distribution
 
-Hand-shared binary. **No code signing, no notarization, no auto-update.** First-launch: right-click `.app` → Open to bypass Gatekeeper, or `xattr -d com.apple.quarantine /Applications/JarvisNote.app`. Single-user, personal-tool positioning.
+Hand-shared binary. **No code signing, no notarization, no auto-update.** First-launch: right-click `.app` → Open to bypass Gatekeeper, or `xattr -d com.apple.quarantine /Applications/KosmoNotes.app`. Single-user, personal-tool positioning.
 
 ## Configuration
 
-API keys live in macOS Keychain. Other settings in `UserDefaults` + `~/Library/Application Support/JarvisNote/JarvisNote.config.json`. See §13 of the design doc.
+API keys live in macOS Keychain. Other settings in `UserDefaults` + `~/Library/Application Support/KosmoNotes/KosmoNotes.config.json`. See §13 of the design doc.
 
 ## Contributing
 

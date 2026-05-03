@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 import os
 
-private let segmentWriterLog = Logger(subsystem: "dev.jarvisnote.studio", category: "SegmentWriter")
+private let segmentWriterLog = Logger(subsystem: "dev.kosmonotes.studio", category: "SegmentWriter")
 
 // MARK: - AudioSource
 

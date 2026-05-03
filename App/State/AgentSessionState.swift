@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import os
 
-private let agentSessionLog = Logger(subsystem: "dev.jarvisnote.studio", category: "AgentSession")
+private let agentSessionLog = Logger(subsystem: "dev.kosmonotes.studio", category: "AgentSession")
 
 // MARK: - AgentSessionState
 
@@ -35,7 +35,11 @@ final class AgentSessionState {
     // MARK: - Dependencies
 
     private let settings: AppSettings
-    private var runner: AgentRunner?
+    /// One of these is non-nil while a session runs. Built-in backend uses
+    /// AgentRunner; CLI backends use ExternalAgentRunner. Polymorphism via
+    /// helpers below to avoid an extra protocol layer.
+    private var builtinRunner: AgentRunner?
+    private var externalRunner: ExternalAgentRunner?
     private var sessionLogURL: URL?
     private var jsonEncoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -54,12 +58,9 @@ final class AgentSessionState {
     /// Cancels any in-flight session first. Returns once the loop ends.
     func start(initialInstruction: String) async {
         // If something is already running, stop it cleanly first.
-        if case .running = status { await runner?.requestStop() }
-
-        let key = settings.anthropicApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else {
-            status = .failed("Anthropic API key required (Settings → AI Providers).")
-            return
+        if case .running = status {
+            await builtinRunner?.requestStop()
+            await externalRunner?.requestStop()
         }
 
         let workspace = resolveWorkspace()
@@ -75,16 +76,72 @@ final class AgentSessionState {
         sessionLogURL = openLogFile(sessionID: sessionID)
         status = .running(sessionID: sessionID)
 
+        agentSessionLog.info("AgentSession.start: id=\(sessionID, privacy: .public) backend=\(self.settings.agentBackend.rawValue, privacy: .public) workspace=\(workspace.path, privacy: .public)")
+
+        let onEvent: AgentRunner.EventHandler = { [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.handleEvent(event)
+            }
+        }
+
+        switch settings.agentBackend {
+        case .builtin:
+            await runBuiltin(workspace: workspace, instruction: initialInstruction, onEvent: onEvent)
+        case .claudeCode:
+            await runExternal(backend: .claudeCode(binPath: settings.agentClaudeCodeBin),
+                              workspace: workspace, instruction: initialInstruction, onEvent: onEvent)
+        case .codex:
+            await runExternal(backend: .codex(binPath: settings.agentCodexBin),
+                              workspace: workspace, instruction: initialInstruction, onEvent: onEvent)
+        case .copilot:
+            await runExternal(backend: .copilot(binPath: settings.agentCopilotBin),
+                              workspace: workspace, instruction: initialInstruction, onEvent: onEvent)
+        }
+
+        // Loop returned — flip status to finished. Failed events were already
+        // surfaced via handleEvent.
+        if case .running(let id) = status {
+            status = .finished(sessionID: id)
+        }
+        builtinRunner = nil
+        externalRunner = nil
+    }
+
+    /// Append a new user message to the running session. No-op if idle.
+    func inject(_ message: String) async {
+        guard case .running = status else { return }
+        if let r = builtinRunner { await r.inject(message); return }
+        if let r = externalRunner { await r.inject(message) }
+    }
+
+    /// Cooperative stop. Loop wraps up the current iteration then exits.
+    func requestStop() async {
+        guard case .running = status else { return }
+        if let r = builtinRunner { await r.requestStop(); return }
+        if let r = externalRunner { await r.requestStop() }
+    }
+
+    // MARK: - Backend dispatch
+
+    private func runBuiltin(
+        workspace: URL,
+        instruction: String,
+        onEvent: @escaping AgentRunner.EventHandler
+    ) async {
+        let key = settings.anthropicApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            status = .failed("Anthropic API key required for built-in backend (Settings → AI Providers).")
+            return
+        }
+
         let tools: [AgentTool] = [
             BashTool(workspace: workspace),
             ReadFileTool(workspace: workspace),
             WriteFileTool(workspace: workspace),
         ]
-
         let systemPrompt = settings.agentSystemPrompt.isEmpty
             ? AppSettings.defaultAgentSystemPrompt
             : settings.agentSystemPrompt
-
         let contextualSystem = systemPrompt + "\n\nYour workspace directory is `\(workspace.path)` — restrict all file operations to within it. The user's locale, current date, and OS info: macOS \(ProcessInfo.processInfo.operatingSystemVersionString)."
 
         let runner = AgentRunner(
@@ -93,35 +150,25 @@ final class AgentSessionState {
             systemPrompt: contextualSystem,
             maxIterations: settings.agentMaxIterations,
             tools: tools,
-            onEvent: { [weak self] event in
-                Task { @MainActor [weak self] in
-                    self?.handleEvent(event)
-                }
-            }
+            onEvent: onEvent
         )
-        self.runner = runner
-
-        agentSessionLog.info("AgentSession.start: id=\(sessionID, privacy: .public) workspace=\(workspace.path, privacy: .public)")
-        await runner.run(initialInstruction: initialInstruction)
-
-        // Loop returned — flip status. Failed events have already been
-        // emitted via handleEvent; here we just clean up.
-        if case .running(let id) = status {
-            status = .finished(sessionID: id)
-        }
-        self.runner = nil
+        self.builtinRunner = runner
+        await runner.run(initialInstruction: instruction)
     }
 
-    /// Append a new user message to the running session. No-op if idle.
-    func inject(_ message: String) async {
-        guard case .running = status, let runner else { return }
-        await runner.inject(message)
-    }
-
-    /// Cooperative stop. Loop wraps up the current iteration then exits.
-    func requestStop() async {
-        guard case .running = status, let runner else { return }
-        await runner.requestStop()
+    private func runExternal(
+        backend: ExternalAgentRunner.Backend,
+        workspace: URL,
+        instruction: String,
+        onEvent: @escaping ExternalAgentRunner.EventHandler
+    ) async {
+        let runner = ExternalAgentRunner(
+            backend: backend,
+            workspace: workspace,
+            onEvent: onEvent
+        )
+        self.externalRunner = runner
+        await runner.run(initialInstruction: instruction)
     }
 
     // MARK: - Private
@@ -139,13 +186,13 @@ final class AgentSessionState {
         }
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
-        return docs.appendingPathComponent("JarvisNote-agent")
+        return docs.appendingPathComponent("KosmoNotes-agent")
     }
 
     private func openLogFile(sessionID: String) -> URL? {
         let appSupport = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        let dir = appSupport.appendingPathComponent("JarvisNote/agent-sessions", isDirectory: true)
+        let dir = appSupport.appendingPathComponent("KosmoNotes/agent-sessions", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("\(sessionID).jsonl")
         FileManager.default.createFile(atPath: url.path, contents: nil)

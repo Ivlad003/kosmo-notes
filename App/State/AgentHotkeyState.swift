@@ -5,7 +5,7 @@ import DictationKit
 import KeyboardShortcuts
 import TranscriptionKit
 
-private let agentHotkeyLog = Logger(subsystem: "dev.jarvisnote.studio", category: "AgentHotkey")
+private let agentHotkeyLog = Logger(subsystem: "dev.kosmonotes.studio", category: "AgentHotkey")
 
 extension KeyboardShortcuts.Name {
     /// Push-to-talk trigger for the autonomous agent. Default ⌘⇧A

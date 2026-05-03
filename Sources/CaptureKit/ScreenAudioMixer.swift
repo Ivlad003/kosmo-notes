@@ -2,7 +2,7 @@
 import Foundation
 import os
 
-private let mixerLog = Logger(subsystem: "dev.jarvisnote.studio", category: "ScreenAudioMixer")
+private let mixerLog = Logger(subsystem: "dev.kosmonotes.studio", category: "ScreenAudioMixer")
 
 // MARK: - ScreenAudioMixer
 

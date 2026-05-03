@@ -1,6 +1,6 @@
 import XCTest
 
-// MARK: - JarvisNoteUITests
+// MARK: - KosmoNotesUITests
 //
 // End-to-end UI smoke tests using XCUITest.
 //
@@ -18,13 +18,13 @@ import XCTest
 //   * Recording flow (RecorderState ships in Phase A Week 3)
 //
 // Running locally:
-//   xcodebuild test -scheme JarvisNote -destination 'platform=macOS'
+//   xcodebuild test -scheme KosmoNotes -destination 'platform=macOS'
 //
 // Note on TCC: macOS UI tests need Accessibility permission for `xctest` /
 // Xcode. First run will prompt; grant via System Settings → Privacy &
 // Security → Accessibility, then re-run.
 
-final class JarvisNoteUITests: XCTestCase {
+final class KosmoNotesUITests: XCTestCase {
 
     // MARK: - Lifecycle
 
@@ -59,7 +59,7 @@ final class JarvisNoteUITests: XCTestCase {
         // `menuBars` query reaches it via the accessibility hierarchy.
         let statusItem = menuBarStatusItem(for: app)
         XCTAssertTrue(statusItem.waitForExistence(timeout: 5),
-                      "Expected JarvisNote menu-bar status item to be visible")
+                      "Expected KosmoNotes menu-bar status item to be visible")
     }
 
     // MARK: - Onboarding
@@ -213,7 +213,7 @@ final class JarvisNoteUITests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// Locate the JarvisNote menu-bar status item.
+    /// Locate the KosmoNotes menu-bar status item.
     ///
     /// macOS menu-bar items live in the system-wide menu bar (process
     /// `SystemUIServer` / `WindowServer`), not in the app's own UI. XCUIApplication

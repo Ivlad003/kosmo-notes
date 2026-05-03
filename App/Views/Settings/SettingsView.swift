@@ -44,7 +44,11 @@ struct SettingsView: View {
                 .tabItem { Label("Privacy", systemImage: "lock.shield") }
         }
         .padding(20)
-        .frame(minWidth: 520, idealWidth: 600, minHeight: 360)
+        // Tab labels were getting truncated on the default 520pt width
+        // because we now have 8 tabs (Transcription / AI Providers /
+        // Dictation / Voice Note / Hotkeys / Sharing / Markdown / Agent /
+        // Privacy). Bumped both ideal and min so labels render in full.
+        .frame(minWidth: 760, idealWidth: 820, minHeight: 380, idealHeight: 560)
     }
 }
 
@@ -802,7 +806,7 @@ private struct PrivacyTab: View {
                     } label: {
                         Label("Reset all permissions", systemImage: "arrow.counterclockwise.circle")
                     }
-                    .help("Runs `tccutil reset All dev.jarvisnote.studio` so macOS will re-prompt fresh on the next recording. Use this when you granted access but the app still refuses (cdhash mismatch from rebuild).")
+                    .help("Runs `tccutil reset All dev.kosmonotes.studio` so macOS will re-prompt fresh on the next recording. Use this when you granted access but the app still refuses (cdhash mismatch from rebuild).")
 
                     Spacer()
                     Button("Refresh status") { refreshTick &+= 1 }
@@ -815,7 +819,7 @@ private struct PrivacyTab: View {
             }
             .id(refreshTick)
             .confirmationDialog(
-                "Reset all JarvisNote permissions?",
+                "Reset all KosmoNotes permissions?",
                 isPresented: $confirmReset,
                 titleVisibility: .visible
             ) {
@@ -824,7 +828,7 @@ private struct PrivacyTab: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Microphone, Screen Recording, and Accessibility grants for `dev.jarvisnote.studio` will be cleared. macOS will prompt for them again the next time you start recording. JarvisNote will need to be quit & relaunched after the prompts.")
+                Text("Microphone, Screen Recording, and Accessibility grants for `dev.kosmonotes.studio` will be cleared. macOS will prompt for them again the next time you start recording. KosmoNotes will need to be quit & relaunched after the prompts.")
             }
             .alert("Permissions reset", isPresented: Binding(
                 get: { resetResult != nil },
@@ -839,7 +843,7 @@ private struct PrivacyTab: View {
                 Text("""
                 Recordings stay on your Mac at:
 
-                ~/Library/Application Support/JarvisNote/recordings/
+                ~/Library/Application Support/KosmoNotes/recordings/
 
                 Transcription and AI summarisation are cloud-only — every recorded \
                 second of audio is uploaded to the provider you configure on the \
@@ -904,12 +908,12 @@ private struct PrivacyTab: View {
         }
     }
 
-    /// Spawn `/usr/bin/tccutil reset All dev.jarvisnote.studio` and report
+    /// Spawn `/usr/bin/tccutil reset All dev.kosmonotes.studio` and report
     /// the verdict via the alert. Runs synchronously on a background queue so
     /// SwiftUI doesn't stall during the ~50ms IPC. No admin needed — tccutil
     /// works at the user-level for app-scoped resets.
     private func runTCCReset() {
-        let bundleID = "dev.jarvisnote.studio"
+        let bundleID = "dev.kosmonotes.studio"
         DispatchQueue.global(qos: .userInitiated).async {
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
@@ -924,7 +928,7 @@ private struct PrivacyTab: View {
                 let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 Task { @MainActor in
                     if task.terminationStatus == 0 {
-                        resetResult = "All Microphone, Screen Recording, and Accessibility entries for \(bundleID) were cleared. Quit JarvisNote and re-launch from /Applications, then start a recording — macOS will prompt fresh for each permission."
+                        resetResult = "All Microphone, Screen Recording, and Accessibility entries for \(bundleID) were cleared. Quit KosmoNotes and re-launch from /Applications, then start a recording — macOS will prompt fresh for each permission."
                     } else {
                         resetResult = "tccutil exited with status \(task.terminationStatus). Output:\n\(output.isEmpty ? "<empty>" : output)"
                     }
@@ -1127,19 +1131,65 @@ private struct AgentTab: View {
         Form {
             Section("Autonomous agent") {
                 Toggle("Enable agent hotkey", isOn: $settings.agentEnabled)
-                Text("Hold ⌘⇧A (rebindable in Settings → Hotkeys), speak an instruction, release. Whisper transcribes; Claude runs an autonomous tool-use loop with bash / read_file / write_file restricted to the workspace folder. Open the console (menu → Agent Console…) to watch the live log and inject extra instructions mid-run.")
+                Text("Hold ⌘⇧A (rebindable in Settings → Hotkeys), speak an instruction, release. Whisper transcribes; the chosen backend runs an autonomous loop. Open the console (menu → Agent Console…) to watch the live log and inject extra instructions mid-run.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
+            Section("Backend") {
+                Picker("Driver", selection: $settings.agentBackend) {
+                    ForEach(AppSettings.AgentBackendChoice.allCases) { choice in
+                        Text(choice.displayName).tag(choice)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                switch settings.agentBackend {
+                case .builtin:
+                    Text("In-process Anthropic Messages API loop with bash / read_file / write_file tools sandboxed to the workspace folder. Uses your Anthropic API key.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .claudeCode:
+                    HStack {
+                        TextField("`claude` binary path", text: $settings.agentClaudeCodeBin, prompt: Text("auto-detect (Homebrew / npm-global / $PATH)"))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.callout, design: .monospaced))
+                        Button("Choose…") { pickBinary { settings.agentClaudeCodeBin = $0 } }
+                    }
+                    Text("Spawns `claude --print --output-format stream-json --verbose <instruction>` in the workspace folder. Reuses your existing claude.ai login — no API key needed here. Install with `npm install -g @anthropic-ai/claude-code` if missing.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .codex:
+                    HStack {
+                        TextField("`codex` binary path", text: $settings.agentCodexBin, prompt: Text("auto-detect (Homebrew / npm-global / $PATH)"))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.callout, design: .monospaced))
+                        Button("Choose…") { pickBinary { settings.agentCodexBin = $0 } }
+                    }
+                    Text("Spawns `codex exec <instruction>` in the workspace folder. Uses your ChatGPT subscription / API key as configured in the Codex CLI. Install with `npm install -g @openai/codex` if missing.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .copilot:
+                    HStack {
+                        TextField("`gh` binary path", text: $settings.agentCopilotBin, prompt: Text("auto-detect (Homebrew / $PATH)"))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.callout, design: .monospaced))
+                        Button("Choose…") { pickBinary { settings.agentCopilotBin = $0 } }
+                    }
+                    Text("Spawns `gh copilot suggest -t shell <question>`. Requires `gh auth login` and `gh extension install github/gh-copilot`. One-shot — mid-session injection is not supported here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Workspace folder") {
                 HStack(alignment: .top) {
-                    TextField("Path", text: $settings.agentWorkspaceFolder, prompt: Text("~/Documents/JarvisNote-agent (default)"))
+                    TextField("Path", text: $settings.agentWorkspaceFolder, prompt: Text("~/Documents/KosmoNotes-agent (default)"))
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.callout, design: .monospaced))
                     Button("Choose…") { pickWorkspaceFolder() }
                 }
-                Text("All bash / read_file / write_file calls are sandboxed inside this directory. Path traversal (../etc/passwd) is rejected. Empty = use the default `~/Documents/JarvisNote-agent` (created on first run).")
+                Text("All bash / read_file / write_file calls are sandboxed inside this directory. Path traversal (../etc/passwd) is rejected. Empty = use the default `~/Documents/KosmoNotes-agent` (created on first run).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1173,8 +1223,8 @@ private struct AgentTab: View {
 
             Section("Session logs") {
                 let logsDir = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false))?
-                    .appendingPathComponent("JarvisNote/agent-sessions").path
-                    ?? "~/Library/Application Support/JarvisNote/agent-sessions"
+                    .appendingPathComponent("KosmoNotes/agent-sessions").path
+                    ?? "~/Library/Application Support/KosmoNotes/agent-sessions"
                 Text("Each session writes a JSONL log to:")
                     .font(.caption)
                 Text(logsDir)
@@ -1201,6 +1251,22 @@ private struct AgentTab: View {
         panel.title = "Pick the agent workspace folder"
         if panel.runModal() == .OK, let url = panel.url {
             settings.agentWorkspaceFolder = url.path
+        }
+    }
+
+    /// File-picker for absolute CLI binary paths (claude / codex / gh).
+    /// Permits any executable; the runner verifies `isExecutableFile` at spawn.
+    private func pickBinary(_ commit: (String) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.treatsFilePackagesAsDirectories = true
+        panel.showsHiddenFiles = true
+        panel.prompt = "Use binary"
+        panel.title = "Pick the CLI binary"
+        if panel.runModal() == .OK, let url = panel.url {
+            commit(url.path)
         }
     }
 }
@@ -1235,12 +1301,12 @@ private struct MarkdownExportTab: View {
 
             Section("Output folder") {
                 HStack(alignment: .top) {
-                    TextField("Path", text: $settings.markdownExportFolder, prompt: Text("~/Documents/JarvisNote (default)"))
+                    TextField("Path", text: $settings.markdownExportFolder, prompt: Text("~/Documents/KosmoNotes (default)"))
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.callout, design: .monospaced))
                     Button("Choose…") { pickFolder() }
                 }
-                Text("Empty = use the default `~/Documents/JarvisNote`. Filenames are auto-generated as `<date>_<mode>_<short-id>.md` so two recordings in the same minute don't collide.")
+                Text("Empty = use the default `~/Documents/KosmoNotes`. Filenames are auto-generated as `<date>_<mode>_<short-id>.md` so two recordings in the same minute don't collide.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

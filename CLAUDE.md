@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **v1.0 feature-complete UNVERIFIED — manual smoke pending.** All 18 acceptance criteria are wired in code; release path checklist is in `docs/release/v1.0-checklist.md`. The Swift Package exists, the menu-bar app records → transcribes via Whisper → AI-summarizes → indexes (FTS5 + optional embeddings) → opens for chat → exports → shares to S3. Local validation via `swift build && swift test` is required before tagging. Read `docs/plans/2026-05-02-jarvis-note-design.md` first — it is the canonical source of truth for all architectural decisions, and `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` for the phase-by-phase plan.
 
 **Features added 2026-05-03 (v1.0 scope expansion past the original v1.1 cut):**
-- **AC-6 startup gate.** `JarvisNoteApp.checkMinimumOS` surfaces a `<12.3` "upgrade" modal and a `<14.0` "core features disabled" warning.
+- **AC-6 startup gate.** `KosmoNotesApp.checkMinimumOS` surfaces a `<12.3` "upgrade" modal and a `<14.0` "core features disabled" warning.
 - **Voice Note Mode** (third capture mode) with `freeform / task / journal / checklist` prompt templates. Hotkey ⌘⇧N. Settings → Voice Note tab.
 - **Global hotkeys** (⌘⇧R Meeting · ⌘⇧N Voice Note · ⌘⇧L Library) registered via `KeyboardShortcuts`; rebindable in Settings → Hotkeys.
 - **Cost-cap enforcement modal.** `RecorderState.confirmCostOverage` replaces the silent skip with an "Increase to $X / Cancel" alert.
@@ -39,7 +39,7 @@ Phase A Week 1 deliverables implemented (CaptureKit):
 
 Phase 0 deliverables (still in place):
 - `.github/workflows/ci.yml` — GitHub Actions CI on push/PR (xcodegen + swift build + swift test + xcodebuild)
-- `App/Views/Onboarding/OnboardingView.swift` + `App/JarvisNoteApp.swift` — first-launch permission-education modal
+- `App/Views/Onboarding/OnboardingView.swift` + `App/KosmoNotesApp.swift` — first-launch permission-education modal
 - `Sources/StorageKit/` — `AtomicWriter` + `KeychainStore`
 - `Sources/DependencyLifecycle/` — state machine + `StatePersistence` actor
 
@@ -94,8 +94,8 @@ These come from §3 of the Jarvis Note design doc.
 
 - **Pure Swift / SwiftUI / AppKit.** No Rust, no FFI, no webview, no Tauri / iced / Electron. Native frameworks only: `AVAudioEngine`, `AVPlayer` / `AVPlayerView`, `URLSession`, `GRDB.swift`, Swift concurrency. Bundle target: 5–15 MB. Single `.app`.
 - **Cloud-only transcription.** No local Whisper, no WhisperKit, no on-device CoreML model. The privacy posture is partial; see §12 — every recorded second leaves the machine. Ollama covers the LLM stage only.
-- **Filesystem sidecars are source of truth, SQLite is rebuildable index.** Sessions live in `~/Library/Application Support/JarvisNote/recordings/<sid>/` with `audio.m4a` (AAC; was `audio.opus` in design — see "Encoder deviation"), `transcript.jsonl`, `summary.md`, `actions.json`. Optional: `screen.mp4` when recording mode is Audio + Screen. SQLite (`sessions.sqlite`) backs FTS5 + filtering and must be rebuildable from sidecars.
-- **macOS 14.0+ is the actual deployment target.** Package.swift and project.yml both pin `.macOS(.v14)`; LSMinimumSystemVersion mirrors that, so macOS will refuse to launch the binary on <14. The 12.3–13.x "best-effort" fallback described in earlier revisions of the design doc was never implemented (the Recorder, Library, Settings, RecorderState, AudioEngine etc. are all gated behind `@available(macOS 14.0, *)`). The startup `<12.3` modal in `JarvisNoteApp.checkMinimumOS` is dead code preserved for documentation. **If you genuinely need 12.3+ support, lowering the deployment target requires removing every `@available(macOS 14.0, *)` and replacing `@Observable` / `KeyboardShortcuts` 2.x APIs.** Within 14.x: Core Audio Tap is 14.4+, ScreenCaptureKit audio fallback covers 14.0–14.3.
+- **Filesystem sidecars are source of truth, SQLite is rebuildable index.** Sessions live in `~/Library/Application Support/KosmoNotes/recordings/<sid>/` with `audio.m4a` (AAC; was `audio.opus` in design — see "Encoder deviation"), `transcript.jsonl`, `summary.md`, `actions.json`. Optional: `screen.mp4` when recording mode is Audio + Screen. SQLite (`sessions.sqlite`) backs FTS5 + filtering and must be rebuildable from sidecars.
+- **macOS 14.0+ is the actual deployment target.** Package.swift and project.yml both pin `.macOS(.v14)`; LSMinimumSystemVersion mirrors that, so macOS will refuse to launch the binary on <14. The 12.3–13.x "best-effort" fallback described in earlier revisions of the design doc was never implemented (the Recorder, Library, Settings, RecorderState, AudioEngine etc. are all gated behind `@available(macOS 14.0, *)`). The startup `<12.3` modal in `KosmoNotesApp.checkMinimumOS` is dead code preserved for documentation. **If you genuinely need 12.3+ support, lowering the deployment target requires removing every `@available(macOS 14.0, *)` and replacing `@Observable` / `KeyboardShortcuts` 2.x APIs.** Within 14.x: Core Audio Tap is 14.4+, ScreenCaptureKit audio fallback covers 14.0–14.3.
 - **Screen recording is optional, configurable, and off by default.** `AppSettings.recordingMode` controls whether screen.mp4 is captured alongside audio. Requires Screen Recording TCC permission when enabled. Screen frames are used locally for vision-chat only — never uploaded.
 - **No code signing, no notarization, no auto-update.** Single-user product positioning. Document Gatekeeper bypass (`xattr -d com.apple.quarantine`) for hand-shared binaries.
 - **Secrets in macOS Keychain.** Configuration JSON stores only Keychain account references; never plain-text secrets.
@@ -116,8 +116,8 @@ Both exit 0. 215 tests pass in ~0.5 s. An additional FTS5 perf benchmark is gate
 
 Other commands:
 - `xed .` — open in Xcode
-- `xcodebuild -scheme JarvisNote -configuration Release` — release build (once `.app` target exists)
-- Distribution: `.app` produced by Xcode → `ditto -c -k --keepParent JarvisNote.app JarvisNote.zip` → hand-share.
+- `xcodebuild -scheme KosmoNotes -configuration Release` — release build (once `.app` target exists)
+- Distribution: `.app` produced by Xcode → `ditto -c -k --keepParent KosmoNotes.app KosmoNotes.zip` → hand-share.
 
 ## Editing the design doc
 

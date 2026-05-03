@@ -10,7 +10,7 @@ struct SessionStoreTests {
     // MARK: - Helpers
 
     private func makeStore() async throws -> (SessionStore, AppDatabase, URL) {
-        let tmpDir = URL.temporaryDirectory.appendingPathComponent("JarvisNoteStoreTests-\(UUID().uuidString)")
+        let tmpDir = URL.temporaryDirectory.appendingPathComponent("KosmoNotesStoreTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
 
         let dbURL = tmpDir.appendingPathComponent("sessions.sqlite")

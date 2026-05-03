@@ -3,7 +3,7 @@ import os
 import AIKit
 import StorageKit
 
-private let exporterLog = Logger(subsystem: "dev.jarvisnote.studio", category: "MarkdownExporter")
+private let exporterLog = Logger(subsystem: "dev.kosmonotes.studio", category: "MarkdownExporter")
 
 // MARK: - MarkdownExporter
 
@@ -99,7 +99,7 @@ enum MarkdownExporter {
             return nil
         }
 
-        // Resolve target folder. Empty setting → ~/Documents/JarvisNote.
+        // Resolve target folder. Empty setting → ~/Documents/KosmoNotes.
         let folderURL = resolveExportFolder(settings: settings)
         do {
             try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
@@ -124,13 +124,13 @@ enum MarkdownExporter {
     // MARK: - Private helpers
 
     /// Resolve `settings.markdownExportFolder` to an absolute file URL.
-    /// Empty → fall back to `~/Documents/JarvisNote`. `~` is expanded.
+    /// Empty → fall back to `~/Documents/KosmoNotes`. `~` is expanded.
     private static func resolveExportFolder(settings: AppSettings) -> URL {
         let raw = settings.markdownExportFolder.trimmingCharacters(in: .whitespacesAndNewlines)
         if raw.isEmpty {
             let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
                 ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
-            return docs.appendingPathComponent("JarvisNote")
+            return docs.appendingPathComponent("KosmoNotes")
         }
         let expanded = (raw as NSString).expandingTildeInPath
         return URL(fileURLWithPath: expanded, isDirectory: true)

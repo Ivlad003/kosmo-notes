@@ -27,7 +27,7 @@ triggers:
 
 ## Why This Matters
 
-**HE-AAC**: macOS's "Storage Profile" tier defaulted JarvisNote's recordings to HE-AAC for 50% size savings vs AAC-LC. SegmentWriter created the writer, opened inputs (canAdd → true), called `startWriting()` (returned true), then on every PCM buffer the encoder failed silently. Result: a 60-minute meeting recorded zero usable seconds. The user reported "No audio captured" but the bug was three layers deep — the original error message ("check Microphone permission") was misleading because mic permission was actually granted and buffers WERE flowing into AudioEngine; they just couldn't survive the encoder.
+**HE-AAC**: macOS's "Storage Profile" tier defaulted KosmoNotes's recordings to HE-AAC for 50% size savings vs AAC-LC. SegmentWriter created the writer, opened inputs (canAdd → true), called `startWriting()` (returned true), then on every PCM buffer the encoder failed silently. Result: a 60-minute meeting recorded zero usable seconds. The user reported "No audio captured" but the bug was three layers deep — the original error message ("check Microphone permission") was misleading because mic permission was actually granted and buffers WERE flowing into AudioEngine; they just couldn't survive the encoder.
 
 **Session anchor**: When ScreenRecorder rebases video sample PTS to `.zero` (subtracting `firstSampleTime`) but anchors the writer session at the *original* `firstSampleTime` (mach-time, ~44000 seconds), every appended frame sits **before** the session's start time. AVAssetWriter accepts the appends without complaint — they go into the file's data — but the file's duration metadata reads zero because nothing fits inside the session window. Player picks up the file, sees duration=0, plays nothing.
 
@@ -59,7 +59,7 @@ Both bugs share a pattern: AVAssetWriter doesn't validate the timing/format inva
    - `finishWriting()` final status + frame counts
 2. Run a real recording and read `log show --predicate 'subsystem == "your.subsystem"'` — the failing layer becomes obvious in seconds rather than hours.
 
-**For HE-AAC specifically**: don't use it. Use plain `kAudioFormatMPEG4AAC` (AAC-LC) for mono speech. The 50% size saving is real for music but for voice at 48 kbps the difference is marginal and the encoder is reliable. If you want HE-AAC, validate it works with your specific PCM ASBD on your specific macOS version before shipping it as default. JarvisNote's `applyStorageProfile()` for `.balanced` and the codec migration in `AppSettings.init()` both rewrite stored `audioCodec=.heAAC` to `.aac`.
+**For HE-AAC specifically**: don't use it. Use plain `kAudioFormatMPEG4AAC` (AAC-LC) for mono speech. The 50% size saving is real for music but for voice at 48 kbps the difference is marginal and the encoder is reliable. If you want HE-AAC, validate it works with your specific PCM ASBD on your specific macOS version before shipping it as default. KosmoNotes's `applyStorageProfile()` for `.balanced` and the codec migration in `AppSettings.init()` both rewrite stored `audioCodec=.heAAC` to `.aac`.
 
 **For session anchor**: pick one timeline and stick with it. Either:
 - Anchor at `pts` AND append with `pts` (no rebasing) — final file's PTS reflects mach time

@@ -178,7 +178,7 @@ private struct SessionRowView: View {
             let root = FileManager.default
                 .urls(for: .applicationSupportDirectory, in: .userDomainMask)
                 .first?
-                .appendingPathComponent("JarvisNote/recordings")
+                .appendingPathComponent("KosmoNotes/recordings")
                 .appendingPathComponent(session.id)
             let screenURL = root?.appendingPathComponent("screen.mp4")
             if let url = screenURL {

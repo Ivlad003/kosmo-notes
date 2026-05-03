@@ -2,9 +2,9 @@ import Foundation
 @preconcurrency import KeychainAccess
 
 public struct KeychainStore: @unchecked Sendable {
-    /// The Keychain service name. Locked to bundle identifier "dev.jarvisnote.studio"
+    /// The Keychain service name. Locked to bundle identifier "dev.kosmonotes.studio"
     /// per design §13 — must NEVER change post-ship (Keychain entries are tied to it).
-    public static let service = "dev.jarvisnote.studio"
+    public static let service = "dev.kosmonotes.studio"
 
     private let keychain: Keychain
 

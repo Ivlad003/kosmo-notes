@@ -23,7 +23,7 @@ Neither is in Phase A scope. Both are blockers for unblocking CI. **Phase A modu
 | # | Criterion (plan §5 Week 3) | Status | Evidence |
 |---|---|---|---|
 | 1 | `RecorderState` actor coordinating CaptureKit → TranscriptionKit → SessionStore | ✅ | `App/State/RecorderState.swift:27` — `@Observable @MainActor final class RecorderState`. Status state machine at L31–54. `start(mode:)` at L100–145 wires `CaptureSession`, `SessionStore.createSession`, `MicLevelMeter`. `stop()` at L148–224 finalizes via `RecoveryService`, runs Whisper, writes `TranscriptStore`, calls `sessionStore.indexTranscript` + `sessionStore.finalize`. |
-| 2 | Popover Record button → `RecorderState.toggle()` | ✅ | `App/JarvisNoteApp.swift:69-75` declares menu item `recordToggle` with selector `recordToggleAction`. L244–272 dispatches `await recorder.toggle()`. The "popover" is a menu-bar `NSMenu`, not a `MenuBarExtra` popover, but the wiring intent of plan §5 is satisfied. Menu state updates dynamically in `menuNeedsUpdate` (L412–447) reflecting `recorder.status`. |
+| 2 | Popover Record button → `RecorderState.toggle()` | ✅ | `App/KosmoNotesApp.swift:69-75` declares menu item `recordToggle` with selector `recordToggleAction`. L244–272 dispatches `await recorder.toggle()`. The "popover" is a menu-bar `NSMenu`, not a `MenuBarExtra` popover, but the wiring intent of plan §5 is satisfied. Menu state updates dynamically in `menuNeedsUpdate` (L412–447) reflecting `recorder.status`. |
 | 3 | Mic level meter — `AVAudioEngine` tap → RMS over 33 ms windows → broadcast via `@Observable` | ✅ | `App/State/MicLevelMeter.swift:16` — `final class MicLevelMeter`. Buffer size at L27: `max(256, 0.033 * sampleRate)` ≈ 33 ms. RMS computed at L34–39. `RecorderState.swift:132-138` starts the meter and hops the callback to `@MainActor` setting `self.micLevel`, which is `@Observable` (L60). One nit: the meter is a *separate* `AVAudioEngine` from CaptureKit's recording engine — by-design per the file's docstring ("isolates the UI concern"), not a deviation. |
 | 4 | Session folder created on start, `session.json` finalized atomically on stop | ✅ | `RecorderState.swift:117` — `sessionStore.createSession(mode:language:)`. `RecorderState.swift:215` — `sessionStore.finalize(id:status:durationSecs:)` on success or `.failed` on error. Atomicity is implemented in `StorageKit.AtomicWriter` (already-shipped, not re-audited here). |
 | 5 | `swift build` + `swift test` pass under Xcode toolchain | ❌ | Full-package build fails on `DictationKit` (KeyboardShortcuts module missing). Full-package test fails on `OllamaProviderTests` syntax. **Phase A modules pass in isolation** (see Build/test output below). |
@@ -94,7 +94,7 @@ Ordered by blast radius, smallest first:
 
 - `App/State/RecorderState.swift` (320 lines)
 - `App/State/MicLevelMeter.swift` (56 lines)
-- `App/JarvisNoteApp.swift` (480 lines)
+- `App/KosmoNotesApp.swift` (480 lines)
 - `Sources/CaptureKit/CaptureSession.swift` (203 lines)
 - `Package.swift` (only DictationKit target + KeyboardShortcuts dep section)
 - `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` §5 Phase A Week 3

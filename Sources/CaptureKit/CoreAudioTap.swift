@@ -66,7 +66,7 @@ public actor CoreAudioTap {
 
         // Aggregate device wraps the tap so the rest of the audio stack can read it
         // as an ordinary input. Marked private + tap-only.
-        let aggregateUID = "dev.jarvisnote.processtap.\(UUID().uuidString)"
+        let aggregateUID = "dev.kosmonotes.processtap.\(UUID().uuidString)"
         let aggregateDescription: [String: Any] = [
             kAudioAggregateDeviceUIDKey as String: aggregateUID,
             kAudioAggregateDeviceNameKey as String: "Jarvis Note Process Tap",

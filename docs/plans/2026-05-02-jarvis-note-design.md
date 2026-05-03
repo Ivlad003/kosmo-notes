@@ -130,7 +130,7 @@ The deferred-and-resurrected Jarvis Studio was 24 days of plan, ~5 weeks of buil
 │              │  + filesystem sidecars  │                            │
 │              │                         │                            │
 │              │ ~/Library/Application   │                            │
-│              │  Support/JarvisNote/    │                            │
+│              │  Support/KosmoNotes/    │                            │
 │              │   sessions.sqlite       │                            │
 │              │   recordings/<sid>/     │                            │
 │              │     audio.opus          │                            │
@@ -817,7 +817,7 @@ Adapted from Jarvis Studio §3.1. Shorter here: no local-model bootstrap (no whi
 
 ### State persistence
 
-`~/Library/Application Support/JarvisNote/dependencies.json`. Atomic-write (`tmp + fsync + rename`). Corrupt-on-read = treat as `{}` + log; never crash. Status pill in every Settings panel reflects the persisted state.
+`~/Library/Application Support/KosmoNotes/dependencies.json`. Atomic-write (`tmp + fsync + rename`). Corrupt-on-read = treat as `{}` + log; never crash. Status pill in every Settings panel reflects the persisted state.
 
 ### Uniform failure UX
 
@@ -863,7 +863,7 @@ Users who require fully-local audio processing should be redirected to Macwhispe
 All secrets live in macOS Keychain via `Security.framework`:
 
 ```
-Service: dev.jarvisnote.studio
+Service: dev.kosmonotes.studio
 Accounts:
   - openai-api-key
   - anthropic-api-key
@@ -883,7 +883,7 @@ Configuration JSON stores only references (the Account name); `KeychainAccess` S
 - Adding app-level encryption costs UX (key management on first launch, recovery flow, key escrow questions) for marginal gain over FileVault.
 - An attacker with disk access has bigger problems.
 
-Document this clearly: "Recordings are stored unencrypted in `~/Library/Application Support/JarvisNote/recordings/`. Rely on FileVault (System Settings → Privacy & Security → FileVault) for at-rest encryption."
+Document this clearly: "Recordings are stored unencrypted in `~/Library/Application Support/KosmoNotes/recordings/`. Rely on FileVault (System Settings → Privacy & Security → FileVault) for at-rest encryption."
 
 If a user explicitly wants per-file encryption, point them to a future feature flag (deferred per §2). Don't ship a half-baked optional encryption layer in v1.
 
@@ -902,7 +902,7 @@ If a user explicitly wants per-file encryption, point them to a future feature f
 | Type of data | Persistence |
 |---|---|
 | User preferences (window size, default mode, hotkeys, last-used provider) | `UserDefaults` — built-in macOS pattern, KVO-friendly |
-| Provider config (endpoint URLs, model names, enabled flags) | `JarvisNote.config.json` in `~/Library/Application Support/JarvisNote/` — atomic-write, version-tagged |
+| Provider config (endpoint URLs, model names, enabled flags) | `KosmoNotes.config.json` in `~/Library/Application Support/KosmoNotes/` — atomic-write, version-tagged |
 | Secrets | macOS Keychain |
 | Session metadata | SQLite (`sessions.sqlite`) — index, FTS5, embeddings BLOBs |
 | Transcripts, summaries, audio | Filesystem (`recordings/<sid>/`) — source of truth |
@@ -938,14 +938,14 @@ Five tabs in the Settings window:
 The hand-shared `.app` flow has a subtle config-portability issue:
 
 - **Sender's API keys are in their Keychain — they don't transfer.**
-- **Sender's Ollama URL transfers** if it's in `JarvisNote.config.json`.
+- **Sender's Ollama URL transfers** if it's in `KosmoNotes.config.json`.
 - **Recipient must re-enter all keys on first launch.**
 
-This is correct (you don't want to leak API keys across users), but document it explicitly in the "Sharing the app binary" instructions: "After dropping JarvisNote.app into Applications, open Settings and add your own API keys. The sender's keys are NOT included."
+This is correct (you don't want to leak API keys across users), but document it explicitly in the "Sharing the app binary" instructions: "After dropping KosmoNotes.app into Applications, open Settings and add your own API keys. The sender's keys are NOT included."
 
 ### Migration
 
-Schema versioning in `JarvisNote.config.json`:
+Schema versioning in `KosmoNotes.config.json`:
 
 ```json
 {
@@ -963,7 +963,7 @@ On version bump, run a migration function. v1 ships with `schema_version: 1`; fu
 ```json
 {
   "schema_version": 1,
-  "data_dir": "~/Library/Application Support/JarvisNote",
+  "data_dir": "~/Library/Application Support/KosmoNotes",
   "providers": {
     "anthropic":  { "enabled": true,  "api_key_keychain_account": "anthropic-api-key", "default_model": "claude-sonnet-latest" },
     "openai":     { "enabled": false, "api_key_keychain_account": "openai-api-key" },
@@ -1023,7 +1023,7 @@ On version bump, run a migration function. v1 ships with `schema_version: 1`; fu
 | AVPlayer Opus playback drift on long files (>1 hr) | Med | Forced re-load on >200 ms drift detect. Fallback: convert to AAC at archive time if drift becomes systemic (rejects Opus-everywhere invariant; document if needed). |
 | Accessibility paste fails in sandboxed apps | Med | Clipboard + Cmd+V fallback (§8). Surface "Pasted to clipboard" indicator. |
 | FTS5 index becomes inconsistent after manual SQLite edits | Low | Rebuild button in Settings → Library: drops `transcripts_fts` and re-creates from `transcript.jsonl` sidecars. |
-| macOS Gatekeeper friction on every install | **High** (positioning) | Document `xattr -d com.apple.quarantine /Applications/JarvisNote.app` in the README. Send via channels that preserve extended attributes (Dropbox preserves; iMessage strips). Accept the cost — see §15 Decision Log. |
+| macOS Gatekeeper friction on every install | **High** (positioning) | Document `xattr -d com.apple.quarantine /Applications/KosmoNotes.app` in the README. Send via channels that preserve extended attributes (Dropbox preserves; iMessage strips). Accept the cost — see §15 Decision Log. |
 
 ### Positioning
 

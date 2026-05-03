@@ -5,10 +5,10 @@ import os
 // MARK: - AudioEngine
 
 /// Unified-log channel for capture-engine diagnostics. Filterable via
-/// `log show --predicate 'subsystem == "dev.jarvisnote.studio"' --info` or in
+/// `log show --predicate 'subsystem == "dev.kosmonotes.studio"' --info` or in
 /// Console.app. Emits at .info for routine state changes and .error for the
 /// silent-failure modes (degenerate input format, zero buffers in N seconds).
-private let audioEngineLog = Logger(subsystem: "dev.jarvisnote.studio", category: "AudioEngine")
+private let audioEngineLog = Logger(subsystem: "dev.kosmonotes.studio", category: "AudioEngine")
 
 /// Real-time-thread-safe counter incremented by the tap closure. The actor
 /// can't be touched from the audio render thread, so the closure increments
@@ -238,7 +238,7 @@ public actor AudioEngine {
         }
         let snap = counter.snapshot
         if snap.count == 0 {
-            audioEngineLog.error("AudioEngine.start: tap callback did not fire within 3 s — TCC trust likely stale; tccutil reset Microphone dev.jarvisnote.studio + relaunch")
+            audioEngineLog.error("AudioEngine.start: tap callback did not fire within 3 s — TCC trust likely stale; tccutil reset Microphone dev.kosmonotes.studio + relaunch")
             inputNode.removeTap(onBus: 0)
             engine.stop()
             self.engine = nil
@@ -248,7 +248,7 @@ public actor AudioEngine {
                 domain: "AudioEngine",
                 code: -2,
                 userInfo: [NSLocalizedDescriptionKey:
-                    "Microphone tap installed but no audio buffers arrived in 3 s. macOS reports permission as granted, but the audio HAL is not delivering data to this build. Run `tccutil reset Microphone dev.jarvisnote.studio`, relaunch the app, and grant the prompt again."]
+                    "Microphone tap installed but no audio buffers arrived in 3 s. macOS reports permission as granted, but the audio HAL is not delivering data to this build. Run `tccutil reset Microphone dev.kosmonotes.studio`, relaunch the app, and grant the prompt again."]
             ))
         }
         audioEngineLog.info("AudioEngine.start: first buffers received — count=\(snap.count, privacy: .public) totalFrames=\(snap.totalFrames, privacy: .public)")

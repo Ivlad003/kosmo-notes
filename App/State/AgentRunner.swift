@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-private let agentLog = Logger(subsystem: "dev.jarvisnote.studio", category: "AgentRunner")
+private let agentLog = Logger(subsystem: "dev.kosmonotes.studio", category: "AgentRunner")
 
 // MARK: - AgentEvent
 

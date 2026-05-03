@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-private let geminiLog = Logger(subsystem: "dev.jarvisnote.studio", category: "GeminiAudioProvider")
+private let geminiLog = Logger(subsystem: "dev.kosmonotes.studio", category: "GeminiAudioProvider")
 
 // MARK: - GeminiAudioProvider
 
@@ -11,7 +11,7 @@ private let geminiLog = Logger(subsystem: "dev.jarvisnote.studio", category: "Ge
 /// Unlike Whisper / Deepgram (speech-only ASR), Gemini ingests the raw audio
 /// alongside a text prompt and returns a single multimodal response. We ask
 /// for a strict JSON schema (language + segments + full text) so the rest of
-/// JarvisNote (TranscriptStore, FTS, summary) can consume it the same way.
+/// KosmoNotes (TranscriptStore, FTS, summary) can consume it the same way.
 ///
 /// Limits:
 /// - Inline base64 audio is fine up to a few MB; for longer recordings the

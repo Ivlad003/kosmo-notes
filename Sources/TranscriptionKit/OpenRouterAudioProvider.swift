@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-private let openrouterAudioLog = Logger(subsystem: "dev.jarvisnote.studio", category: "OpenRouterAudioProvider")
+private let openrouterAudioLog = Logger(subsystem: "dev.kosmonotes.studio", category: "OpenRouterAudioProvider")
 
 // MARK: - OpenRouterAudioProvider
 
@@ -46,7 +46,7 @@ public final class OpenRouterAudioProvider: BatchTranscriptionProvider, Sendable
         apiKey: String,
         model: String = "google/gemini-2.5-flash",
         endpoint: URL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!,
-        referer: String = "https://jarvisnote.dev",
+        referer: String = "https://kosmonotes.dev",
         title: String = "Jarvis Note",
         httpClient: @escaping HTTPClient = OpenRouterAudioProvider.defaultHTTPClient
     ) {

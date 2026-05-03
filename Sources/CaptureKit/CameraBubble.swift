@@ -2,7 +2,7 @@
 import Foundation
 import os
 
-private let cameraBubbleLog = Logger(subsystem: "dev.jarvisnote.studio", category: "CameraBubble")
+private let cameraBubbleLog = Logger(subsystem: "dev.kosmonotes.studio", category: "CameraBubble")
 
 // MARK: - CameraBubble
 

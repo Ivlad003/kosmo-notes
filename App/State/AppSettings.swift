@@ -80,6 +80,31 @@ final class AppSettings {
         }
     }
 
+    /// Which backend drives the autonomous agent loop:
+    ///   - `builtin`     → in-process Anthropic Messages API loop with bash/read/write tools (AgentRunner)
+    ///   - `claudeCode`  → spawn `claude -p "<instruction>" --output-format stream-json --verbose` and stream stdout
+    ///   - `codex`       → spawn `codex exec "<instruction>"` and stream stdout
+    ///   - `copilot`     → spawn `gh copilot suggest -t shell "<instruction>"` (one-shot, no streaming loop)
+    ///
+    /// External CLIs run in the agent workspace folder as cwd; their own auth
+    /// (claude.ai login, ChatGPT subscription, GitHub auth) is reused as-is.
+    enum AgentBackendChoice: String, CaseIterable, Identifiable {
+        case builtin
+        case claudeCode
+        case codex
+        case copilot
+
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .builtin:    return "Built-in (Anthropic API)"
+            case .claudeCode: return "Claude Code CLI"
+            case .codex:      return "Codex CLI"
+            case .copilot:    return "GitHub Copilot CLI"
+            }
+        }
+    }
+
     enum RecordingMode: String, CaseIterable, Identifiable {
         case audioOnly
         case audioAndScreen
@@ -199,6 +224,12 @@ final class AppSettings {
         static let agentSystemPrompt = "agentSystemPrompt"
         static let agentMaxIterations = "agentMaxIterations"
         static let agentWorkspaceFolder = "agentWorkspaceFolder"
+        // Backend selector — built-in Anthropic-API loop, or spawn an
+        // external CLI (Claude Code, Codex, GitHub Copilot).
+        static let agentBackend = "agentBackend"
+        static let agentClaudeCodeBin = "agentClaudeCodeBin"
+        static let agentCodexBin = "agentCodexBin"
+        static let agentCopilotBin = "agentCopilotBin"
         // S3 sharing
         static let s3Endpoint = "s3Endpoint"
         static let s3Region = "s3Region"
@@ -285,7 +316,7 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(markdownExportEnabled, forKey: Defaults.markdownExportEnabled) }
     }
     /// Filesystem path where exported `.md` files land. Empty = use the
-    /// default `~/Documents/JarvisNote`. Stored as POSIX path string;
+    /// default `~/Documents/KosmoNotes`. Stored as POSIX path string;
     /// MarkdownExporter creates the dir if missing.
     var markdownExportFolder: String {
         didSet { UserDefaults.standard.set(markdownExportFolder, forKey: Defaults.markdownExportFolder) }
@@ -331,9 +362,26 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(agentMaxIterations, forKey: Defaults.agentMaxIterations) }
     }
     /// Workspace directory the agent's bash/read/write tools are restricted
-    /// to. Empty → `~/Documents/JarvisNote-agent` (auto-created on first run).
+    /// to. Empty → `~/Documents/KosmoNotes-agent` (auto-created on first run).
     var agentWorkspaceFolder: String {
         didSet { UserDefaults.standard.set(agentWorkspaceFolder, forKey: Defaults.agentWorkspaceFolder) }
+    }
+    /// Which backend drives the agent loop. `.builtin` keeps the Anthropic-API
+    /// AgentRunner; the other three spawn an external CLI as a subprocess.
+    var agentBackend: AgentBackendChoice {
+        didSet { UserDefaults.standard.set(agentBackend.rawValue, forKey: Defaults.agentBackend) }
+    }
+    /// Absolute path to the `claude` binary (Claude Code CLI). Empty = use $PATH lookup.
+    var agentClaudeCodeBin: String {
+        didSet { UserDefaults.standard.set(agentClaudeCodeBin, forKey: Defaults.agentClaudeCodeBin) }
+    }
+    /// Absolute path to the `codex` binary (OpenAI Codex CLI). Empty = $PATH lookup.
+    var agentCodexBin: String {
+        didSet { UserDefaults.standard.set(agentCodexBin, forKey: Defaults.agentCodexBin) }
+    }
+    /// Absolute path to the `gh` binary (GitHub CLI w/ Copilot extension). Empty = $PATH lookup.
+    var agentCopilotBin: String {
+        didSet { UserDefaults.standard.set(agentCopilotBin, forKey: Defaults.agentCopilotBin) }
     }
 
     var transcriptionProvider: TranscriptionProviderChoice {
@@ -543,7 +591,7 @@ final class AppSettings {
     /// Settings → Agent. Errs on the side of being explicit about safety
     /// + the read-only-allowlist that BashTool enforces.
     static let defaultAgentSystemPrompt: String = """
-    You are JarvisNote's local assistant agent. The user has spoken a task \
+    You are KosmoNotes's local assistant agent. The user has spoken a task \
     via push-to-talk; you now have a small toolbox to accomplish it on their Mac.
 
     Tools you can call:
@@ -571,7 +619,7 @@ final class AppSettings {
 
     init() {
         // Keychain service must match the bundle identifier.
-        self.keychain = Keychain(service: "dev.jarvisnote.studio")
+        self.keychain = Keychain(service: "dev.kosmonotes.studio")
             .accessibility(.afterFirstUnlockThisDeviceOnly)
             .synchronizable(false)
 
@@ -605,6 +653,11 @@ final class AppSettings {
         let savedIters = UserDefaults.standard.integer(forKey: Defaults.agentMaxIterations)
         self.agentMaxIterations = savedIters > 0 ? savedIters : 12
         self.agentWorkspaceFolder = UserDefaults.standard.string(forKey: Defaults.agentWorkspaceFolder) ?? ""
+        let backendRaw = UserDefaults.standard.string(forKey: Defaults.agentBackend) ?? AgentBackendChoice.builtin.rawValue
+        self.agentBackend = AgentBackendChoice(rawValue: backendRaw) ?? .builtin
+        self.agentClaudeCodeBin = UserDefaults.standard.string(forKey: Defaults.agentClaudeCodeBin) ?? ""
+        self.agentCodexBin = UserDefaults.standard.string(forKey: Defaults.agentCodexBin) ?? ""
+        self.agentCopilotBin = UserDefaults.standard.string(forKey: Defaults.agentCopilotBin) ?? ""
 
         let llmRaw = UserDefaults.standard.string(forKey: Defaults.llmProvider) ?? LLMProviderChoice.anthropic.rawValue
         self.llmProvider = LLMProviderChoice(rawValue: llmRaw) ?? .anthropic

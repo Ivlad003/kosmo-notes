@@ -11,7 +11,7 @@
 #   2. Regenerates Xcode project via xcodegen
 #   3. Clean Release build (CODE_SIGNING_REQUIRED=NO so xcodebuild ignores
 #      certs; we re-codesign with `--sign -` immediately after)
-#   4. Installs to /Applications/JarvisNote.app
+#   4. Installs to /Applications/KosmoNotes.app
 #   5. tccutil reset All <bundle> — clears stale grants for the previous cdhash
 #   6. Re-registers with LaunchServices and launches
 #
@@ -24,8 +24,8 @@ cd "$REPO_ROOT"
 
 PROJECT_YML="$REPO_ROOT/project.yml"
 INFO_PLIST="$REPO_ROOT/App/Info.plist"
-BUNDLE_ID="dev.jarvisnote.studio"
-APP_NAME="JarvisNote.app"
+BUNDLE_ID="dev.kosmonotes.studio"
+APP_NAME="KosmoNotes.app"
 DERIVED="$REPO_ROOT/build/Release"
 APP_DEST="/Applications/$APP_NAME"
 
@@ -53,8 +53,8 @@ xcodegen generate >/dev/null
 
 echo "==> xcodebuild Release (build $NEW_BUILD)"
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
-  -project "$REPO_ROOT/JarvisNote.xcodeproj" \
-  -scheme JarvisNote \
+  -project "$REPO_ROOT/KosmoNotes.xcodeproj" \
+  -scheme KosmoNotes \
   -configuration Release \
   -derivedDataPath "$DERIVED" \
   CODE_SIGNING_REQUIRED=NO \
@@ -98,7 +98,7 @@ echo "==> Launching $APP_NAME"
 open "$APP_DEST"
 sleep 2
 
-PID=$(pgrep -f "$APP_NAME/Contents/MacOS/JarvisNote" | head -1)
+PID=$(pgrep -f "$APP_NAME/Contents/MacOS/KosmoNotes" | head -1)
 if [ -z "$PID" ]; then
   echo "Could not find running PID — launch may have failed" >&2
   exit 1

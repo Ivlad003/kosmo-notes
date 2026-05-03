@@ -3,7 +3,7 @@
 import Foundation
 import os
 
-private let deviceCaptureLog = Logger(subsystem: "dev.jarvisnote.studio", category: "DeviceAudioCapture")
+private let deviceCaptureLog = Logger(subsystem: "dev.kosmonotes.studio", category: "DeviceAudioCapture")
 
 // MARK: - DeviceAudioCapture
 

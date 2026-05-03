@@ -60,7 +60,7 @@ public final class DictationPipeline {
     /// `OSSignposter` is the modern API and is `Sendable`-safe; one shared
     /// instance per process is fine.
     static let signposter = OSSignposter(
-        subsystem: "dev.jarvisnote.dictation",
+        subsystem: "dev.kosmonotes.dictation",
         category: "pipeline"
     )
 

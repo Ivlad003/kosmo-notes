@@ -9,7 +9,7 @@ import os
 /// failed completely silently — start could "succeed" but no frames ever wrote,
 /// and the stop path's `try?` in CaptureSession swallowed the writer-failed
 /// error. The user sees no screen.mp4 with no explanation.
-private let screenRecorderLog = Logger(subsystem: "dev.jarvisnote.studio", category: "ScreenRecorder")
+private let screenRecorderLog = Logger(subsystem: "dev.kosmonotes.studio", category: "ScreenRecorder")
 
 // MARK: - ScreenRecorder
 
@@ -90,7 +90,7 @@ public actor ScreenRecorder: NSObject {
                 onScreenWindowsOnly: true
             )
         } catch {
-            screenRecorderLog.error("ScreenRecorder.start: SCShareableContent failed — \(error.localizedDescription, privacy: .public). Likely Screen Recording TCC denied; reset with `tccutil reset ScreenCapture dev.jarvisnote.studio` and re-grant.")
+            screenRecorderLog.error("ScreenRecorder.start: SCShareableContent failed — \(error.localizedDescription, privacy: .public). Likely Screen Recording TCC denied; reset with `tccutil reset ScreenCapture dev.kosmonotes.studio` and re-grant.")
             throw error
         }
         guard let display = content.displays.first else {

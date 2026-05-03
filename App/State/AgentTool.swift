@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-private let agentToolLog = Logger(subsystem: "dev.jarvisnote.studio", category: "AgentTool")
+private let agentToolLog = Logger(subsystem: "dev.kosmonotes.studio", category: "AgentTool")
 
 // MARK: - AgentTool
 
@@ -29,7 +29,7 @@ public protocol AgentTool: Sendable {
 // MARK: - Built-in tools
 
 /// Read the contents of a UTF-8 text file. Restricted to the workspace
-/// directory the user picked in Settings — tries ~/Documents/JarvisNote-agent
+/// directory the user picked in Settings — tries ~/Documents/KosmoNotes-agent
 /// by default if no workspace is set.
 public struct ReadFileTool: AgentTool {
     public let name = "read_file"
@@ -100,7 +100,7 @@ public struct WriteFileTool: AgentTool {
 /// etc. Anything else is refused. Output is captured and trimmed for context.
 public struct BashTool: AgentTool {
     public let name = "bash"
-    public let description = "Run a shell command and return stdout+stderr. Strict allowlist of safe read-only commands; mutations require explicit user approval at the JarvisNote level."
+    public let description = "Run a shell command and return stdout+stderr. Strict allowlist of safe read-only commands; mutations require explicit user approval at the KosmoNotes level."
     public let inputSchema: [String: Any] = [
         "type": "object",
         "properties": [

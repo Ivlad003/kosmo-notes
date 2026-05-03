@@ -21,6 +21,10 @@ final class AgentConsoleWindowController {
     private weak var window: NSWindow?
 
     /// Open the console (creating it if needed) and bring to front.
+    /// Uses the same NSWindow-from-NSHostingController pattern as the
+    /// Library / Chat windows; no `.floating` level or unusual
+    /// collectionBehavior combinations (those triggered an
+    /// NSInternalInconsistencyException at runtime in HIServices).
     func open(session: AgentSessionState, windowDelegate: NSWindowDelegate) {
         if let existing = window {
             existing.makeKeyAndOrderFront(nil)
@@ -37,8 +41,6 @@ final class AgentConsoleWindowController {
         win.isReleasedWhenClosed = false
         win.setContentSize(NSSize(width: 540, height: 480))
         win.minSize = NSSize(width: 380, height: 280)
-        win.level = .floating
-        win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .moveToActiveSpace]
         win.center()
         win.identifier = NSUserInterfaceItemIdentifier("agentConsole")
         win.delegate = windowDelegate

@@ -10,7 +10,7 @@ struct DatabaseTests {
     // MARK: - Helpers
 
     private func makeDB() throws -> (AppDatabase, URL) {
-        let dir = URL.temporaryDirectory.appendingPathComponent("JarvisNoteDBTests-\(UUID().uuidString)")
+        let dir = URL.temporaryDirectory.appendingPathComponent("KosmoNotesDBTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let dbURL = dir.appendingPathComponent("test.sqlite")
         let db = try AppDatabase(path: dbURL)

@@ -1,8 +1,8 @@
-name: JarvisNote
+name: KosmoNotes
 xcodeVersion: "16.3"
 
 options:
-  bundleIdPrefix: dev.jarvisnote
+  bundleIdPrefix: dev.kosmonotes
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -17,11 +17,11 @@ packages:
   KeyboardShortcuts:
     url: https://github.com/sindresorhus/KeyboardShortcuts
     from: 2.2.0
-  JarvisNoteCore:
+  KosmoNotesCore:
     path: .
 
 targets:
-  JarvisNote:
+  KosmoNotes:
     type: application
     platform: macOS
     deploymentTarget: "14.0"
@@ -34,8 +34,8 @@ targets:
       properties:
         CFBundleName: Jarvis Note
         CFBundleDisplayName: Jarvis Note
-        CFBundleIdentifier: dev.jarvisnote.studio
-        CFBundleVersion: "10"
+        CFBundleIdentifier: dev.kosmonotes.studio
+        CFBundleVersion: "12"
         CFBundleShortVersionString: "0.0.2"
         CFBundlePackageType: APPL
         CFBundleExecutable: "$(EXECUTABLE_NAME)"
@@ -45,10 +45,10 @@ targets:
         NSScreenCaptureUsageDescription: "Jarvis Note records system audio (e.g. participants in a Meet/Zoom call) when system audio is enabled."
         NSCameraUsageDescription: "Jarvis Note shows a floating webcam bubble during screen recording so your face is captured alongside your screen."
     entitlements:
-      path: App/JarvisNote.entitlements
+      path: App/KosmoNotes.entitlements
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.jarvisnote.studio
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kosmonotes.studio
         SWIFT_VERSION: "5.10"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         # Sign with a stable Apple Development identity (free Apple ID auto-cert).
@@ -74,37 +74,37 @@ targets:
         product: KeychainAccess
       - package: KeyboardShortcuts
         product: KeyboardShortcuts
-      - package: JarvisNoteCore
+      - package: KosmoNotesCore
         product: CaptureKit
-      - package: JarvisNoteCore
+      - package: KosmoNotesCore
         product: TranscriptionKit
-      - package: JarvisNoteCore
+      - package: KosmoNotesCore
         product: StorageKit
-      - package: JarvisNoteCore
+      - package: KosmoNotesCore
         product: AIKit
-      - package: JarvisNoteCore
+      - package: KosmoNotesCore
         product: DictationKit
-      - package: JarvisNoteCore
+      - package: KosmoNotesCore
         product: SharingKit
 
-  JarvisNoteUITests:
+  KosmoNotesUITests:
     type: bundle.ui-testing
     platform: macOS
     deploymentTarget: "14.0"
     sources:
       - UITests
     dependencies:
-      - target: JarvisNote
+      - target: KosmoNotes
     settings:
       base:
         SWIFT_VERSION: "5.10"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
-        TEST_TARGET_NAME: JarvisNote
+        TEST_TARGET_NAME: KosmoNotes
         DEVELOPMENT_TEAM: "7CP69K73N6"
         CODE_SIGN_STYLE: "Automatic"
         GENERATE_INFOPLIST_FILE: "YES"
-        PRODUCT_BUNDLE_IDENTIFIER: dev.jarvisnote.studio.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kosmonotes.studio.uitests
     scheme:
       testTargets:
-        - JarvisNoteUITests
+        - KosmoNotesUITests
       gatherCoverageData: false

@@ -5,7 +5,7 @@ import DictationKit
 import TranscriptionKit
 import AIKit
 
-private let dictationLog = Logger(subsystem: "dev.jarvisnote.studio", category: "Dictation")
+private let dictationLog = Logger(subsystem: "dev.kosmonotes.studio", category: "Dictation")
 
 // MARK: - DictationState
 

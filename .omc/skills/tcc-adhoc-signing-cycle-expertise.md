@@ -11,7 +11,7 @@ triggers:
   - tccutil reset
   - SCShareableContent failed
   - cdhash mismatch
-  - JarvisNote screen recording denied
+  - KosmoNotes screen recording denied
 ---
 
 # TCC Ad-hoc Signing Cycle (macOS Sonoma+)
@@ -29,7 +29,7 @@ This is by-design TCC security, not a bug.
 
 ## Why This Matters
 
-In the JarvisNote rebuild loop (`xcodebuild` → install to `/Applications` → `codesign --force --deep --sign -` → relaunch), every iteration changes the cdhash. The user clicks Record → "user declined TCCs" → goes to Settings → the toggle is already ON → does nothing → tries Record → same denial. This loop wastes 30+ minutes per session if you don't recognize what's happening.
+In the KosmoNotes rebuild loop (`xcodebuild` → install to `/Applications` → `codesign --force --deep --sign -` → relaunch), every iteration changes the cdhash. The user clicks Record → "user declined TCCs" → goes to Settings → the toggle is already ON → does nothing → tries Record → same denial. This loop wastes 30+ minutes per session if you don't recognize what's happening.
 
 The trap: the System Settings UI **lies**. It shows the toggle as ON because the bundle ID has *some* entry; it doesn't visualize the cdhash mismatch. There's no UI signal that the entry is bound to a different binary hash. Sometimes the icon in the list shows as a generic placeholder — that's the only visible hint that TCC's metadata doesn't match the running binary.
 
@@ -74,9 +74,9 @@ Get Developer ID Application cert. `spctl -a` accepts it, TCC binds grants stabl
 
 ## Anti-patterns to avoid
 
-- **Changing bundle ID to "fix" TCC**: tried `dev.jarvisnote.studio` → `dev.jarvisnote.studio.app`. Made it worse — TCC's ServicePolicy is even stricter for unknown new identifiers; gets `auth_reason=5` even faster. Revert; the original ID had earned partial trust through earlier interactions.
+- **Changing bundle ID to "fix" TCC**: tried `dev.kosmonotes.studio` → `dev.kosmonotes.studio.app`. Made it worse — TCC's ServicePolicy is even stricter for unknown new identifiers; gets `auth_reason=5` even faster. Revert; the original ID had earned partial trust through earlier interactions.
 
-- **Stale `/Applications` copies**: leaving an old `JarvisNote.app` (or `.OLD-stale-do-not-launch`) in `/Applications` causes LaunchServices to resolve `open` calls to the wrong bundle. Always:
+- **Stale `/Applications` copies**: leaving an old `KosmoNotes.app` (or `.OLD-stale-do-not-launch`) in `/Applications` causes LaunchServices to resolve `open` calls to the wrong bundle. Always:
   ```sh
   lsregister -dump | grep "path:.*App\.app"
   ```

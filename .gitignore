@@ -23,9 +23,11 @@ Thumbs.db
 
 # Recordings / session data — never commit
 recordings/
+KosmoNotes/
 JarvisNote/
 
 # Config secrets
+KosmoNotes.config.json
 JarvisNote.config.json
 *.local.toml
 .env

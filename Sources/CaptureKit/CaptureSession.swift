@@ -2,7 +2,7 @@
 import Foundation
 import os
 
-private let captureSessionLog = Logger(subsystem: "dev.jarvisnote.studio", category: "CaptureSession")
+private let captureSessionLog = Logger(subsystem: "dev.kosmonotes.studio", category: "CaptureSession")
 
 // MARK: - AudioCodecChoice
 

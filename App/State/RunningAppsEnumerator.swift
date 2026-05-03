@@ -36,7 +36,7 @@ enum RunningAppsEnumerator {
             guard let bid = app.bundleIdentifier, !bid.isEmpty else { continue }
             // Skip our own bundle — recording your own audio is meaningless
             // and macOS won't allow the tap on the requesting process anyway.
-            if bid == "dev.jarvisnote.studio" { continue }
+            if bid == "dev.kosmonotes.studio" { continue }
             if seen.contains(bid) { continue }
             seen.insert(bid)
 
