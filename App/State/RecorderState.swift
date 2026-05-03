@@ -102,12 +102,25 @@ final class RecorderState {
     /// it as part of `screen.mp4` — no separate compositing in our writer.
     private let cameraBubbleController = CameraBubbleWindowController()
 
+    /// Optional sync-with-recording RTMP bridge. Wired by AppDelegate when
+    /// the app boots; nil-tolerant so recordings work even if the bridge
+    /// fails to construct. When non-nil, every PCM buffer the capture
+    /// session produces also feeds into `bridge.ingest`, and the stream's
+    /// lifecycle exactly mirrors the recording's.
+    private let audioStreamingBridge: AudioStreamingBridge?
+
     // MARK: - Init
 
-    init(database: AppDatabase, sessionStore: SessionStore, settings: AppSettings) {
+    init(
+        database: AppDatabase,
+        sessionStore: SessionStore,
+        settings: AppSettings,
+        audioStreamingBridge: AudioStreamingBridge? = nil
+    ) {
         self.database = database
         self.sessionStore = sessionStore
         self.settings = settings
+        self.audioStreamingBridge = audioStreamingBridge
     }
 
     // MARK: - Public API
@@ -256,9 +269,26 @@ final class RecorderState {
                 }
             }
 
-            let capture = CaptureSession(config: config)
+            // audioTee + videoTee fan every mic / system PCM buffer and every
+            // screen-video CMSampleBuffer into the RTMP bridge (when wired).
+            // Bridge is nil-tolerant; bridge itself is no-op when
+            // streamingEnabled is off — both layers fail-soft so a
+            // misconfigured RTMP destination never breaks the recording.
+            let teeBridge = audioStreamingBridge
+            let audioTee: (@Sendable (AVAudioPCMBuffer) -> Void)? = teeBridge.map { bridge in
+                { buffer in bridge.ingest(buffer) }
+            }
+            let videoTee: (@Sendable (CMSampleBuffer) -> Void)? = teeBridge.map { bridge in
+                { buffer in bridge.ingestVideo(buffer) }
+            }
+            let capture = CaptureSession(config: config, audioTee: audioTee, videoTee: videoTee)
             try await capture.start()
             self.captureSession = capture
+
+            // Sync RTMP lifecycle to the recording. start() / stop() / teardown
+            // already gate on capture lifecycle, so the bridge's stop() runs
+            // before captureSession is torn down (see teardown()).
+            await teeBridge?.startIfEnabled(settings: settings)
 
             let meter = MicLevelMeter()
             try meter.start { [weak self] level in
@@ -701,6 +731,10 @@ final class RecorderState {
     // MARK: - Helpers
 
     private func teardown() async {
+        // Stop the RTMP stream first so the capture drain task stops feeding
+        // a now-defunct streamer. Idempotent — safe to call when streaming
+        // wasn't enabled for this recording.
+        await audioStreamingBridge?.stop()
         if let session = captureSession {
             _ = try? await session.stop()
             captureSession = nil

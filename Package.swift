@@ -14,11 +14,13 @@ let package = Package(
         .library(name: "DependencyLifecycle", targets: ["DependencyLifecycle"]),
         .library(name: "DictationKit", targets: ["DictationKit"]),
         .library(name: "SharingKit", targets: ["SharingKit"]),
+        .library(name: "StreamingKit", targets: ["StreamingKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", from: "6.29.0"),
         .package(url: "https://github.com/kishikawakatsumi/KeychainAccess.git", from: "4.2.2"),
         .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", exact: "2.2.0"),
+        .package(url: "https://github.com/shogo4405/HaishinKit.swift", from: "1.9.5"),
     ],
     targets: [
         // MARK: - Library targets
@@ -73,6 +75,13 @@ let package = Package(
             dependencies: [],
             path: "Sources/SharingKit"
         ),
+        .target(
+            name: "StreamingKit",
+            dependencies: [
+                .product(name: "HaishinKit", package: "HaishinKit.swift"),
+            ],
+            path: "Sources/StreamingKit"
+        ),
 
         // MARK: - Test targets
 
@@ -113,6 +122,11 @@ let package = Package(
             name: "SharingKitTests",
             dependencies: ["SharingKit"],
             path: "Tests/SharingKitTests"
+        ),
+        .testTarget(
+            name: "StreamingKitTests",
+            dependencies: ["StreamingKit"],
+            path: "Tests/StreamingKitTests"
         ),
     ]
 )

@@ -111,6 +111,16 @@ public actor CaptureSession {
     private enum RecordingState { case idle, recording, paused, stopped }
 
     private let config: Config
+    /// Optional fan-out for every PCM buffer (mic + system) **after** it lands
+    /// in the segment writer. The intended consumer is StreamingKit's
+    /// RTMPStreamer: tee the live audio into an RTMP publish without disturbing
+    /// the disk-recording path. Always called from the same Task.detached that
+    /// drains the AsyncStream — single-consumer, so the closure is free to
+    /// dispatch onto its own actor without re-locking. nil = no tee, no cost.
+    private let audioTee: (@Sendable (AVAudioPCMBuffer) -> Void)?
+    /// Optional fan-out for every screen-video CMSampleBuffer. Wired into
+    /// ScreenRecorder when screen recording is enabled; nil = no tee.
+    private let videoTee: (@Sendable (CMSampleBuffer) -> Void)?
     private var recordingState: RecordingState = .idle
     private var audioEngine: AudioEngine?
     private var segmentWriter: SegmentWriter?
@@ -129,8 +139,14 @@ public actor CaptureSession {
 
     // MARK: - Init
 
-    public init(config: Config) {
+    public init(
+        config: Config,
+        audioTee: (@Sendable (AVAudioPCMBuffer) -> Void)? = nil,
+        videoTee: (@Sendable (CMSampleBuffer) -> Void)? = nil
+    ) {
         self.config = config
+        self.audioTee = audioTee
+        self.videoTee = videoTee
     }
 
     // MARK: - Public API
@@ -195,7 +211,7 @@ public actor CaptureSession {
 
         if config.screenRecordingEnabled, let outputURL = config.screenOutputURL {
             if #available(macOS 12.3, *) {
-                let recorder = ScreenRecorder()
+                let recorder = ScreenRecorder(videoTee: videoTee)
                 let srConfig = ScreenRecorder.Config(
                     outputURL: outputURL,
                     useHEVC: config.videoUseHEVC,
@@ -314,6 +330,7 @@ public actor CaptureSession {
         let stream = try await engine.start()
         // AVAudioPCMBuffer is not Sendable; we assert single-consumer ownership here.
         let box = UncheckedSendableBox(stream)
+        let tee = audioTee
         return Task.detached {
             var bufferIndex = 0
             for await buffer in box.value {
@@ -326,6 +343,7 @@ public actor CaptureSession {
                 } catch {
                     captureSessionLog.error("CaptureSession.mic: writer.append threw — \(error.localizedDescription, privacy: .public) (buffer #\(bufferIndex, privacy: .public))")
                 }
+                tee?(buffer)
             }
             captureSessionLog.info("CaptureSession.mic: stream ended after \(bufferIndex, privacy: .public) buffers")
         }
@@ -335,6 +353,7 @@ public actor CaptureSession {
     private nonisolated func makeSystemTask(box: SCKitBox, writer: SegmentWriter) async throws -> Task<Void, Never> {
         let stream = try await box.capture.start()
         let streamBox = UncheckedSendableBox(stream)
+        let tee = audioTee
         return Task.detached {
             var bufferIndex = 0
             for await buffer in streamBox.value {
@@ -344,6 +363,7 @@ public actor CaptureSession {
                 } catch {
                     captureSessionLog.error("CaptureSession.system(SCKit): writer.append threw — \(error.localizedDescription, privacy: .public)")
                 }
+                tee?(buffer)
             }
             captureSessionLog.info("CaptureSession.system(SCKit): stream ended after \(bufferIndex, privacy: .public) buffers")
         }
@@ -355,6 +375,7 @@ public actor CaptureSession {
     private nonisolated func makeDeviceCaptureTask(capture: DeviceAudioCapture, writer: SegmentWriter) async throws -> Task<Void, Never> {
         let stream = try await capture.start()
         let streamBox = UncheckedSendableBox(stream)
+        let tee = audioTee
         return Task.detached {
             var bufferIndex = 0
             for await buffer in streamBox.value {
@@ -367,6 +388,7 @@ public actor CaptureSession {
                 } catch {
                     captureSessionLog.error("CaptureSession.system(Device): writer.append threw — \(error.localizedDescription, privacy: .public)")
                 }
+                tee?(buffer)
             }
             captureSessionLog.info("CaptureSession.system(Device): stream ended after \(bufferIndex, privacy: .public) buffers")
         }
@@ -376,6 +398,7 @@ public actor CaptureSession {
     private nonisolated func makeTapTask(box: TapBox, bundleIDs: [String], writer: SegmentWriter) async throws -> Task<Void, Never> {
         let stream = try await box.tap.start(bundleIDs: bundleIDs)
         let streamBox = UncheckedSendableBox(stream)
+        let tee = audioTee
         return Task.detached {
             var bufferIndex = 0
             for await buffer in streamBox.value {
@@ -385,6 +408,7 @@ public actor CaptureSession {
                 } catch {
                     captureSessionLog.error("CaptureSession.system(Tap): writer.append threw — \(error.localizedDescription, privacy: .public)")
                 }
+                tee?(buffer)
             }
             captureSessionLog.info("CaptureSession.system(Tap): stream ended after \(bufferIndex, privacy: .public) buffers")
         }

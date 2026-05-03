@@ -34,6 +34,9 @@ struct SettingsView: View {
             SharingTab(settings: settings)
                 .tabItem { Label("Sharing", systemImage: "square.and.arrow.up") }
 
+            StreamingTab(settings: settings)
+                .tabItem { Label("Streaming", systemImage: "dot.radiowaves.left.and.right") }
+
             MarkdownExportTab(settings: settings)
                 .tabItem { Label("Markdown", systemImage: "doc.text") }
 
@@ -806,6 +809,7 @@ private struct HotkeysTab: View {
                 KeyboardShortcuts.Recorder("Meeting record toggle", name: .toggleMeeting)
                 KeyboardShortcuts.Recorder("Voice Note toggle", name: .toggleVoiceNote)
                 KeyboardShortcuts.Recorder("Open Library", name: .openLibrary)
+                KeyboardShortcuts.Recorder("Standalone RTMP stream toggle (mic-only)", name: .toggleStandaloneStreaming)
                 KeyboardShortcuts.Recorder("Dictation (push-to-talk)", name: .dictation)
                 KeyboardShortcuts.Recorder("Push-to-Markdown (hold + speak → save .md)", name: .pushToMarkdown)
                 KeyboardShortcuts.Recorder("Agent (hold + speak → autonomous agent)", name: .agentTrigger)
@@ -895,6 +899,55 @@ private struct SharingTab: View {
                 Text("Works with AWS S3, Cloudflare R2 (region: auto), Backblaze B2, MinIO, RustFS — any S3-compatible endpoint. Sig V4 auth. Recipients open the presigned URL in a browser.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Streaming tab
+
+@available(macOS 14.0, *)
+private struct StreamingTab: View {
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        Form {
+            Section("Live RTMP broadcast") {
+                Toggle("Also broadcast to RTMP while recording", isOn: $settings.streamingEnabled)
+                Text("When ON, every recording also streams audio to the RTMP endpoint below. Phase 2b: audio-only sync-with-recording. Standalone stream-only mode and screen video land in upcoming phases.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Text("RTMP URL")
+                    Spacer()
+                    TextField("rtmp://localhost:1935/live", text: $settings.rtmpURL)
+                        .frame(width: 320)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                APIKeyField(
+                    title: "Stream key",
+                    text: $settings.rtmpStreamKey,
+                    onCommit: { settings.commit(.rtmpStreamKey, value: settings.rtmpStreamKey) }
+                )
+                Text("Stream key is stored in the macOS Keychain under service `dev.kosmonotes.studio`, account `rtmp.stream_key` — same security posture as the other API keys. Press Enter or focus-out to save.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Privacy") {
+                Text("RTMP streaming uploads your microphone (and, in upcoming phases, system audio + screen) in real time to the configured server. Verify you trust the destination before enabling. Toggle off to stop broadcasting on the next recording.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Tested against") {
+                Text("• MediaMTX (`docker run --rm -it -p 1935:1935 bluenviron/mediamtx`)\n• YouTube Live ingest (`rtmp://a.rtmp.youtube.com/live2`)\n• Twitch ingest (`rtmp://live.twitch.tv/app`)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
             }
         }
         .formStyle(.grouped)

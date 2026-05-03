@@ -17,6 +17,9 @@ packages:
   KeyboardShortcuts:
     url: https://github.com/sindresorhus/KeyboardShortcuts
     from: 2.2.0
+  HaishinKit:
+    url: https://github.com/shogo4405/HaishinKit.swift
+    from: 1.9.5
   KosmoNotesCore:
     path: .
 
@@ -86,6 +89,8 @@ targets:
         product: DictationKit
       - package: KosmoNotesCore
         product: SharingKit
+      - package: KosmoNotesCore
+        product: StreamingKit
 
   KosmoNotesUITests:
     type: bundle.ui-testing
