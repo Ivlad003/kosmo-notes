@@ -82,15 +82,9 @@ private struct TranscriptionTab: View {
                 Section("System audio source — per-process tap (macOS 14.4+)") {
                     Toggle("Capture only specific apps (per-process Core Audio Tap)", isOn: $settings.useProcessTap)
                     if settings.useProcessTap {
-                        TextField("Bundle IDs (comma-separated)", text: $settings.processTapBundleIDs, axis: .vertical)
-                            .lineLimit(3, reservesSpace: true)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.caption, design: .monospaced))
-                        Text("Examples: us.zoom.xos, com.microsoft.teams2, com.tinyspeck.slackmacgap, com.google.Chrome, com.apple.Safari. Apps not running at record time are silently skipped. Falls back to whole-system mixdown on tap failure.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        ProcessTapAppPicker(settings: settings)
                     } else {
-                        Text("Off: ScreenCaptureKit captures whole-system audio, including unrelated apps (Spotify, notifications). On: only the bundle IDs you list are recorded — quieter, more private.")
+                        Text("Off: ScreenCaptureKit captures whole-system audio, including unrelated apps (Spotify, notifications). On: only the apps you tick are recorded — quieter, more private. Works in Audio + Screen mode AND Audio-only mode (the system audio toggle above must also be ON).")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -372,6 +366,26 @@ private struct AIProvidersTab: View {
                 ConnectionTestRow(label: "Test connection", state: ollamaTestState) {
                     Task { await testOllama() }
                 }
+            }
+
+            Section("Chat — video frames") {
+                Toggle("Auto-attach baseline frames from session videos", isOn: $settings.chatVideoAutoFramesEnabled)
+                if settings.chatVideoAutoFramesEnabled {
+                    HStack {
+                        Text("Frames per message")
+                        Slider(value: Binding(
+                            get: { Double(settings.chatVideoAutoFramesCount) },
+                            set: { settings.chatVideoAutoFramesCount = Int($0.rounded()) }
+                        ), in: 1...10, step: 1)
+                        Text("\(settings.chatVideoAutoFramesCount)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 30, alignment: .trailing)
+                    }
+                }
+                Text("When ON, every Chat message with an attached session that has screen.mp4 sends N evenly-spaced frames to the LLM as vision context — without needing to type a timestamp. Lets the model 'see' the whole video. Costs more tokens; needs a vision-capable provider (Claude Sonnet, GPT-4o, Gemini). Cap is shared with timestamp-extracted frames at 10 per message.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Cost cap") {
@@ -1089,6 +1103,135 @@ private extension AudioInputDevice {
     /// touching the enumerator directly.
     static func fresh() -> [AudioInputDevice] {
         AudioDeviceEnumerator.inputDevices()
+    }
+}
+
+// MARK: - ProcessTapAppPicker
+
+/// Multi-select picker for the per-process Core Audio Tap. Lists the apps
+/// currently running with a regular UI, lets the user tick the ones whose
+/// audio they want recorded. Selection persists into the comma-separated
+/// `processTapBundleIDs` setting (legacy storage shape — kept so existing
+/// installs don't lose their config).
+@available(macOS 14.0, *)
+private struct ProcessTapAppPicker: View {
+    @Bindable var settings: AppSettings
+    @State private var apps: [RunningAppInfo] = []
+    @State private var refreshTick: Int = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Pick apps whose audio to capture")
+                    .font(.callout)
+                Spacer()
+                Button("Refresh") {
+                    apps = RunningAppsEnumerator.runningApps()
+                    refreshTick &+= 1
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+            }
+
+            if apps.isEmpty {
+                Text("No pickable apps found. Open the app you want to record from (Zoom, Meet, Slack, browser…), then tap Refresh.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(apps) { app in
+                            AppPickerRow(
+                                app: app,
+                                isSelected: selectedSet.contains(app.bundleID),
+                                onToggle: { toggle(app.bundleID) }
+                            )
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .frame(minHeight: 140, maxHeight: 240)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(NSColor.textBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+                )
+                .id(refreshTick)
+            }
+
+            HStack(spacing: 8) {
+                Text("Selected: \(selectedSet.count) app(s)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if !selectedSet.isEmpty {
+                    Button("Clear all") {
+                        settings.processTapBundleIDs = ""
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                }
+            }
+
+            Text("Apps not running at record-time are silently skipped. Tap fails gracefully → falls back to whole-system mixdown so you don't lose the recording. Per-process tap requires the system-audio toggle above to be ON regardless of whether you're in Audio + Screen or Audio-only mode.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .onAppear {
+            apps = RunningAppsEnumerator.runningApps()
+        }
+    }
+
+    /// Parse the comma-separated stored string into a set for fast lookup.
+    private var selectedSet: Set<String> {
+        Set(settings.processTapBundleIDs
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty })
+    }
+
+    /// Flip membership for `bundleID` and re-serialize the set back to the
+    /// stored comma-separated string. Sorted alphabetically so the persisted
+    /// shape is stable (no diff churn on save).
+    private func toggle(_ bundleID: String) {
+        var set = selectedSet
+        if set.contains(bundleID) { set.remove(bundleID) } else { set.insert(bundleID) }
+        settings.processTapBundleIDs = set.sorted().joined(separator: ",")
+    }
+}
+
+@available(macOS 14.0, *)
+private struct AppPickerRow: View {
+    let app: RunningAppInfo
+    let isSelected: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .frame(width: 18)
+            if let url = app.bundleURL {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                    .resizable()
+                    .frame(width: 18, height: 18)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(app.name)
+                    .font(.callout)
+                Text(app.bundleID)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onTapGesture { onToggle() }
     }
 }
 

@@ -249,6 +249,18 @@ public actor CaptureSession {
         recordingState = .recording
     }
 
+    /// Live-mute the mic without tearing down capture. Forwards to the
+    /// underlying AudioEngine's tap-side mute flag — see AudioEngine.setMuted.
+    /// No-op when the session has no mic track (systemAudioOnly recordings).
+    public func setMicMuted(_ muted: Bool) async {
+        await audioEngine?.setMuted(muted)
+    }
+
+    /// Current mic mute state. False when capture isn't running yet.
+    public var isMicMuted: Bool {
+        get async { await audioEngine?.isMuted ?? false }
+    }
+
     @discardableResult
     public func stop() async throws -> [URL] {
         guard recordingState == .recording || recordingState == .paused else { return [] }

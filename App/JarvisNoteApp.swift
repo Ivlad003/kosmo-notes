@@ -180,6 +180,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         voiceNoteItem.identifier = NSUserInterfaceItemIdentifier("voiceNoteToggle")
         menu.addItem(voiceNoteItem)
 
+        // Live mic mute — only meaningful while a recording is active.
+        // menuNeedsUpdate enables / disables it based on RecorderState.status
+        // and toggles the title between "Mute mic" and "Unmute mic".
+        let muteItem = NSMenuItem(title: "Mute mic",
+                                  action: #selector(toggleMicMuteAction),
+                                  keyEquivalent: "m")
+        muteItem.keyEquivalentModifierMask = [.command, .shift]
+        muteItem.target = self
+        muteItem.identifier = NSUserInterfaceItemIdentifier("toggleMicMute")
+        menu.addItem(muteItem)
+
         menu.addItem(.separator())
 
         let openLastSessionItem = NSMenuItem(title: "Open last session in Finder",
@@ -390,6 +401,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pb.setString(line, forType: .string)
     }
 
+    @MainActor
+    @objc private func toggleMicMuteAction() {
+        guard #available(macOS 14.0, *), let recorder = recorderState else { return }
+        Task { @MainActor in await recorder.toggleMicMute() }
+    }
+
     @objc private func recordToggleAction() {
         guard #available(macOS 14.0, *) else {
             let alert = NSAlert()
@@ -586,7 +603,17 @@ extension AppDelegate: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard let recordItem = menu.items.first(where: { $0.identifier?.rawValue == "recordToggle" }) else { return }
         let voiceNoteItem = menu.items.first(where: { $0.identifier?.rawValue == "voiceNoteToggle" })
+        let muteItem = menu.items.first(where: { $0.identifier?.rawValue == "toggleMicMute" })
         guard let openLastItem = menu.items.first(where: { $0.identifier?.rawValue == "openLastSession" }) else { return }
+
+        // Mute item: only meaningful while a recording is in flight.
+        if #available(macOS 14.0, *), let recorder = recorderState, case .recording = recorder.status {
+            muteItem?.isEnabled = true
+            muteItem?.title = recorder.micMuted ? "Unmute mic" : "Mute mic"
+        } else {
+            muteItem?.isEnabled = false
+            muteItem?.title = "Mute mic"
+        }
 
         if #available(macOS 14.0, *), let recorder = recorderState {
             switch recorder.status {

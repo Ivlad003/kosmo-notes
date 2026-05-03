@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import Foundation
 import Observation
 import AIKit
@@ -114,13 +115,28 @@ final class ChatState {
         }
 
         // Extract vision frames for any timestamp mentions in the user message.
-        let (imageParts, frameFooter) = await extractFramesForTimestamps(in: text)
+        let (timestampImages, timestampFooter) = await extractFramesForTimestamps(in: text)
+
+        // Optional: auto-sample N evenly-spaced baseline frames so the LLM
+        // sees the whole video, not just the moments the user explicitly
+        // pointed at. Off by default; combined cap is 10 frames per message.
+        let (autoImages, autoFooter): ([ChatMessage.Part], String)
+        if settings.chatVideoAutoFramesEnabled {
+            let remainingBudget = max(0, 10 - timestampImages.count)
+            (autoImages, autoFooter) = await extractAutoSampledFrames(maxFrames: remainingBudget)
+        } else {
+            (autoImages, autoFooter) = ([], "")
+        }
 
         // Build the user message: text + any image parts + optional footer.
         var parts: [ChatMessage.Part] = [.text(text)]
-        parts.append(contentsOf: imageParts)
-        if !frameFooter.isEmpty {
-            parts.append(.text(frameFooter))
+        parts.append(contentsOf: timestampImages)
+        parts.append(contentsOf: autoImages)
+        let combinedFooter = [timestampFooter, autoFooter]
+            .filter { !$0.isEmpty }
+            .joined(separator: "")
+        if !combinedFooter.isEmpty {
+            parts.append(.text(combinedFooter))
         }
         messages.append(ChatMessage(role: .user, parts: parts))
 
@@ -259,6 +275,71 @@ final class ChatState {
     }
 
     // MARK: - Private: vision frame extraction
+
+    /// Sample `maxFrames` evenly-spaced baseline frames from each attached
+    /// session that has a screen.mp4 sidecar. Distributed evenly across the
+    /// video duration so the LLM gets a thumbnail-strip view of the whole
+    /// session, not just the timestamp the user named.
+    /// Capped at `maxFrames` total across all sessions (round-robin pick).
+    private func extractAutoSampledFrames(maxFrames: Int) async -> ([ChatMessage.Part], String) {
+        guard maxFrames > 0 else { return ([], "") }
+        let requested = max(1, settings.chatVideoAutoFramesCount)
+        let cap = min(requested, maxFrames)
+
+        // Resolve every attached session's screen.mp4 in parallel.
+        struct VideoTarget: Sendable {
+            let id: String
+            let url: URL
+            let duration: Double
+        }
+        let targets: [VideoTarget] = await withTaskGroup(of: VideoTarget?.self) { group in
+            for attachment in attachedSessions {
+                let id = attachment.record.id
+                group.addTask {
+                    let dir = await self.sessionStore.sessionDir(for: id)
+                    let videoURL = dir.appendingPathComponent("screen.mp4")
+                    guard FileManager.default.fileExists(atPath: videoURL.path) else { return nil }
+                    let asset = AVURLAsset(url: videoURL)
+                    let dur = (try? await asset.load(.duration)) ?? .zero
+                    let secs = CMTimeGetSeconds(dur)
+                    guard secs.isFinite, secs > 1 else { return nil }
+                    return VideoTarget(id: id, url: videoURL, duration: secs)
+                }
+            }
+            var out: [VideoTarget] = []
+            for await t in group { if let t { out.append(t) } }
+            return out
+        }
+        guard !targets.isEmpty else { return ([], "") }
+
+        // Build the per-session sample plan: evenly-spaced offsets that skip
+        // the very start / very end (first/last 5% are often blank).
+        var imageParts: [ChatMessage.Part] = []
+        var footerLines: [String] = []
+        let perSession = max(1, cap / targets.count)
+        outer: for target in targets {
+            let n = perSession
+            for k in 0..<n {
+                guard imageParts.count < cap else { break outer }
+                // (k+1) / (n+1) places samples uniformly inside (0, 1)
+                let frac = Double(k + 1) / Double(n + 1)
+                let safeStart = target.duration * 0.05
+                let safeEnd = target.duration * 0.95
+                let seconds = safeStart + (safeEnd - safeStart) * frac
+                do {
+                    let jpeg = try await FrameExtractor.extractFrame(at: seconds, from: target.url)
+                    imageParts.append(.image(jpegData: jpeg, mimeType: "image/jpeg"))
+                    footerLines.append("auto-frame from \(String(target.id.prefix(8))) at \(formatTimestamp(seconds))")
+                } catch {
+                    continue
+                }
+            }
+        }
+
+        guard !imageParts.isEmpty else { return ([], "") }
+        let footer = "\n\n[Auto-attached: \(footerLines.joined(separator: ", "))]"
+        return (imageParts, footer)
+    }
 
     /// Parse timestamp patterns from `text`, extract ≤3 frames from attached
     /// sessions' screen.mp4, and return the image parts + a human-readable footer.

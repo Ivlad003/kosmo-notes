@@ -31,6 +31,25 @@ private final class TapBufferCounter: @unchecked Sendable {
     }
 }
 
+/// Real-time-safe mute flag. Read inside the tap closure (runs on the audio
+/// render thread) to decide whether to drop incoming PCM buffers; written
+/// from the actor (or any thread, really) when the user toggles mute.
+/// `NSLock` here is sub-microsecond and the tap callback runs at ~10 Hz, so
+/// contention is non-existent.
+final class TapMuteFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _muted: Bool = false
+
+    var isMuted: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _muted
+    }
+
+    func setMuted(_ muted: Bool) {
+        lock.lock(); _muted = muted; lock.unlock()
+    }
+}
+
 // MARK: - AudioEngine
 
 /// Captures microphone input via AVAudioEngine.
@@ -56,6 +75,11 @@ public actor AudioEngine {
     private let config: Config
     private var engine: AVAudioEngine?
     private var continuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
+    /// Shared with the tap closure. Flip this to drop mic samples mid-recording
+    /// (live mute) without tearing down the engine — the tap closure reads it
+    /// every callback and silently skips yielding when true. The audio file
+    /// keeps growing during a mute (silent samples), so timestamps stay aligned.
+    private let muteFlag = TapMuteFlag()
 
     // MARK: Init
 
@@ -166,8 +190,13 @@ public actor AudioEngine {
         // The closure runs on the audio render thread — keep it real-time-safe:
         // no actor hops, no allocations beyond the converted PCM buffer, and
         // os.Logger is lock-free at the .debug level.
+        let mute = muteFlag
         inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { buffer, _ in
+            // Live mic-mute: drop the buffer entirely so the AsyncStream stays
+            // silent without tearing down the engine. counter still increments
+            // so the "buffers received" diagnostic doesn't lie.
             counter.increment(frames: Int(buffer.frameLength))
+            if mute.isMuted { return }
             let bufferFormat = buffer.format
             if bufferFormat.sampleRate == targetFormat.sampleRate
                 && bufferFormat.channelCount == targetFormat.channelCount
@@ -225,6 +254,21 @@ public actor AudioEngine {
         audioEngineLog.info("AudioEngine.start: first buffers received — count=\(snap.count, privacy: .public) totalFrames=\(snap.totalFrames, privacy: .public)")
 
         return stream
+    }
+
+    /// Live-toggle mic mute. When true, the tap callback drops every PCM
+    /// buffer it receives, so the segment writer keeps growing with whatever
+    /// the system is feeding (silence) but the user's voice goes nowhere.
+    /// The engine itself stays running — toggling back to false resumes
+    /// capture instantly without re-arming permissions / re-binding AUHAL.
+    public func setMuted(_ muted: Bool) {
+        muteFlag.setMuted(muted)
+    }
+
+    /// Snapshot of the current mute state. Useful for UI sync after a
+    /// pause/resume that may have lost client-side state.
+    public var isMuted: Bool {
+        muteFlag.isMuted
     }
 
     /// Stop mic capture, remove tap, finish the stream.

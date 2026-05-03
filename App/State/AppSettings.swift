@@ -177,6 +177,12 @@ final class AppSettings {
         static let cameraBubblePositionX = "cameraBubblePositionX"
         static let cameraBubblePositionY = "cameraBubblePositionY"
         static let cameraBubbleSize = "cameraBubbleSize"
+        // Chat auto-frame sampling — when on, every chat message that
+        // has an attached session with screen.mp4 gets N evenly-spaced
+        // baseline frames added as vision context (in addition to any
+        // timestamp-extracted frames).
+        static let chatVideoAutoFramesEnabled = "chatVideoAutoFramesEnabled"
+        static let chatVideoAutoFramesCount = "chatVideoAutoFramesCount"
         // S3 sharing
         static let s3Endpoint = "s3Endpoint"
         static let s3Region = "s3Region"
@@ -235,6 +241,22 @@ final class AppSettings {
     /// clamped to [120, 500] in the window controller.
     var cameraBubbleSize: Double {
         didSet { UserDefaults.standard.set(cameraBubbleSize, forKey: Defaults.cameraBubbleSize) }
+    }
+
+    /// When ON, every Chat message with an attached session that has
+    /// screen.mp4 gets N evenly-spaced baseline frames automatically
+    /// added as vision context — without the user needing to type a
+    /// timestamp. Lets the LLM "see" the whole video instead of just
+    /// the moments the user explicitly asked about. Off by default
+    /// (opt-in: more tokens cost more $).
+    var chatVideoAutoFramesEnabled: Bool {
+        didSet { UserDefaults.standard.set(chatVideoAutoFramesEnabled, forKey: Defaults.chatVideoAutoFramesEnabled) }
+    }
+    /// Number of evenly-spaced baseline frames to sample. Clamped 1–10
+    /// in the UI; combined with timestamp-extracted frames the total is
+    /// hard-capped (in ChatState) to keep request size reasonable.
+    var chatVideoAutoFramesCount: Int {
+        didSet { UserDefaults.standard.set(chatVideoAutoFramesCount, forKey: Defaults.chatVideoAutoFramesCount) }
     }
 
     var transcriptionProvider: TranscriptionProviderChoice {
@@ -425,6 +447,10 @@ final class AppSettings {
         self.cameraBubblePosition = CGPoint(x: cbX, y: cbY)
         let savedSize = UserDefaults.standard.double(forKey: Defaults.cameraBubbleSize)
         self.cameraBubbleSize = savedSize > 0 ? savedSize : 200
+
+        self.chatVideoAutoFramesEnabled = (UserDefaults.standard.object(forKey: Defaults.chatVideoAutoFramesEnabled) as? Bool) ?? false
+        let savedFrames = UserDefaults.standard.integer(forKey: Defaults.chatVideoAutoFramesCount)
+        self.chatVideoAutoFramesCount = savedFrames > 0 ? savedFrames : 4
 
         let llmRaw = UserDefaults.standard.string(forKey: Defaults.llmProvider) ?? LLMProviderChoice.anthropic.rawValue
         self.llmProvider = LLMProviderChoice(rawValue: llmRaw) ?? .anthropic

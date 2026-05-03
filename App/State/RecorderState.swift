@@ -73,6 +73,11 @@ final class RecorderState {
     var status: Status = .idle
     /// 0..1 RMS-based level. Updated only while `status == .recording`.
     var micLevel: Double = 0
+    /// Live mute toggle for the mic during a recording. UI binds to this so
+    /// the menu item / popover button reflects the current state. Setter
+    /// forwards into the actor stack so the tap closure starts dropping
+    /// buffers immediately. Resets to false on every new recording.
+    var micMuted: Bool = false
     /// Set after a successful AI summary write; nil when no summary exists yet.
     var lastSummaryURL: URL? = nil
 
@@ -107,6 +112,15 @@ final class RecorderState {
     /// Tracks the mode of the active session so the post-process pipeline
     /// can pick the right prompt (Meeting summary vs. Voice Note).
     private var activeMode: SessionMode = .meeting
+
+    /// Live-toggle mic mute during an in-flight recording. No-op when
+    /// nothing is recording. UI calls this from the menu item / popover.
+    func toggleMicMute() async {
+        guard case .recording = status else { return }
+        let next = !micMuted
+        await captureSession?.setMicMuted(next)
+        micMuted = next
+    }
 
     /// Convenience: start if idle/done, stop if recording. Ignored while
     /// transcribing.
@@ -255,6 +269,9 @@ final class RecorderState {
             // recording. Released in stop() / teardown().
             sleepAssertion.hold()
 
+            // Reset live-mute on every new session so a previous mute doesn't
+            // accidentally swallow the start of the next recording.
+            self.micMuted = false
             self.status = .recording(sessionId: session.id)
         } catch {
             await teardown()
