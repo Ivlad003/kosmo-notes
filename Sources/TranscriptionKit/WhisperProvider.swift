@@ -9,8 +9,13 @@ private let whisperLog = Logger(subsystem: "dev.kosmonotes.studio", category: "W
 /// (`POST https://api.openai.com/v1/audio/transcriptions`).
 ///
 /// Whisper accepts a single audio file (m4a, mp3, mp4, mpeg, mpga, wav, webm),
-/// returns the full transcript as JSON. We always request `verbose_json` so
-/// we get per-segment start/end timestamps.
+/// returns the full transcript as JSON. For `whisper-1` we request
+/// `verbose_json` to get per-segment start/end timestamps; the
+/// `gpt-4o-transcribe` family rejects `verbose_json` (HTTP 400 with
+/// `unsupported_value` on `response_format`) and only supports `json` /
+/// `text`, so we fall back to `json` and synthesize a single full-text
+/// segment in the parser. Trade-off: gpt-4o models have higher accuracy
+/// but no segment-level timing, so transcripts lose `[mm:ss]` markers.
 ///
 /// File-size cap: Whisper rejects payloads >25 MB. For longer recordings,
 /// `RecorderState` (or a future helper) should split into chunks before
@@ -117,8 +122,13 @@ public final class WhisperProvider: BatchTranscriptionProvider, Sendable {
         var body = Data()
         // model
         appendField(name: "model", value: model, boundary: boundary, into: &body)
-        // response_format
-        appendField(name: "response_format", value: "verbose_json", boundary: boundary, into: &body)
+        // response_format — verbose_json gives per-segment timing on `whisper-1`
+        // (legacy Large-v2). The newer `gpt-4o-transcribe` family rejects
+        // verbose_json with HTTP 400 (response_format = unsupported_value), so
+        // fall back to plain `json` for any model whose name doesn't start with
+        // "whisper". `parse(...)` handles both response shapes.
+        let responseFormat = model.hasPrefix("whisper") ? "verbose_json" : "json"
+        appendField(name: "response_format", value: responseFormat, boundary: boundary, into: &body)
         // language (optional — omit for auto-detect)
         if let language = config.language {
             appendField(name: "language", value: language, boundary: boundary, into: &body)
