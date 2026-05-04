@@ -50,6 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and SubscriptionID is itself macOS-14-gated.
     private var libraryDoubleTapSub: Any?
     private var libraryDoubleTapObserver: NSObjectProtocol?
+    /// NSPopover hosting PopoverView. Created once in bootstrapAppState (after
+    /// migration) and toggled on each left-click of the status-bar button.
+    private var popoverController: NSPopover?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // AC-6: minimum-OS gate. Deployment target is 14.0+ (LSMinimumSystemVersion
@@ -177,6 +180,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.imagePosition = .imageLeading
         item.length = NSStatusItem.variableLength
         item.isVisible = true
+        // Left-click → popover; right-click → full menu. The menu is NOT
+        // assigned to the status item here — assigning it would suppress the
+        // button action entirely. Instead, statusItemButtonClicked temporarily
+        // assigns the menu on right-click events only.
+        item.button?.target = self
+        item.button?.action = #selector(statusItemButtonClicked(_:))
+        _ = item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         self.statusItem = item
     }
 
@@ -272,8 +282,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Leave target = nil so the responder chain reaches NSApp.terminate(_:).
         menu.addItem(quitItem)
 
-        statusItem?.menu = menu
+        // Don't assign to statusItem?.menu — that would suppress the button
+        // action and break the left-click → popover path. The menu is stored
+        // here and assigned temporarily on right-click only (see
+        // statusItemButtonClicked).
         self.menu = menu
+    }
+
+    // MARK: - Popover
+
+    /// Routes status-bar clicks: left-click toggles the SwiftUI popover;
+    /// right-click surfaces the full NSMenu by temporarily assigning it.
+    @objc private func statusItemButtonClicked(_ sender: NSStatusBarButton) {
+        guard let event = NSApp.currentEvent else { return }
+        if event.type == .rightMouseUp {
+            statusItem?.menu = menu
+            statusItem?.button?.performClick(nil)
+            // Defer clearing the menu assignment so it takes effect after
+            // NSMenu presents; clearing on the same runloop turn would prevent
+            // the menu from showing.
+            DispatchQueue.main.async { [weak self] in self?.statusItem?.menu = nil }
+        } else {
+            togglePopover(sender)
+        }
+    }
+
+    @MainActor
+    private func togglePopover(_ sender: Any?) {
+        guard let button = statusItem?.button, let pop = popoverController else { return }
+        if pop.isShown {
+            pop.close()
+        } else {
+            pop.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+    }
+
+    /// Build the NSPopover that hosts PopoverView. Called once after migration
+    /// completes so RecorderState is guaranteed to exist when the view renders.
+    @available(macOS 14.0, *)
+    private func bootstrapPopover(recorder: RecorderState) {
+        let hosting = NSHostingController(rootView: PopoverView(recorder: recorder))
+        let pop = NSPopover()
+        pop.contentViewController = hosting
+        // .transient closes the popover when the user clicks elsewhere.
+        pop.behavior = .transient
+        self.popoverController = pop
     }
 
     // MARK: - App state bootstrap (macOS 14+)
@@ -357,6 +410,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 audioStreamingBridge: streamingBridge
             )
             self.recorderHolder = recorder
+            bootstrapPopover(recorder: recorder)
 
             // Standalone "stream-only" path — mic-only, no recording, no disk.
             // Toggled via ⌘⇧S. Shares the same bridge as the sync-with-

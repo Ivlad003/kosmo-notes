@@ -83,6 +83,26 @@ final class RecorderState {
     var micMuted: Bool = false
     /// Set after a successful AI summary write; nil when no summary exists yet.
     var lastSummaryURL: URL? = nil
+    /// Accumulates Deepgram final segments line-by-line during a recording.
+    /// Always empty in v1.0 — CaptureSession has no PCM tee yet, so
+    /// ReconnectingSession is not wired into the record path. Populated in
+    /// v1.1 alongside the streaming branch.
+    var liveTranscript: String = ""
+
+    // Convenience accessors for PopoverView — derived from `status` so
+    // @Observable automatically propagates changes to any observing view.
+    var isRecording: Bool {
+        if case .recording = status { return true }
+        return false
+    }
+
+    /// Non-nil while a recording or transcription is in flight.
+    var currentSessionId: String? {
+        switch status {
+        case .recording(let sid), .transcribing(let sid): return sid
+        default: return nil
+        }
+    }
 
     // MARK: - Dependencies
 
@@ -160,6 +180,7 @@ final class RecorderState {
     func start(mode: SessionMode) async {
         // Idempotent: only proceed when not already mid-session.
         guard !status.isBusy else { return }
+        liveTranscript = ""
 
         // Pre-flight: API key for the configured transcription provider. The
         // selection in Settings → Transcription was previously decorative — the
@@ -562,6 +583,7 @@ final class RecorderState {
     // MARK: - Helpers
 
     private func teardown() async {
+        liveTranscript = ""
         // Stop the RTMP stream first so the capture drain task stops feeding
         // a now-defunct streamer. Idempotent — safe to call when streaming
         // wasn't enabled for this recording.
