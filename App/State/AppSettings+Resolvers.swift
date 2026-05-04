@@ -36,7 +36,9 @@ extension AppSettings {
             deepgramAPIKey: deepgramApiKey,
             geminiAPIKey: geminiApiKey,
             openrouterAPIKey: openrouterApiKey,
-            openrouterModel: openrouterModel
+            openrouterModel: openrouterModel,
+            whisperKitVariant: whisperKitModel,
+            whisperKitModelsRoot: AppSettings.whisperKitModelsRoot()
         )
     }
 
@@ -64,6 +66,7 @@ extension AppSettings {
         case .openaiWhisper:   return .openaiWhisper
         case .gemini:          return .gemini
         case .openrouterAudio: return .openrouterAudio
+        case .whisperKit:      return .whisperKit
         }
     }
 

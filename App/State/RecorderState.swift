@@ -2,6 +2,7 @@
 import AppKit
 import Foundation
 import Observation
+import os
 import AIKit
 import CaptureKit
 import StorageKit
@@ -99,6 +100,13 @@ final class RecorderState {
 
     private var captureSession: CaptureSession?
     private var micMeter: MicLevelMeter?
+    /// Periodic mic-silence watchdog. Logs current level every 5 s and
+    /// emits a louder warning once the level has stayed near zero for
+    /// 10 s, surfacing routing issues (Bluetooth HFP mic, wrong default
+    /// input device) that otherwise look like "voice didn't record".
+    private var micWatchdogTask: Task<Void, Never>?
+    /// os_log channel surfaced in Settings → Logs.
+    fileprivate static let recorderLog = Logger(subsystem: "dev.kosmonotes.studio", category: "RecorderState")
     private let sleepAssertion = SleepAssertion()
     /// Floating webcam bubble window; opened only when both Audio + Screen
     /// mode AND `cameraBubbleEnabled` are on, AND camera permission was
@@ -184,6 +192,22 @@ final class RecorderState {
                 status = .failed(message: "Set your Gemini API key in Settings → Transcription before recording.")
                 return
             }
+        case .whisperKit:
+            // Local provider: no API key, but the chosen variant must be both
+            // picked and on disk. We don't auto-download here — the Settings
+            // tab has a clearly-labelled Download button so the user knows a
+            // multi-GB transfer is starting.
+            let variant = settings.whisperKitModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if variant.isEmpty {
+                status = .failed(message: "Pick a WhisperKit model in Settings → Transcription → Local first, then press Download.")
+                return
+            }
+            let manager = WhisperKitModelManager(rootDir: AppSettings.whisperKitModelsRoot())
+            let downloaded = await manager.isDownloaded(variant)
+            if !downloaded {
+                status = .failed(message: "WhisperKit model '\(variant)' isn't downloaded yet. Open Settings → Transcription and press Download.")
+                return
+            }
         case .openrouterAudio:
             let orKey = settings.openrouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
             if orKey.isEmpty {
@@ -204,6 +228,14 @@ final class RecorderState {
 
         let screenEnabled = settings.recordingMode == .audioAndScreen
         let systemAudioEnabled = settings.systemAudioEnabled
+
+        // Diagnostic: snapshot config + active audio devices before the
+        // recording graph is built. Lets the Logs tab show exactly which mic /
+        // output / loopback was in effect at the start of a session — critical
+        // when "voice didn't record" is reported, since macOS quietly switches
+        // the default input device when Bluetooth headsets engage HFP profile.
+        settings.logSnapshot(context: "before-recording")
+        AudioDevicesSnapshot.log(context: "before-recording")
 
         // Screen Recording permission is intentionally NOT pre-flighted here.
         // CGPreflightScreenCaptureAccess() reads TCC, which keys grants by the
@@ -303,6 +335,36 @@ final class RecorderState {
             }
             self.micMeter = meter
 
+            // Mic-silence watchdog: every 5 s, log the current mic level so
+            // the user can verify in Settings → Logs that the mic actually
+            // captured sound. If the level stays at floor for >10 s after
+            // recording starts, log a louder warning — most "my voice didn't
+            // get recorded" reports are this exact failure mode (e.g. macOS
+            // routed input to a dead Bluetooth HFP mic).
+            let watchdogStart = Date()
+            self.micWatchdogTask = Task { @MainActor [weak self] in
+                var consecutiveSilent = 0
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(5))
+                    if Task.isCancelled { break }
+                    guard let self else { break }
+                    let level = self.micLevel
+                    let elapsed = Int(Date().timeIntervalSince(watchdogStart))
+                    let muted = self.micMuted
+                    Self.recorderLog.info("mic watchdog t=\(elapsed)s level=\(String(format: "%.4f", level), privacy: .public) muted=\(muted, privacy: .public)")
+                    // Below ~0.002 RMS == effectively silence on every mic
+                    // we've measured. Fire once per session at 10s mark.
+                    if level < 0.002 && !muted {
+                        consecutiveSilent += 1
+                        if consecutiveSilent == 2 {
+                            Self.recorderLog.error("mic watchdog: level near zero for \(elapsed)s — voice may not be reaching the mic. Check System Settings → Sound → Input, and AudioDevices snapshot above.")
+                        }
+                    } else {
+                        consecutiveSilent = 0
+                    }
+                }
+            }
+
             // Prevent the system from idle-sleeping for the lifetime of the
             // recording. Released in stop() / teardown().
             sleepAssertion.hold()
@@ -332,6 +394,8 @@ final class RecorderState {
         micMeter?.stop()
         micMeter = nil
         micLevel = 0
+        micWatchdogTask?.cancel()
+        micWatchdogTask = nil
         sleepAssertion.release()
         await cameraBubbleController.hide()
 
@@ -573,6 +637,8 @@ final class RecorderState {
         micMeter?.stop()
         micMeter = nil
         micLevel = 0
+        micWatchdogTask?.cancel()
+        micWatchdogTask = nil
         sleepAssertion.release()
         await cameraBubbleController.hide()
     }

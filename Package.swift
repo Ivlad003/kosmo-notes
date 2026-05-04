@@ -21,6 +21,11 @@ let package = Package(
         .package(url: "https://github.com/kishikawakatsumi/KeychainAccess.git", from: "4.2.2"),
         .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", exact: "2.2.0"),
         .package(url: "https://github.com/shogo4405/HaishinKit.swift", from: "1.9.5"),
+        // WhisperKit — Argmax's CoreML port of OpenAI Whisper. Used by the
+        // optional on-device transcription path. Models are downloaded at
+        // runtime from HuggingFace into Application Support, NOT bundled —
+        // keeps the .app under the 15 MB target.
+        .package(url: "https://github.com/argmaxinc/WhisperKit", from: "0.9.0"),
     ],
     targets: [
         // MARK: - Library targets
@@ -37,6 +42,7 @@ let package = Package(
             dependencies: [
                 "StorageKit",
                 "AIKit",
+                .product(name: "WhisperKit", package: "WhisperKit"),
             ],
             path: "Sources/TranscriptionKit"
         ),

@@ -271,6 +271,18 @@ private struct SessionDetailView: View {
                 Spacer()
 
                 Menu {
+                    Button("Transcript text") { copyTranscript() }
+                        .disabled(segments.isEmpty)
+                    Button("Summary text") { copySummary() }
+                    Button("Audio file path") { copyAudioPath() }
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .menuStyle(.button)
+                .help("Copy transcript / summary / file path to clipboard for pasting into Slack, Telegram, etc.")
+
+                Menu {
                     Button("Markdown bundle (.md)") { Task { await runExport(format: .markdown) } }
                     Button("Plain transcript (.txt)") { Task { await runExport(format: .plainText) } }
                     Button("Audio file (.m4a)") { Task { await runExport(format: .audio) } }
@@ -283,15 +295,16 @@ private struct SessionDetailView: View {
                 .buttonStyle(.borderless)
                 .menuStyle(.button)
 
-                if state.settings != nil {
-                    Button {
-                        Task { await runShare() }
-                    } label: {
-                        Label("Share", systemImage: "link")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Upload to S3 and copy a presigned link")
+                Button {
+                    Task { await runShare() }
+                } label: {
+                    Label("Share to S3", systemImage: "link")
                 }
+                .buttonStyle(.borderless)
+                .disabled(!isS3Configured)
+                .help(isS3Configured
+                      ? "Upload audio + summary + transcript to S3 and copy presigned download links"
+                      : "S3 sharing is not configured. Open Settings → Sharing to set bucket, region, endpoint, and access keys.")
 
                 Button {
                     openInFinder()
@@ -389,6 +402,58 @@ private struct SessionDetailView: View {
         Task {
             let audioURL = await state.audioFileURL(for: session.id)
             NSWorkspace.shared.activateFileViewerSelecting([audioURL])
+        }
+    }
+
+    // MARK: - S3 availability
+
+    /// True when Settings → Sharing is filled in enough that ShareCoordinator
+    /// will succeed. `runShare` checks again at run time, but the disabled
+    /// state on the toolbar gives the user a tooltip up front.
+    private var isS3Configured: Bool {
+        guard let s = state.settings else { return false }
+        return !s.s3Endpoint.trimmingCharacters(in: .whitespaces).isEmpty
+            && !s.s3Bucket.trimmingCharacters(in: .whitespaces).isEmpty
+            && !s.s3AccessKey.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    // MARK: - Copy actions
+    //
+    // The Copy menu lets the user grab transcript / summary / audio path into
+    // NSPasteboard so they can paste into Slack / Telegram / a bug report
+    // without going through Export → save → re-attach.
+
+    private func copyTranscript() {
+        let text = segments.map(\.text).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+    }
+
+    private func copySummary() {
+        Task {
+            let dir = await state.audioFileURL(for: session.id).deletingLastPathComponent()
+            let summaryURL = dir.appendingPathComponent("summary.md")
+            guard let text = try? String(contentsOf: summaryURL, encoding: .utf8),
+                  !text.isEmpty else { return }
+            await MainActor.run {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(text, forType: .string)
+            }
+        }
+    }
+
+    private func copyAudioPath() {
+        Task {
+            let url = await state.audioFileURL(for: session.id)
+            await MainActor.run {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(url.path, forType: .string)
+            }
         }
     }
 

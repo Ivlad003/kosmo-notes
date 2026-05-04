@@ -81,6 +81,41 @@ Stack invariant updates:
 - The "no screen recording" line in §"Stack invariants" is REMOVED.
 - Recording mode is configurable in Settings → Transcription; audio-only stays the default.
 
+### 2026-05-04: WhisperKit reinstated (local transcription)
+
+Original design forbade on-device transcription for v1.0 (cloud-only invariant).
+The user reversed that on 2026-05-04 after using v0.0.2 — the cost + privacy
+case for "I want to dictate without sending audio anywhere" became compelling
+enough to revisit.
+
+What changed:
+- `Sources/TranscriptionKit/WhisperKitProvider.swift` — `BatchTranscriptionProvider`
+  conforming actor that wraps WhisperKit. Lazy-loads the CoreML engine on
+  first transcribe; reuses it for subsequent calls.
+- `Sources/TranscriptionKit/WhisperKitModelManager.swift` — list/download/delete
+  variants under `~/Library/Application Support/KosmoNotes/whisperkit/`.
+- `App/State/WhisperKitDownloadState.swift` — `@Observable` view-model wired
+  into Settings → Transcription with progress bar + per-variant size badge.
+- `App/Views/Settings/WhisperKitSection.swift` — UI: model picker, Download /
+  Delete buttons, recommended-default hint, downloaded-list with sizes.
+- `Package.swift` — adds `argmaxinc/WhisperKit` (resolved 0.18.0) as a
+  dependency of the existing `TranscriptionKit` target.
+- `RecorderState.start` pre-flights the WhisperKit case: refuses to start if
+  no variant picked OR the variant isn't on disk yet, with a message pointing
+  at Settings → Transcription.
+
+Stack invariant changes:
+- The "Cloud-only transcription. No local Whisper" line is REPLACED by the
+  hybrid invariant above.
+- `argmaxinc/WhisperKit` joins the `Package.swift` dependency list. It pulls
+  `swift-transformers`, `swift-jinja`, `swift-collections`, `yyjson`,
+  `swift-asn1`, `swift-crypto`, `swift-argument-parser` transitively.
+
+Default lives where it lived: cloud (whatever provider the user last picked).
+WhisperKit is the user-selectable fifth option, NOT the new default — the
+download is several hundred MB to a few GB depending on the variant, and we
+don't surprise users with that on first launch.
+
 - The complete Rust workspace is preserved on branch `archive/jarvis-studio-rust`. Do not check that branch out unless explicitly asked for historical reference.
 - The Jarvis Studio design doc (`docs/plans/2026-05-01-jarvis-studio-design.md`) is retained on `main` for cross-references — sections §3.1 (External Dependency Lifecycle) and §8 (Sharing pipeline) are reused conceptually in Jarvis Note's design.
 - The Jarvis Studio implementation plan (was in `.omc/plans/`) is **not** on main — it lives in archive only. Do not reference it for new development.
@@ -93,7 +128,7 @@ When the user asks about "the project" or "implementation", they mean **Jarvis N
 These come from §3 of the Jarvis Note design doc.
 
 - **Pure Swift / SwiftUI / AppKit.** No Rust, no FFI, no webview, no Tauri / iced / Electron. Native frameworks only: `AVAudioEngine`, `AVPlayer` / `AVPlayerView`, `URLSession`, `GRDB.swift`, Swift concurrency. Bundle target: 5–15 MB. Single `.app`.
-- **Cloud-only transcription.** No local Whisper, no WhisperKit, no on-device CoreML model. The privacy posture is partial; see §12 — every recorded second leaves the machine. Ollama covers the LLM stage only.
+- **Hybrid transcription — cloud default, on-device opt-in.** Cloud providers (OpenAI Whisper / Deepgram / Gemini / OpenRouter) remain the default. As of 2026-05-04, **WhisperKit (Argmax CoreML port of Whisper)** is wired in as an opt-in fifth provider for users who want fully-local, free, private transcription. Models live in `~/Library/Application Support/KosmoNotes/whisperkit/<variant>/` and are downloaded on demand from `argmaxinc/whisperkit-coreml` — never bundled, so the .app stays under the 15 MB target. Privacy posture upgrades from "partial — every recorded second leaves the machine" to "user-selectable; default cloud, opt-in fully local". Ollama still covers the LLM stage only. (See §"Pivot history → 2026-05-04" for rationale.)
 - **Filesystem sidecars are source of truth, SQLite is rebuildable index.** Sessions live in `~/Library/Application Support/KosmoNotes/recordings/<sid>/` with `audio.m4a` (AAC; was `audio.opus` in design — see "Encoder deviation"), `transcript.jsonl`, `summary.md`, `actions.json`. Optional: `screen.mp4` when recording mode is Audio + Screen. SQLite (`sessions.sqlite`) backs FTS5 + filtering and must be rebuildable from sidecars.
 - **macOS 14.0+ is the actual deployment target.** Package.swift and project.yml both pin `.macOS(.v14)`; LSMinimumSystemVersion mirrors that, so macOS will refuse to launch the binary on <14. The 12.3–13.x "best-effort" fallback described in earlier revisions of the design doc was never implemented (the Recorder, Library, Settings, RecorderState, AudioEngine etc. are all gated behind `@available(macOS 14.0, *)`). The startup `<12.3` modal in `KosmoNotesApp.checkMinimumOS` is dead code preserved for documentation. **If you genuinely need 12.3+ support, lowering the deployment target requires removing every `@available(macOS 14.0, *)` and replacing `@Observable` / `KeyboardShortcuts` 2.x APIs.** Within 14.x: Core Audio Tap is 14.4+, ScreenCaptureKit audio fallback covers 14.0–14.3.
 - **Screen recording is optional, configurable, and off by default.** `AppSettings.recordingMode` controls whether screen.mp4 is captured alongside audio. Requires Screen Recording TCC permission when enabled. Screen frames are used locally for vision-chat only — never uploaded.

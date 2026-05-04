@@ -4,6 +4,7 @@ import AIKit
 import CaptureKit
 import DictationKit
 import KeyboardShortcuts
+import TranscriptionKit
 
 // MARK: - SettingsView
 
@@ -45,6 +46,9 @@ struct SettingsView: View {
 
             PrivacyTab()
                 .tabItem { Label("Privacy", systemImage: "lock.shield") }
+
+            LogsTab()
+                .tabItem { Label("Logs", systemImage: "doc.plaintext") }
         }
         .padding(20)
         // Tab labels were getting truncated on the default 520pt width
@@ -62,6 +66,14 @@ private struct TranscriptionTab: View {
     @Bindable var settings: AppSettings
 
     @State private var deepgramTestState: ConnectionTestState = .idle
+    /// Per-tab WhisperKit download state. Cached state lives in
+    /// `WhisperKitModelManager`'s files on disk, so creating a fresh
+    /// view-model each Settings open is acceptable; downloads in flight
+    /// will still appear because `refreshCatalogue` reads from the
+    /// shared filesystem.
+    @State private var whisperKitDownload: WhisperKitDownloadState = WhisperKitDownloadState(
+        manager: WhisperKitModelManager(rootDir: AppSettings.whisperKitModelsRoot())
+    )
 
     var body: some View {
         Form {
@@ -195,6 +207,11 @@ private struct TranscriptionTab: View {
                 }
             }
 
+            // Local WhisperKit section. Always rendered, regardless of the
+            // active provider — the user has to be able to download a model
+            // BEFORE flipping the provider switch to use it.
+            WhisperKitSection(settings: settings, download: whisperKitDownload)
+
             Section("Transcript LLM cleanup") {
                 Toggle("Clean transcript with LLM after transcription", isOn: $settings.transcriptCleanupEnabled)
                 Text("Runs the raw ASR output through your configured LLM (AI Providers tab) to fix mishearing — wrong numbers, names, technical terms, doubled words, missing punctuation. Speaker voice and timing are preserved. Adds ~1–3 s + a small LLM cost per recording. Saved separately as `transcript.raw.txt` for audit. Cleanup failures are non-fatal — raw transcript stays.")
@@ -262,6 +279,8 @@ private struct TranscriptionTab: View {
             return "Google Gemini ingests the audio file directly via its multimodal API. One round-trip = transcript + segments. Inline upload caps at ~18 MB (~3–4 h of HE-AAC mono); longer recordings fail until we wire the resumable File API."
         case .openrouterAudio:
             return "Routes audio through OpenRouter to a multimodal model (defaults to google/gemini-2.5-flash, configurable in AI Providers → OpenRouter model). Same OpenRouter API key as LLM cleanup. Inline cap ~18 MB. Use this if you want one billing relationship for everything."
+        case .whisperKit:
+            return "On-device WhisperKit (CoreML port of Whisper). No network calls, no API key, no billing. You must download a model first in the Local — WhisperKit section below. Apple Silicon recommended."
         }
     }
 
@@ -609,6 +628,21 @@ private struct DictationTab: View {
                 Text("Uses the configured AI Provider (Anthropic / OpenAI / Ollama) to fix punctuation, casing, and remove disfluencies. Adds ~1–2 s latency. Off = paste raw Whisper transcript.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Insertion strategy") {
+                Picker("Method", selection: $settings.dictationInsertion) {
+                    ForEach(DictationInsertionStrategy.allCases, id: \.self) { option in
+                        Text(option.displayName).tag(option)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+
+                Text(settings.dictationInsertion.detailDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section("Limits") {

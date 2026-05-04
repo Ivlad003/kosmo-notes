@@ -39,6 +39,12 @@ final class AppSettings {
         static let ollamaBearer = "ollamaBearer"
         static let systemAudioEnabled = "systemAudioEnabled"
         static let dictationLLMCleanup = "dictationLLMCleanup"
+        // Three insertion strategies for the cleaned dictation transcript:
+        //   - axapiThenClipboard (faster, less reliable in Electron)
+        //   - clipboardSimulatedV (default — universal compatibility)
+        //   - clipboardOnly (no auto-paste; user pastes manually)
+        // Stored as the rawValue of `DictationInsertionStrategy`.
+        static let dictationInsertion = "dictationInsertion"
         // Whether to run the meeting/voice-note transcript through an LLM cleanup
         // pass after Whisper/Deepgram. Reuses the configured llmProvider; default ON.
         static let transcriptCleanupEnabled = "transcriptCleanupEnabled"
@@ -109,6 +115,10 @@ final class AppSettings {
         // OpenAI's newer (March 2025) higher-accuracy successors. Same
         // /v1/audio/transcriptions endpoint, different `model` field.
         static let openaiTranscribeModel = "openaiTranscribeModel"
+        // WhisperKit (local) variant id, e.g. "openai_whisper-base". Empty
+        // string means "user hasn't picked one yet" — the Settings UI guides
+        // them to choose + download before they can switch the active provider.
+        static let whisperKitModel = "whisperKitModel"
         // RTMP live streaming. streamKey moved to Keychain in Phase 4 polish;
         // only the toggle and URL stay in UserDefaults (URL is not a secret —
         // OBS, MediaMTX, YouTube ingest URLs are public).
@@ -279,6 +289,12 @@ final class AppSettings {
     var openaiTranscribeModel: OpenAITranscribeModel {
         didSet { UserDefaults.standard.set(openaiTranscribeModel.rawValue, forKey: Defaults.openaiTranscribeModel) }
     }
+    /// On-device WhisperKit variant id (e.g. `"openai_whisper-base"`). Empty
+    /// string until the user picks one. Read by `WhisperKitProvider` only when
+    /// `transcriptionProvider == .whisperKit`.
+    var whisperKitModel: String {
+        didSet { UserDefaults.standard.set(whisperKitModel, forKey: Defaults.whisperKitModel) }
+    }
     var llmProvider: LLMProviderChoice {
         didSet { UserDefaults.standard.set(llmProvider.rawValue, forKey: Defaults.llmProvider) }
     }
@@ -318,6 +334,12 @@ final class AppSettings {
     /// On = cleaner output, slower (extra round-trip). Off = paste raw transcript.
     var dictationLLMCleanup: Bool {
         didSet { UserDefaults.standard.set(dictationLLMCleanup, forKey: Defaults.dictationLLMCleanup) }
+    }
+    /// Strategy used by `AccessibilityPaster` to deliver the cleaned transcript.
+    /// Default `.clipboardSimulatedV` — universal compatibility. See enum docs
+    /// for the trade-offs.
+    var dictationInsertion: DictationInsertionStrategy {
+        didSet { UserDefaults.standard.set(dictationInsertion.rawValue, forKey: Defaults.dictationInsertion) }
     }
     /// Hard cap on a single Dictation utterance length, in seconds. Default 60.
     var dictationMaxSeconds: Int {
@@ -542,6 +564,10 @@ final class AppSettings {
         let openaiModelRaw = UserDefaults.standard.string(forKey: Defaults.openaiTranscribeModel) ?? OpenAITranscribeModel.gpt4oMiniTranscribe.rawValue
         self.openaiTranscribeModel = OpenAITranscribeModel(rawValue: openaiModelRaw) ?? .gpt4oMiniTranscribe
 
+        // WhisperKit variant — empty default forces the user to pick + download
+        // before they can switch the active transcription provider to .whisperKit.
+        self.whisperKitModel = UserDefaults.standard.string(forKey: Defaults.whisperKitModel) ?? ""
+
         self.systemAudioDeviceUID = UserDefaults.standard.string(forKey: Defaults.systemAudioDeviceUID) ?? ""
 
         self.cameraBubbleEnabled = (UserDefaults.standard.object(forKey: Defaults.cameraBubbleEnabled) as? Bool) ?? false
@@ -597,6 +623,10 @@ final class AppSettings {
         self.systemAudioEnabled = UserDefaults.standard.bool(forKey: Defaults.systemAudioEnabled)
         // Default true for cleanup; UserDefaults.bool returns false for missing keys, so check object presence.
         self.dictationLLMCleanup = (UserDefaults.standard.object(forKey: Defaults.dictationLLMCleanup) as? Bool) ?? true
+        // Default `clipboardSimulatedV` — universal compatibility.
+        let insertionRaw = UserDefaults.standard.string(forKey: Defaults.dictationInsertion)
+            ?? DictationInsertionStrategy.clipboardSimulatedV.rawValue
+        self.dictationInsertion = DictationInsertionStrategy(rawValue: insertionRaw) ?? .clipboardSimulatedV
         self.transcriptCleanupEnabled = (UserDefaults.standard.object(forKey: Defaults.transcriptCleanupEnabled) as? Bool) ?? true
         let maxSecs = UserDefaults.standard.integer(forKey: Defaults.dictationMaxSeconds)
         self.dictationMaxSeconds = maxSecs > 0 ? maxSecs : 60
@@ -727,5 +757,70 @@ final class AppSettings {
             // but auth still fails" symptom is otherwise impossible to debug.
             appSettingsLog.error("Keychain commit failed for account \(account.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    // MARK: - WhisperKit paths
+
+    /// Stable root for downloaded WhisperKit models. Lives next to recordings
+    /// (`~/Library/Application Support/KosmoNotes/whisperkit/`) so a user
+    /// scrubbing Application Support can find and remove all model state in
+    /// one folder.
+    static func whisperKitModelsRoot() -> URL {
+        let appSupport = (try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )) ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return appSupport
+            .appendingPathComponent("KosmoNotes")
+            .appendingPathComponent("whisperkit")
+    }
+
+    // MARK: - Diagnostics
+
+    /// Emit a one-shot summary of user-visible configuration to os_log so the
+    /// user can read it back in Settings → Logs (category `AppSettings`). Does
+    /// not include any secrets — only flags / model names / hotkey labels —
+    /// so it's safe to copy/paste into a bug report.
+    ///
+    /// - Parameter context: short label identifying the call site
+    ///   (e.g. "startup", "before-dictation", "before-recording") so multiple
+    ///   snapshots in one log are distinguishable.
+    func logSnapshot(context: String) {
+        // Single multi-line entry — easier to copy than 12 separate lines.
+        let trigger = dictationTrigger.displayName
+        let lines = [
+            "context=\(context)",
+            "transcription=\(transcriptionProvider.rawValue)",
+            "openaiTranscribeModel=\(openaiTranscribeModel.rawValue)",
+            "llm=\(llmProvider.rawValue)",
+            "recordingMode=\(recordingMode.rawValue)",
+            "systemAudioEnabled=\(systemAudioEnabled)",
+            "useProcessTap=\(useProcessTap)",
+            "systemAudioDeviceUID=\(systemAudioDeviceUID.isEmpty ? "(default SCKit)" : systemAudioDeviceUID)",
+            "audioCodec=\(audioCodec.rawValue) bitrate=\(audioBitrate) sampleRate=\(audioSampleRate)",
+            "videoUseHEVC=\(videoUseHEVC) videoBitrate=\(videoBitrate)",
+            "dictationInsertion=\(dictationInsertion.rawValue)",
+            "dictationLLMCleanup=\(dictationLLMCleanup)",
+            "dictationMaxSeconds=\(dictationMaxSeconds)",
+            "dictationTrigger=\(trigger)",
+            "transcriptCleanupEnabled=\(transcriptCleanupEnabled)",
+            "semanticSearchEnabled=\(semanticSearchEnabled)",
+            "summaryLanguage=\(summaryLanguage)",
+            "markdownExportEnabled=\(markdownExportEnabled)",
+            "pushToMarkdownEnabled=\(pushToMarkdownEnabled)",
+            "agentEnabled=\(agentEnabled) agentBackend=\(agentBackend.rawValue)",
+            "cameraBubbleEnabled=\(cameraBubbleEnabled)",
+            "streamingEnabled=\(streamingEnabled)",
+            "s3Configured=\(!s3Endpoint.isEmpty && !s3Bucket.isEmpty && !s3AccessKey.isEmpty)",
+            "openaiKeySet=\(!openaiApiKey.isEmpty)",
+            "anthropicKeySet=\(!anthropicApiKey.isEmpty)",
+            "deepgramKeySet=\(!deepgramApiKey.isEmpty)",
+            "openrouterKeySet=\(!openrouterApiKey.isEmpty)",
+            "geminiKeySet=\(!geminiApiKey.isEmpty)",
+        ]
+        let dump = lines.joined(separator: " | ")
+        appSettingsLog.info("config snapshot: \(dump, privacy: .public)")
     }
 }

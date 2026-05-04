@@ -33,6 +33,9 @@ extension AppSettings {
         case openaiWhisper
         case gemini
         case openrouterAudio
+        /// On-device WhisperKit (CoreML port of Whisper). Free, private,
+        /// requires a one-time model download per chosen variant.
+        case whisperKit
 
         var id: String { rawValue }
         var displayName: String {
@@ -41,6 +44,7 @@ extension AppSettings {
             case .openaiWhisper: return "OpenAI Whisper"
             case .gemini: return "Gemini (multimodal)"
             case .openrouterAudio: return "OpenRouter (multimodal)"
+            case .whisperKit: return "WhisperKit (on-device, free)"
             }
         }
     }

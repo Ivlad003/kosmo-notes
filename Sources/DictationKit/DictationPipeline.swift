@@ -80,6 +80,28 @@ public final class DictationPipeline {
 
     public var status: Status = .idle
 
+    // MARK: - Last-run capture (for app-layer persistence)
+    //
+    // Set during stopAndProcess. App layer (DictationState) reads these after
+    // the await returns to write a SessionRecord + audio.m4a + transcript files
+    // into the Library. Cleared on each new startRecording.
+
+    /// Final transcript that was paste-bound. `nil` until stopAndProcess
+    /// produces one; non-empty when the pipeline reached the paste stage.
+    public private(set) var lastTranscript: String?
+
+    /// Raw mono Float32 PCM samples captured by the engine, at `lastSampleRate`.
+    /// Set even if transcription / paste failed, so failed sessions can still
+    /// be persisted with their audio.
+    public private(set) var lastPCMData: Data?
+
+    /// Sample rate of `lastPCMData` — currently always 16 kHz, but explicit so
+    /// the consumer doesn't bake the constant in.
+    public private(set) var lastSampleRate: Double?
+
+    /// Wall-clock duration of the captured audio in seconds.
+    public private(set) var lastDurationSecs: TimeInterval?
+
     // MARK: - Dependencies
 
     private let llmProvider: (any AIProvider)?
@@ -105,6 +127,7 @@ public final class DictationPipeline {
         llmProvider: (any AIProvider)?,
         llmModel: String = "claude-sonnet-4-6",
         maxDurationSeconds: Int,
+        insertionStrategy: DictationInsertionStrategy = .clipboardSimulatedV,
         logger: Logger? = nil,
         eventHook: EventHook? = nil
     ) {
@@ -116,8 +139,9 @@ public final class DictationPipeline {
         self.transcriber = { url, cfg in
             try await whisperProvider.transcribe(audioFile: url, config: cfg)
         }
+        let strategy = insertionStrategy
         self.paster = { text in
-            AccessibilityPaster.paste(text)
+            AccessibilityPaster.paste(text, strategy: strategy)
         }
     }
 
@@ -163,6 +187,13 @@ public final class DictationPipeline {
             if case .failed = status { return true } else { return false }
         }() else { return }
 
+        // Wipe last-run capture so the consumer never sees stale data from a
+        // previous press if startRecording is called twice without a stop.
+        lastTranscript = nil
+        lastPCMData = nil
+        lastSampleRate = nil
+        lastDurationSecs = nil
+
         emit(.captureStart)
         let box = EngineBox()
         try await box.start(maxSeconds: maxDurationSeconds)
@@ -185,6 +216,13 @@ public final class DictationPipeline {
         }
 
         let sampleRate: Double = 16_000
+        // Stash for app-layer persistence even when later stages fail. Duration
+        // is samples/sec — Float32 mono so each sample is 4 bytes.
+        let frameCount = pcmData.count / MemoryLayout<Float>.size
+        lastPCMData = pcmData
+        lastSampleRate = sampleRate
+        lastDurationSecs = TimeInterval(frameCount) / sampleRate
+
         guard let wavURL = writeTempWAV(pcmData: pcmData, sampleRate: sampleRate) else {
             status = .failed("Could not encode audio")
             return
@@ -243,13 +281,20 @@ public final class DictationPipeline {
             emit(.llmCleanupFinal)
         }
 
+        // Stash final transcript for app-layer persistence regardless of paste outcome.
+        lastTranscript = finalText
+
         // Paste
         status = .pasting
         logger?("[DictationPipeline] pasting")
         emit(.pasteIssued)
         let pasteResult = paster(finalText)
         switch pasteResult {
-        case .axInserted, .clipboardSimulatedV:
+        case .axInserted, .clipboardSimulatedV, .clipboardOnly:
+            // clipboardOnly is a successful outcome — text reached the
+            // clipboard, the user just pastes it manually. The pipeline
+            // status doesn't distinguish; the app layer can read
+            // `lastResult` and surface a "copied to clipboard" toast.
             status = .completed
             logger?("[DictationPipeline] completed via \(pasteResult)")
         case .failed(let reason):

@@ -23,6 +23,9 @@ public enum TranscriptionResolver {
         case openaiWhisper
         case gemini
         case openrouterAudio
+        /// On-device WhisperKit. No API key, no per-minute pricing — runs
+        /// against a model file the user downloaded ahead of time.
+        case whisperKit
     }
 
     /// Which OpenAI hosted speech-to-text model to use when `kind == .openaiWhisper`.
@@ -44,6 +47,12 @@ public enum TranscriptionResolver {
         public let geminiAPIKey: String
         public let openrouterAPIKey: String
         public let openrouterModel: String
+        /// WhisperKit variant id (e.g. `"openai_whisper-base"`). Only read when
+        /// `kind == .whisperKit`.
+        public let whisperKitVariant: String
+        /// Root folder for downloaded WhisperKit models. Only read when
+        /// `kind == .whisperKit`.
+        public let whisperKitModelsRoot: URL
 
         public init(
             kind: Kind,
@@ -52,7 +61,9 @@ public enum TranscriptionResolver {
             deepgramAPIKey: String,
             geminiAPIKey: String,
             openrouterAPIKey: String,
-            openrouterModel: String
+            openrouterModel: String,
+            whisperKitVariant: String = "",
+            whisperKitModelsRoot: URL = URL(fileURLWithPath: NSTemporaryDirectory())
         ) {
             self.kind = kind
             self.openaiAPIKey = openaiAPIKey
@@ -61,6 +72,8 @@ public enum TranscriptionResolver {
             self.geminiAPIKey = geminiAPIKey
             self.openrouterAPIKey = openrouterAPIKey
             self.openrouterModel = openrouterModel
+            self.whisperKitVariant = whisperKitVariant
+            self.whisperKitModelsRoot = whisperKitModelsRoot
         }
     }
 
@@ -113,6 +126,18 @@ public enum TranscriptionResolver {
             let model = trimmedModel.isEmpty ? "google/gemini-2.5-flash" : trimmedModel
             return Resolved(
                 provider: OpenRouterAudioProvider(apiKey: key, model: model),
+                pricing: nil
+            )
+
+        case .whisperKit:
+            // Local — pricing is nil because there's no API meter to bill
+            // against. The cost-cap gate at the call site already skips
+            // pricing-less providers without surfacing a "free" line item.
+            return Resolved(
+                provider: WhisperKitProvider(
+                    modelVariant: config.whisperKitVariant,
+                    modelsRootDir: config.whisperKitModelsRoot
+                ),
                 pricing: nil
             )
         }

@@ -325,6 +325,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // it up without recapturing.
         let settings = AppSettings()
         self.sharedSettings = settings
+        // Emit a snapshot of the loaded config to os_log so the Settings → Logs
+        // tab shows the user exactly what state the app booted with — useful
+        // when triaging "this didn't work" reports without needing to ask the
+        // user to read out a dozen toggle states.
+        settings.logSnapshot(context: "startup")
 
         // CRITICAL: do NOT publish recorder/dictation/database/sessionStore until
         // database.migrate() finishes. menuNeedsUpdate, hotkeys, and UI all read
@@ -368,7 +373,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Dictation: register the global hotkey monitor. The pipeline itself
             // is rebuilt on every press so settings changes apply without relaunch.
-            let dictation = DictationState(settings: settings)
+            // sessionStore is wired so each successful dictation lands in Library
+            // as a mode = .dictation SessionRecord with audio.m4a + transcript.
+            let dictation = DictationState(settings: settings, sessionStore: sessionStore)
             dictation.install()
             self.dictationHolder = dictation
 
