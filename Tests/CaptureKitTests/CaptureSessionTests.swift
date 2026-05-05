@@ -62,6 +62,23 @@ struct CaptureSessionTests {
         #expect(config.segmentDurationSeconds == 5.0)
     }
 
+    @Test("CaptureSession builds mic AudioEngine config from configured sample rate")
+    func micAudioEngineConfigUsesConfiguredSampleRate() throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let config = CaptureSession.Config(
+            micEnabled: true,
+            systemAudioEnabled: false,
+            sessionDir: dir,
+            audioSampleRate: 24_000
+        )
+
+        let engineConfig = CaptureSession.micAudioEngineConfig(for: config)
+        #expect(engineConfig.sampleRate == 24_000)
+        #expect(engineConfig.channels == 1)
+    }
+
     // MARK: - Direct SegmentWriter-based integration (feeds synthetic buffers)
 
     @Test("start → feed synthetic buffers via SegmentWriter → stop returns segment paths")

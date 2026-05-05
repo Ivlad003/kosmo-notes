@@ -205,12 +205,11 @@ final class DictationState {
             let dir = await store.sessionDir(for: record.id)
             dictationLog.info("Dictation.persist: created session \(record.id, privacy: .public)")
 
-            // 2. Encode PCM → AAC .m4a alongside the WAV that pipeline already
-            // wrote (and discarded). Reusing AVAudioFile means no AVAssetWriter
-            // wiring — the framework handles PCM→AAC conversion when the file
-            // is opened with AAC settings.
+            // 2. Encode PCM → AAC .m4a. Two-step (PCM → CAF → AVAssetExportSession)
+            // because the direct AVAudioFile-with-AAC-settings path throws
+            // CoreAudio '!dat' (560226676) on Float32 16 kHz mono in.
             let audioURL = dir.appendingPathComponent("audio.m4a")
-            try writeAACFile(pcmData: pcm, sampleRate: sampleRate, to: audioURL)
+            try await writeAACFile(pcmData: pcm, sampleRate: sampleRate, to: audioURL)
 
             // 3. Write transcript text + JSONL (single segment covering whole clip).
             let transcript = (p.lastTranscript ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -234,14 +233,22 @@ final class DictationState {
         }
     }
 
-    /// Write the raw Float32 PCM as a mono 16 kHz AAC `.m4a` file. AVAudioFile
-    /// handles the format conversion when its settings differ from the source
-    /// buffer (no manual AVAudioConverter wiring required).
-    private func writeAACFile(pcmData: Data, sampleRate: Double, to url: URL) throws {
+    /// Write the raw Float32 PCM as a mono AAC `.m4a` file.
+    ///
+    /// Two-step encode mirroring `RecoveryService.finalize` because direct
+    /// AVAudioFile-with-AAC-settings throws CoreAudio error 560226676 ('!dat')
+    /// in practice — its built-in resampler/encoder doesn't reliably accept
+    /// Float32 16 kHz mono in.
+    ///
+    ///   1. AVAudioFile writes the PCM verbatim to a temp `.caf` (always
+    ///      succeeds; CAF carries any PCM format unchanged).
+    ///   2. AVAssetExportSession with `AVAssetExportPresetAppleM4A` re-encodes
+    ///      the CAF as AAC m4a — same path the recovery service uses for
+    ///      meeting audio.
+    private func writeAACFile(pcmData: Data, sampleRate: Double, to url: URL) async throws {
         let frameCount = pcmData.count / MemoryLayout<Float>.size
         guard frameCount > 0 else { return }
 
-        // Source PCM format (matches what the engine captured).
         guard let pcmFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: sampleRate,
@@ -251,16 +258,22 @@ final class DictationState {
             throw DictationPersistError.formatCreationFailed
         }
 
-        // Destination AAC settings. 64 kbps mono is plenty for voice; keeps
-        // small dictations to a few KB instead of MBs.
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
+        // Step 1: dump PCM as a CAF file. CAF is the only Apple-managed
+        // container that round-trips arbitrary PCM (Float32, non-interleaved,
+        // any sample rate) without complaining.
+        let cafURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dictation_\(UUID().uuidString).caf")
+        defer { try? FileManager.default.removeItem(at: cafURL) }
+
+        let cafSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: sampleRate,
             AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 64_000,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsNonInterleaved: true,
         ]
-
-        let file = try AVAudioFile(forWriting: url, settings: settings)
+        let cafFile = try AVAudioFile(forWriting: cafURL, settings: cafSettings)
 
         guard let buffer = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: AVAudioFrameCount(frameCount)) else {
             throw DictationPersistError.bufferCreationFailed
@@ -271,8 +284,52 @@ final class DictationState {
                   let channelData = buffer.floatChannelData else { return }
             channelData[0].update(from: floatPtr, count: frameCount)
         }
+        try cafFile.write(from: buffer)
 
-        try file.write(from: buffer)
+        // Step 2: re-encode CAF → m4a via the export session. AppleM4A preset
+        // is AAC-LC at 64 kbps stereo / 32 kbps mono — fine for dictation.
+        let asset = AVURLAsset(url: cafURL)
+        guard let exporter = AVAssetExportSession(
+            asset: asset,
+            presetName: AVAssetExportPresetAppleM4A
+        ) else {
+            throw DictationPersistError.exportSessionInitFailed
+        }
+        if FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        exporter.outputURL = url
+        exporter.outputFileType = .m4a
+
+        try await runExport(exporter, outputURL: url)
+    }
+
+    /// Mirror of `RecoveryService.runExport` — drives the legacy callback API
+    /// to completion via a checked continuation. The newer
+    /// `AVAssetExportSession.export(to:as:)` async overload exists on macOS 15+;
+    /// using the callback path keeps us source-compatible at 14.
+    private nonisolated func runExport(_ exporter: AVAssetExportSession, outputURL: URL) async throws -> URL {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            exporter.exportAsynchronously {
+                switch exporter.status {
+                case .completed:
+                    continuation.resume(returning: outputURL)
+                case .failed, .cancelled:
+                    let err = exporter.error ?? NSError(
+                        domain: "DictationState",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "AVAssetExportSession ended in \(exporter.status.rawValue)"]
+                    )
+                    continuation.resume(throwing: err)
+                default:
+                    continuation.resume(throwing: NSError(
+                        domain: "DictationState",
+                        code: -2,
+                        userInfo: [NSLocalizedDescriptionKey: "Unexpected exporter status \(exporter.status.rawValue)"]
+                    ))
+                }
+            }
+        }
     }
 
     /// Write transcript.txt + transcript.jsonl matching the meeting/voice-note
@@ -316,11 +373,13 @@ private enum DictationSetupError: LocalizedError {
 private enum DictationPersistError: LocalizedError {
     case formatCreationFailed
     case bufferCreationFailed
+    case exportSessionInitFailed
 
     var errorDescription: String? {
         switch self {
-        case .formatCreationFailed: return "Could not create AVAudioFormat for PCM source"
-        case .bufferCreationFailed: return "Could not allocate PCM buffer for AAC encoding"
+        case .formatCreationFailed:    return "Could not create AVAudioFormat for PCM source"
+        case .bufferCreationFailed:    return "Could not allocate PCM buffer for AAC encoding"
+        case .exportSessionInitFailed: return "Could not create AVAssetExportSession for the captured CAF"
         }
     }
 }

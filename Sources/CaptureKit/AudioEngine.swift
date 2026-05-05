@@ -1,6 +1,124 @@
 @preconcurrency import AVFoundation
+import CoreAudio
 import Foundation
 import os
+
+// MARK: - Core Audio HAL helpers (private, file-scope)
+//
+// Used by `AudioEngine.start` to detect when the system's default input is a
+// Bluetooth mic (AirPods Max, Beats, headsets — they show up at 16/24 kHz in
+// HFP/SCO mode) and substitute the built-in mic instead. Two independent
+// gains:
+//   1. Avoids the 4–6 s SCO link negotiation that delays first PCM buffer.
+//   2. Keeps macOS in A2DP for output so playback through the same Bluetooth
+//      device stays at 48 kHz (no "slow-bassy" artifact).
+//
+// The user's system audio routing is NOT mutated — we only re-bind our own
+// `AVAudioEngine.inputNode` to a specific device via AUHAL setDeviceID, so
+// other apps and the system itself still see the user's chosen default.
+
+/// Returns the system's current default-input AudioDeviceID, or nil if the
+/// HAL has no default input bound (rare — usually means no mic at all).
+private func defaultInputDeviceID() -> AudioDeviceID? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultInputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var deviceID: AudioDeviceID = 0
+    var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+    let status = AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+    )
+    return status == noErr && deviceID != 0 ? deviceID : nil
+}
+
+/// `kAudioDevicePropertyTransportType` for the given device, or 0 on error.
+private func transportType(of deviceID: AudioDeviceID) -> UInt32 {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyTransportType,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var transport: UInt32 = 0
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transport)
+    return transport
+}
+
+/// True when the device's transport type is Bluetooth (classic or LE).
+/// Bluetooth-over-USB or Bluetooth-via-aggregate devices return false here —
+/// they're rare enough that the false negative is acceptable.
+private func isBluetoothTransport(_ deviceID: AudioDeviceID) -> Bool {
+    let t = transportType(of: deviceID)
+    return t == kAudioDeviceTransportTypeBluetooth
+        || t == kAudioDeviceTransportTypeBluetoothLE
+}
+
+/// Set the system's default input device. Returns true on success.
+/// Used to temporarily swap away from a Bluetooth mic during recording so
+/// `AVAudioEngine` doesn't get bound to a HFP/SCO sub-device of the
+/// `CADefaultDeviceAggregate` that macOS auto-creates with AirPods+other
+/// inputs present. Restored on `stop()`.
+@discardableResult
+private func setDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultInputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var newID = deviceID
+    let size = UInt32(MemoryLayout<AudioDeviceID>.size)
+    let status = AudioObjectSetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, size, &newID
+    )
+    return status == noErr
+}
+
+/// Find the macOS built-in microphone's AudioDeviceID by scanning all input
+/// devices and returning the first with `kAudioDeviceTransportTypeBuiltIn`.
+/// Returns nil on Macs with no built-in mic (rare — Mac mini etc. with
+/// external-only setup).
+private func findBuiltInMicrophoneDeviceID() -> AudioDeviceID? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var dataSize: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(
+        AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize
+    ) == noErr else { return nil }
+    let count = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
+    guard count > 0 else { return nil }
+    var deviceIDs = [AudioDeviceID](repeating: 0, count: count)
+    guard AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize, &deviceIDs
+    ) == noErr else { return nil }
+
+    for deviceID in deviceIDs {
+        // Skip devices without an input stream.
+        var inputAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var inputSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &inputAddr, 0, nil, &inputSize) == noErr,
+              inputSize > 0 else { continue }
+        let bufferList = UnsafeMutableRawPointer.allocate(byteCount: Int(inputSize), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { bufferList.deallocate() }
+        let typedBufferList = bufferList.bindMemory(to: AudioBufferList.self, capacity: 1)
+        guard AudioObjectGetPropertyData(deviceID, &inputAddr, 0, nil, &inputSize, typedBufferList) == noErr else { continue }
+        let totalChannels = UnsafeMutableAudioBufferListPointer(typedBufferList).reduce(0) { $0 + Int($1.mNumberChannels) }
+        if totalChannels == 0 { continue }
+
+        if transportType(of: deviceID) == kAudioDeviceTransportTypeBuiltIn {
+            return deviceID
+        }
+    }
+    return nil
+}
 
 // MARK: - AudioEngine
 
@@ -70,6 +188,21 @@ public actor AudioEngine {
         }
     }
 
+    enum TapBootstrapStrategy: Equatable {
+        case installBeforeEngineStart
+        case installAfterEngineStart
+    }
+
+    nonisolated static func tapBootstrapStrategy(
+        preStartSampleRate: Double,
+        preStartChannelCount: AVAudioChannelCount
+    ) -> TapBootstrapStrategy {
+        if preStartSampleRate > 0, preStartChannelCount > 0 {
+            return .installBeforeEngineStart
+        }
+        return .installAfterEngineStart
+    }
+
     // MARK: Private state
 
     private let config: Config
@@ -80,6 +213,24 @@ public actor AudioEngine {
     /// every callback and silently skips yielding when true. The audio file
     /// keeps growing during a mute (silent samples), so timestamps stay aligned.
     private let muteFlag = TapMuteFlag()
+    /// Target output format the rest of the pipeline expects (e.g. 48 kHz
+    /// mono Float32). Stored so a route-change-triggered tap reinstall can
+    /// reuse the same target without rebuilding from `config`.
+    private var targetFormat: AVAudioFormat?
+    /// Per-format AVAudioConverter cache. Kept across tap reinstalls so a
+    /// route swap (built-in mic → AirPods) only pays the converter-build
+    /// cost once per source format the user encounters in this session.
+    private var converterCache: ConverterCache?
+    /// Counter that the tap closure increments on every callback. Used by
+    /// the no-buffer-arrived watchdog and propagated across reinstalls.
+    private var bufferCounter: TapBufferCounter?
+    /// Token from `NotificationCenter.addObserver(forName:.AVAudioEngineConfigurationChange,...)`.
+    /// Removed in `stop()` to avoid leaking observers between recordings.
+    private var configChangeObserver: NSObjectProtocol?
+    /// When we temporarily swap the system's default input device away from
+    /// a Bluetooth mic, this stores the user's original choice so `stop()`
+    /// can restore it. nil when no swap was performed.
+    private var savedDefaultInputDevice: AudioDeviceID?
 
     // MARK: Init
 
@@ -99,6 +250,20 @@ public actor AudioEngine {
         }
 
         audioEngineLog.info("AudioEngine.start: requested sampleRate=\(self.config.sampleRate, privacy: .public) channels=\(self.config.channels, privacy: .public)")
+
+        // Swap system default input from Bluetooth to built-in mic BEFORE
+        // creating AVAudioEngine. Doing this AFTER engine.start fires an
+        // AVAudioEngineConfigurationChange notification ~1 s later, and
+        // attempting to engine.start() inside that handler returns
+        // `-10868 kAudioUnitErr_FormatNotSupported` because the format we
+        // configured the engine with no longer matches the new device.
+        // Pre-engine swap + 1 s propagation delay lets the new default
+        // settle in the HAL, then the engine bootstraps cleanly with the
+        // built-in mic from scratch — no mid-flight reconfiguration.
+        swapDefaultInputToBuiltInIfBluetooth(context: "start")
+        if savedDefaultInputDevice != nil {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
 
         let engine = AVAudioEngine()
         self.engine = engine
@@ -131,46 +296,91 @@ public actor AudioEngine {
         // pipeline. Rolled back; the recommended workaround for echo is
         // headphones (zero code, perfect cancellation).
 
-        // Force AUHAL to bind the default input device by preparing + starting
-        // the engine BEFORE installing the tap. Querying inputNode.outputFormat
-        // at engine-creation time (the obvious order) returns 0 input streams
-        // for ad-hoc-signed apps with freshly-granted Mic TCC — the audio HAL
-        // hasn't routed the mic yet. A tap installed against that degenerate
-        // format never fires its callback, so segments arrive at 0 bytes.
+        // (BT swap already happened above, before AVAudioEngine() — no need
+        // to re-swap here; the engine has been created on top of the new
+        // default and the AUHAL is bound to built-in mic.)
+
+        // Stash everything the tap closure needs as actor state so a later
+        // route-change-triggered reinstall can rebuild the tap without losing
+        // the AsyncStream consumer downstream.
+        self.targetFormat = targetFormat
+        let converterCache = ConverterCache()
+        self.converterCache = converterCache
+        let counter = TapBufferCounter()
+        self.bufferCounter = counter
+
+        let preStartInputFormat = inputNode.outputFormat(forBus: 0)
+        let bootstrapStrategy = Self.tapBootstrapStrategy(
+            preStartSampleRate: preStartInputFormat.sampleRate,
+            preStartChannelCount: preStartInputFormat.channelCount
+        )
+        if bootstrapStrategy == .installBeforeEngineStart {
+            audioEngineLog.info("AudioEngine.start: pre-start input format already usable — sampleRate=\(preStartInputFormat.sampleRate, privacy: .public) channels=\(preStartInputFormat.channelCount, privacy: .public). Installing tap before engine.start().")
+            installTap(on: inputNode, inputFormat: preStartInputFormat)
+        }
+
+        // Most Macs produce a usable input format before start; in that common
+        // case we arm the tap first, matching the stable patterns used by the
+        // dictation pipeline and CoreAudioTap. Some fresh-TCC / ad-hoc-signed
+        // builds still report a degenerate 0-channel/0-Hz format here; only
+        // those fall back to the delayed-install path below.
         engine.prepare()
         do {
             try engine.start()
         } catch {
             audioEngineLog.error("AudioEngine.start: engine.start() threw — \(error.localizedDescription, privacy: .public)")
+            inputNode.removeTap(onBus: 0)
             self.engine = nil
             continuation.finish()
             self.continuation = nil
+            self.targetFormat = nil
+            self.converterCache = nil
+            self.bufferCounter = nil
+            restoreDefaultInputDeviceIfSwapped()
             throw AudioEngineError.engineStartFailed(underlying: error)
         }
-        audioEngineLog.info("AudioEngine.start: engine running, polling input format")
 
         // Poll for the input bus format to stabilize. After mic-permission
         // grant the AUHAL typically needs 1–3 polls to bind. Polling at 10 ms
         // (was 50 ms) shaves the worst-case "first words eaten" window from
         // ~150 ms down to ~30 ms while keeping the same 1 s ceiling
         // (now 100 attempts × 10 ms instead of 20 × 50 ms).
-        var inputFormat = inputNode.outputFormat(forBus: 0)
+        //
+        // IMPORTANT: query the AUHAL directly via `auAudioUnit.outputBusses[0]
+        // .format` rather than `inputNode.outputFormat(forBus: 0)`. The
+        // AVAudioEngine-level wrapper caches the bus format from the LAST
+        // hardware binding — after a `setDeviceID` swap (BT → built-in mic),
+        // the cached value can be stale by one device cycle, returning the
+        // BT 24 kHz format while the AUHAL actually reads the built-in mic
+        // at 48 kHz. Installing a tap with the stale format triggers a
+        // hard `format.sampleRate == inputHWFormat.sampleRate` assertion in
+        // AVAudioEngineGraph.mm:2031 and SIGABRTs the process. Querying the
+        // AUHAL bus is the authoritative source.
+        var inputFormat = inputNode.auAudioUnit.outputBusses[0].format
         var attempts = 0
-        while (inputFormat.channelCount == 0 || inputFormat.sampleRate == 0) && attempts < 100 {
-            try? await Task.sleep(nanoseconds: 10_000_000)
-            inputFormat = inputNode.outputFormat(forBus: 0)
-            attempts += 1
+        if bootstrapStrategy == .installAfterEngineStart {
+            audioEngineLog.info("AudioEngine.start: pre-start input format was degenerate — delaying tap install until AUHAL binds after engine.start().")
+            while (inputFormat.channelCount == 0 || inputFormat.sampleRate == 0) && attempts < 100 {
+                try? await Task.sleep(nanoseconds: 10_000_000)
+                inputFormat = inputNode.auAudioUnit.outputBusses[0].format
+                attempts += 1
+            }
         }
-        audioEngineLog.info("AudioEngine.start: input format after \(attempts, privacy: .public) polls — sampleRate=\(inputFormat.sampleRate, privacy: .public) channels=\(inputFormat.channelCount, privacy: .public)")
+        audioEngineLog.info("AudioEngine.start: engine running, input format after \(attempts, privacy: .public) polls — sampleRate=\(inputFormat.sampleRate, privacy: .public) channels=\(inputFormat.channelCount, privacy: .public)")
 
         // If still degenerate after 1 s, mic isn't routed. Fail clearly
         // instead of silently writing 0-byte segments.
         guard inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
             audioEngineLog.error("AudioEngine.start: input format never bound (channels=0 or sampleRate=0 after 1 s)")
             engine.stop()
+            inputNode.removeTap(onBus: 0)
             self.engine = nil
             continuation.finish()
             self.continuation = nil
+            self.targetFormat = nil
+            self.converterCache = nil
+            self.bufferCounter = nil
+            restoreDefaultInputDeviceIfSwapped()
             throw AudioEngineError.engineStartFailed(underlying: NSError(
                 domain: "AudioEngine",
                 code: -1,
@@ -179,18 +389,209 @@ public actor AudioEngine {
             ))
         }
 
-        // bufferSize: 4800 frames @ 48 kHz ≈ 100 ms.
-        let bufferSize: AVAudioFrameCount = 4800
-        let cont = continuation
-        let converterCache = ConverterCache()
-        let counter = TapBufferCounter()
+        // Bluetooth HFP/SCO detection: AirPods, Beats, and most BT headsets
+        // expose their mic at 16/24 kHz mono when system audio is routed
+        // through them. Apple's audio HAL takes noticeably longer to fully
+        // wire up an SCO mic — first PCM buffer can arrive 4–6 s after the
+        // tap is installed. Bump the no-buffer deadline to compensate.
+        let isLikelyBluetoothMic = inputFormat.sampleRate <= 24_000.0 && inputFormat.channelCount == 1
+        if isLikelyBluetoothMic {
+            audioEngineLog.info("AudioEngine.start: input rate \(inputFormat.sampleRate, privacy: .public) Hz mono looks like Bluetooth HFP/SCO (e.g. AirPods Max). Extending no-buffer deadline; this also degrades playback quality system-wide while active.")
+        }
 
-        // Install with the validated input format. Convert lazily in the
-        // callback to the target format only when they don't already match.
-        // The closure runs on the audio render thread — keep it real-time-safe:
-        // no actor hops, no allocations beyond the converted PCM buffer, and
-        // os.Logger is lock-free at the .debug level.
+        if bootstrapStrategy == .installAfterEngineStart {
+            // Install the tap with the validated input format. See `installTap`
+            // for the closure body (real-time-safe, drops on mute, converts to
+            // targetFormat when the bound device's native format differs).
+            installTap(on: inputNode, inputFormat: inputFormat)
+            audioEngineLog.info("AudioEngine.start: tap installed after engine.start, awaiting first buffer")
+        } else {
+            audioEngineLog.info("AudioEngine.start: tap armed before engine.start, awaiting first buffer")
+        }
+
+        // Subscribe to AVAudioEngineConfigurationChange. AVAudioEngine fires
+        // this on route swap (BT pair/unpair, headphone (un)plug, sample-rate
+        // change) AND auto-stops itself per Apple docs — without a handler
+        // the tap goes dead and the user gets either zero buffers (recording
+        // freezes) or wrong-rate buffers (the "slow bassy" playback artifact
+        // we hit while debugging this). The handler restarts + reinstalls the
+        // tap so the AsyncStream stays continuous from SegmentWriter's POV.
+        let observer = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            Task { [weak self] in
+                await self?.handleConfigurationChange()
+            }
+        }
+        self.configChangeObserver = observer
+
+        // Wait for the tap callback to actually fire. If it doesn't, either:
+        // (a) Bluetooth SCO is still negotiating — common with AirPods Max as
+        //     the default input; SCO link can take 4–6 s to deliver first PCM.
+        // (b) TCC trust is stale on an ad-hoc-signed dev build — HAL reports
+        //     permission granted but never routes audio to this process.
+        // 8 s deadline accommodates (a); message guides the user toward the
+        // right fix based on the bound input format we just observed.
+        // Uniform 8 s deadline for both BT and non-BT paths. On flaky
+        // Mac+macOS combos with aggregate-device interference, even the
+        // built-in mic can take 4–6 s to deliver its first buffer after
+        // a CADefaultDeviceAggregate swap. 8 s covers both BT SCO setup
+        // and non-BT HAL warmup; a real TCC denial still surfaces clearly
+        // because permission failures fail fast (engine.start throws or
+        // input format never binds at the 1 s ceiling above).
+        let waitDeadlineSeconds: TimeInterval = 8.0
+        let deadline = Date().addingTimeInterval(waitDeadlineSeconds)
+        while counter.snapshot.count == 0 && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let snap = counter.snapshot
+        if snap.count == 0 {
+            let waited = Int(waitDeadlineSeconds)
+            audioEngineLog.error("AudioEngine.start: tap callback did not fire within \(waited, privacy: .public) s. Bound input rate=\(inputFormat.sampleRate, privacy: .public) channels=\(inputFormat.channelCount, privacy: .public). Likely cause: \(isLikelyBluetoothMic ? "Bluetooth HFP/SCO mic still negotiating, or BT link dropped" : "TCC trust stale (ad-hoc-signed build)", privacy: .public).")
+            inputNode.removeTap(onBus: 0)
+            engine.stop()
+            self.engine = nil
+            continuation.finish()
+            self.continuation = nil
+            restoreDefaultInputDeviceIfSwapped()
+            let message: String
+            if isLikelyBluetoothMic {
+                message = "Microphone tap installed but no audio arrived in \(waited) s. Bound input is Bluetooth HFP/SCO at \(Int(inputFormat.sampleRate)) Hz — most likely AirPods/Beats/headset. Workarounds: (1) System Settings → Sound → Input → switch to MacBook Pro Microphone (recommended — also avoids the slow/bassy playback artifact while recording), (2) re-pair the Bluetooth device, (3) try again — SCO can take a few seconds to wake."
+            } else {
+                message = "Microphone tap installed but no audio arrived in \(waited) s. macOS reports permission as granted, but the audio HAL isn't delivering data. Run `tccutil reset Microphone dev.kosmonotes.studio`, relaunch the app, and grant the prompt again."
+            }
+            throw AudioEngineError.engineStartFailed(underlying: NSError(
+                domain: "AudioEngine",
+                code: -2,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            ))
+        }
+        audioEngineLog.info("AudioEngine.start: first buffers received — count=\(snap.count, privacy: .public) totalFrames=\(snap.totalFrames, privacy: .public)")
+
+        return stream
+    }
+
+    /// Live-toggle mic mute. When true, the tap callback drops every PCM
+    /// buffer it receives, so the segment writer keeps growing with whatever
+    /// the system is feeding (silence) but the user's voice goes nowhere.
+    /// The engine itself stays running — toggling back to false resumes
+    /// capture instantly without re-arming permissions / re-binding AUHAL.
+    public func setMuted(_ muted: Bool) {
+        muteFlag.setMuted(muted)
+    }
+
+    /// Snapshot of the current mute state. Useful for UI sync after a
+    /// pause/resume that may have lost client-side state.
+    public var isMuted: Bool {
+        muteFlag.isMuted
+    }
+
+    /// Stop mic capture, remove tap, finish the stream.
+    public func stop() async {
+        if let token = configChangeObserver {
+            NotificationCenter.default.removeObserver(token)
+            configChangeObserver = nil
+        }
+        engine?.inputNode.removeTap(onBus: 0)
+        engine?.stop()
+        continuation?.finish()
+        engine = nil
+        continuation = nil
+        targetFormat = nil
+        converterCache = nil
+        bufferCounter = nil
+        // Restore user's original system default input if we swapped it
+        // away from a Bluetooth device for this recording.
+        restoreDefaultInputDeviceIfSwapped()
+    }
+
+    // MARK: - Bluetooth mic auto-substitution (private)
+
+    /// When the system's default input is a Bluetooth device (AirPods/Beats/
+    /// headset), temporarily swap the SYSTEM default input to the built-in
+    /// microphone for the duration of our recording.
+    ///
+    /// Why this is system-wide and not just per-engine:
+    /// `AVAudioEngine.inputNode.auAudioUnit.setDeviceID(builtIn)` succeeds in
+    /// API call but doesn't actually re-route inside AUHAL when macOS has
+    /// auto-created a `CADefaultDeviceAggregate` device (which it does
+    /// whenever AirPods + other inputs are simultaneously available — visible
+    /// in our `AudioDevices` snapshot logs). The aggregate's bus 0 stays
+    /// pinned to the AirPods sub-device; our `setDeviceID` is a no-op.
+    /// The only reliable workaround is to dissolve the aggregate by changing
+    /// the system default input — once built-in mic is the default, AUHAL
+    /// binds to it directly at 48 kHz with no SCO negotiation.
+    ///
+    /// Trade-offs:
+    ///   - Other apps recording at the same moment briefly see the input
+    ///     switch (Zoom/Discord/etc.). Restored on `stop()`.
+    ///   - System Settings → Sound → Input pane visibly toggles for the
+    ///     duration of the recording.
+    ///   - Recording from AirPods mic intentionally (e.g. far from laptop)
+    ///     becomes impossible without a per-user Settings toggle. Future
+    ///     work; default is "just works" for the 95% case.
+    ///
+    /// Called from `start` BEFORE creating the AVAudioEngine, so the engine
+    /// bootstraps on top of the new default and avoids the mid-flight
+    /// reconfiguration storm that errors -10868 inside handleConfigChange.
+    private func swapDefaultInputToBuiltInIfBluetooth(context: String) {
+        guard let defaultInput = defaultInputDeviceID(),
+              isBluetoothTransport(defaultInput)
+        else { return }
+        guard let builtIn = findBuiltInMicrophoneDeviceID() else {
+            audioEngineLog.info("AudioEngine.\(context, privacy: .public): default input is Bluetooth but built-in mic not found on this Mac. Continuing with BT input; SCO timeout will apply.")
+            return
+        }
+        // Save the current default so stop() can restore it. Only save on
+        // the FIRST swap of this recording.
+        if savedDefaultInputDevice == nil {
+            savedDefaultInputDevice = defaultInput
+        }
+        if setDefaultInputDevice(builtIn) {
+            audioEngineLog.info("AudioEngine.\(context, privacy: .public): default input was Bluetooth (deviceID=\(defaultInput, privacy: .public)). Swapped system default to built-in mic (deviceID=\(builtIn, privacy: .public)) to dissolve aggregate device and skip SCO setup delay. Will restore on stop().")
+        } else {
+            audioEngineLog.error("AudioEngine.\(context, privacy: .public): AudioObjectSetPropertyData(DefaultInputDevice) failed. Falling back to system default (BT); SCO timeout will apply.")
+            savedDefaultInputDevice = nil
+        }
+    }
+
+    /// Restore the system's default input device to whatever the user had
+    /// before we started recording. No-op if no swap happened.
+    private func restoreDefaultInputDeviceIfSwapped() {
+        guard let original = savedDefaultInputDevice else { return }
+        if setDefaultInputDevice(original) {
+            audioEngineLog.info("AudioEngine.stop: restored system default input to user's original choice (deviceID=\(original, privacy: .public)).")
+        } else {
+            audioEngineLog.error("AudioEngine.stop: failed to restore system default input to deviceID=\(original, privacy: .public). User may need to re-pick in System Settings → Sound → Input.")
+        }
+        savedDefaultInputDevice = nil
+    }
+
+    // MARK: - Tap installation (private)
+
+    /// Install (or reinstall) the audio tap on `inputNode`, wiring its
+    /// callback to the actor's stored `continuation`, `targetFormat`,
+    /// `converterCache`, and `bufferCounter`. The closure runs on the audio
+    /// render thread — real-time-safe: no actor hops, no allocations beyond
+    /// the converted PCM buffer, `os.Logger` is lock-free at `.debug`.
+    private func installTap(on inputNode: AVAudioInputNode, inputFormat: AVAudioFormat) {
+        guard let targetFormat = self.targetFormat,
+              let converterCache = self.converterCache,
+              let counter = self.bufferCounter,
+              let cont = self.continuation else {
+            audioEngineLog.error("AudioEngine.installTap: missing actor state — skipping. This usually means the engine was torn down between start() and a configuration-change reinstall.")
+            return
+        }
+        // Defensive: remove any stale tap before installing. AVAudioEngine
+        // throws an `Exception 'Format mismatch'` if you call installTap
+        // twice without a removeTap in between.
+        inputNode.removeTap(onBus: 0)
+
+        let bufferSize: AVAudioFrameCount = 4800
         let mute = muteFlag
+
         inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { buffer, _ in
             // Live mic-mute: drop the buffer entirely so the AsyncStream stays
             // silent without tearing down the engine. counter still increments
@@ -224,69 +625,90 @@ public actor AudioEngine {
                 cont.yield(converted)
             }
         }
-        audioEngineLog.info("AudioEngine.start: tap installed, awaiting first buffer")
+    }
 
-        // Wait up to 3 s for the tap callback to actually fire. If it doesn't,
-        // the audio HAL never routed real audio to our process — typically a
-        // stale/ambiguous TCC entry on ad-hoc-signed dev builds. Failing here
-        // yields a clear error message instead of letting the recording finish
-        // with zero segments and a misleading "check Microphone permission"
-        // message in RecorderState.
-        let deadline = Date().addingTimeInterval(3.0)
-        while counter.snapshot.count == 0 && Date() < deadline {
-            try? await Task.sleep(nanoseconds: 100_000_000)
+    // MARK: - Route change handling (private)
+
+    /// Called from the `AVAudioEngineConfigurationChange` observer when the
+    /// system swaps the active input/output device or changes its format.
+    ///
+    /// AVAudioEngine has already auto-stopped itself by the time this fires
+    /// (per Apple docs). We restart it, wait for the new input format to
+    /// bind, and reinstall the tap so the upstream AsyncStream keeps
+    /// receiving buffers — converted to our `targetFormat` (e.g. 48 kHz mono
+    /// Float32) regardless of what the new device's native rate is.
+    ///
+    /// On failure we log and bail; the next user-initiated stop()/start()
+    /// will recover. We deliberately do NOT throw or finish() the stream —
+    /// the recording is still notionally alive and forcibly killing it would
+    /// surprise the user mid-session.
+    private func handleConfigurationChange() async {
+        guard let engine = self.engine else {
+            audioEngineLog.info("AudioEngine.handleConfigurationChange: notification fired after stop() — ignoring")
+            return
         }
-        let snap = counter.snapshot
-        if snap.count == 0 {
-            audioEngineLog.error("AudioEngine.start: tap callback did not fire within 3 s — TCC trust likely stale; tccutil reset Microphone dev.kosmonotes.studio + relaunch")
-            inputNode.removeTap(onBus: 0)
-            engine.stop()
-            self.engine = nil
-            continuation.finish()
-            self.continuation = nil
-            throw AudioEngineError.engineStartFailed(underlying: NSError(
-                domain: "AudioEngine",
-                code: -2,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "Microphone tap installed but no audio buffers arrived in 3 s. macOS reports permission as granted, but the audio HAL is not delivering data to this build. Run `tccutil reset Microphone dev.kosmonotes.studio`, relaunch the app, and grant the prompt again."]
-            ))
+        audioEngineLog.info("AudioEngine.handleConfigurationChange: AVAudioEngineConfigurationChange fired (route swap, headphone connect/disconnect, or sample-rate change). Restarting engine.")
+
+        let inputNode = engine.inputNode
+        // Reset counter so the no-buffer watchdog (if any caller adds one) sees
+        // a clean slate after the swap.
+        bufferCounter = TapBufferCounter()
+
+        // We don't re-swap the system default here — we already did that in
+        // start() before the engine was created, and savedDefaultInputDevice
+        // remembers the user's pre-recording choice. Re-swapping mid-handler
+        // would fire ANOTHER configuration change in 1 s and put us in a
+        // restart loop. The system default is already on built-in for the
+        // duration of this recording.
+
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            audioEngineLog.error("AudioEngine.handleConfigurationChange: engine.start() failed — \(error.localizedDescription, privacy: .public). Recording will continue silently until the user stops/restarts.")
+            return
         }
-        audioEngineLog.info("AudioEngine.start: first buffers received — count=\(snap.count, privacy: .public) totalFrames=\(snap.totalFrames, privacy: .public)")
 
-        return stream
-    }
+        // Wait for the new input format to bind. Same 1 s ceiling as the
+        // initial start path. Query AUHAL directly to avoid the stale-format
+        // cache bug that crashes installTap (see start() for details).
+        var inputFormat = inputNode.auAudioUnit.outputBusses[0].format
+        var attempts = 0
+        while (inputFormat.channelCount == 0 || inputFormat.sampleRate == 0) && attempts < 100 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+            inputFormat = inputNode.auAudioUnit.outputBusses[0].format
+            attempts += 1
+        }
+        guard inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
+            audioEngineLog.error("AudioEngine.handleConfigurationChange: input format never bound after restart (channels=0 or sampleRate=0)")
+            return
+        }
+        audioEngineLog.info("AudioEngine.handleConfigurationChange: new input bound — sampleRate=\(inputFormat.sampleRate, privacy: .public) channels=\(inputFormat.channelCount, privacy: .public). Reinstalling tap.")
 
-    /// Live-toggle mic mute. When true, the tap callback drops every PCM
-    /// buffer it receives, so the segment writer keeps growing with whatever
-    /// the system is feeding (silence) but the user's voice goes nowhere.
-    /// The engine itself stays running — toggling back to false resumes
-    /// capture instantly without re-arming permissions / re-binding AUHAL.
-    public func setMuted(_ muted: Bool) {
-        muteFlag.setMuted(muted)
-    }
-
-    /// Snapshot of the current mute state. Useful for UI sync after a
-    /// pause/resume that may have lost client-side state.
-    public var isMuted: Bool {
-        muteFlag.isMuted
-    }
-
-    /// Stop mic capture, remove tap, finish the stream.
-    public func stop() async {
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
-        continuation?.finish()
-        engine = nil
-        continuation = nil
+        installTap(on: inputNode, inputFormat: inputFormat)
     }
 }
 
 // MARK: - Errors
 
-public enum AudioEngineError: Error, Sendable {
+public enum AudioEngineError: Error, Sendable, LocalizedError {
     case formatCreationFailed
     case converterCreationFailed
     case engineStartFailed(underlying: Error)
+
+    public var errorDescription: String? {
+        switch self {
+        case .formatCreationFailed:
+            return "Could not create the target audio format. This is unexpected — please report it."
+        case .converterCreationFailed:
+            return "Could not create the audio sample-rate converter."
+        case .engineStartFailed(let underlying):
+            // Surface the underlying NSError's localized description directly
+            // so users see "Microphone tap installed but no audio arrived..."
+            // instead of "AudioEngineError error 0".
+            return underlying.localizedDescription
+        }
+    }
 }
 
 // MARK: - ConverterCache

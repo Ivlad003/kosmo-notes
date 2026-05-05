@@ -72,17 +72,10 @@ public actor ScreenRecorder: NSObject {
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var streamOutput: ScreenStreamOutput?
     private var firstSampleTime: CMTime?
-    /// Optional fan-out for every screen-video CMSampleBuffer **before** PTS
-    /// rebasing. Intended consumer: StreamingKit's RTMPStreamer, which wants
-    /// the original SCStream PTS (HaishinKit's IOStream rebases internally).
-    /// Same Sendable contract as CaptureSession.audioTee — single drain
-    /// thread, no synchronization needed beyond what the closure does.
-    private let videoTee: (@Sendable (CMSampleBuffer) -> Void)?
 
     // MARK: - Init
 
-    public init(videoTee: (@Sendable (CMSampleBuffer) -> Void)? = nil) {
-        self.videoTee = videoTee
+    public override init() {
         super.init()
     }
 
@@ -298,13 +291,6 @@ public actor ScreenRecorder: NSObject {
 
         switch type {
         case .screen:
-            // Forward every valid screen frame to the live RTMP path before
-            // doing any PTS rebasing — HaishinKit's IOStream does its own
-            // timeline normalization. Fired unconditionally on .complete
-            // frames; dropped writer frames (back-pressure / nil pixel
-            // buffer) still go out to RTMP since the two paths have
-            // independent pacing.
-            videoTee?(sampleBuffer)
             guard let vInput = videoInput, vInput.isReadyForMoreMediaData else {
                 screenFrameDropped += 1
                 return

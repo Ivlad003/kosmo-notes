@@ -25,7 +25,6 @@ extension AppSettings {
         case gemini = "gemini.api_key"
         case s3AccessKey = "s3.access_key_id"
         case s3SecretKey = "s3.secret_access_key"
-        case rtmpStreamKey = "rtmp.stream_key"
     }
 
     enum TranscriptionProviderChoice: String, CaseIterable, Identifiable {

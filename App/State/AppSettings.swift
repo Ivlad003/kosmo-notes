@@ -119,16 +119,6 @@ final class AppSettings {
         // string means "user hasn't picked one yet" — the Settings UI guides
         // them to choose + download before they can switch the active provider.
         static let whisperKitModel = "whisperKitModel"
-        // RTMP live streaming. streamKey moved to Keychain in Phase 4 polish;
-        // only the toggle and URL stay in UserDefaults (URL is not a secret —
-        // OBS, MediaMTX, YouTube ingest URLs are public).
-        static let streamingEnabled = "streamingEnabled"
-        static let rtmpURL = "rtmpURL"
-        // Whether the user has dismissed the one-time privacy modal explaining
-        // that RTMP streaming sends mic / system audio / screen frames in real
-        // time to the configured destination. Set once on first ack; we never
-        // re-prompt — Settings → Streaming has the same warning text.
-        static let streamingPrivacyAcknowledged = "streamingPrivacyAcknowledged"
         // Storage profile + codec overrides
         static let storageProfile = "storageProfile"
         static let audioCodec = "audioCodec"
@@ -454,30 +444,6 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(s3Bucket, forKey: Defaults.s3Bucket) }
     }
 
-    /// Live RTMP streaming toggle. When ON and `rtmpURL` + `rtmpStreamKey` are
-    /// non-empty, every recording also publishes audio to the RTMP endpoint
-    /// (Phase 2b is sync-with-recording only — standalone "stream-only" mode
-    /// lands in Phase 2c). Off by default.
-    var streamingEnabled: Bool {
-        didSet { UserDefaults.standard.set(streamingEnabled, forKey: Defaults.streamingEnabled) }
-    }
-    /// RTMP ingest URL, e.g. `rtmp://a.rtmp.youtube.com/live2` or `rtmp://localhost:1935/live`
-    /// when testing against MediaMTX.
-    var rtmpURL: String {
-        didSet { UserDefaults.standard.set(rtmpURL, forKey: Defaults.rtmpURL) }
-    }
-    /// Stream key (provider-issued secret). Loaded from Keychain on init via
-    /// `loadKeysFromKeychain`; persisted via `commit(.rtmpStreamKey, value:)`
-    /// when the user finishes editing in Settings → Streaming. Same pattern
-    /// as `s3SecretKey` and the API keys.
-    var rtmpStreamKey: String = ""
-    /// User has acknowledged the one-time RTMP privacy modal. Set true after
-    /// the first OK on the modal in `StreamingPrivacyConfirm`. Once true, we
-    /// never re-prompt — the same warning text lives in Settings → Streaming
-    /// for users who want to revisit it.
-    var streamingPrivacyAcknowledged: Bool {
-        didSet { UserDefaults.standard.set(streamingPrivacyAcknowledged, forKey: Defaults.streamingPrivacyAcknowledged) }
-    }
     /// Presigned URL TTL in hours. Default 168 (7 days, the S3 max for sigv4).
     var s3PresignTTLHours: Int {
         didSet { UserDefaults.standard.set(s3PresignTTLHours, forKey: Defaults.s3PresignTTLHours) }
@@ -623,10 +589,21 @@ final class AppSettings {
         self.systemAudioEnabled = UserDefaults.standard.bool(forKey: Defaults.systemAudioEnabled)
         // Default true for cleanup; UserDefaults.bool returns false for missing keys, so check object presence.
         self.dictationLLMCleanup = (UserDefaults.standard.object(forKey: Defaults.dictationLLMCleanup) as? Bool) ?? true
-        // Default `clipboardSimulatedV` — universal compatibility.
+        // Default `clipboardSimulatedV` — universal compatibility. The
+        // historical `axapiThenClipboard` enum case (removed 2026-05-04)
+        // would silently no-op in Electron targets and confuse users into
+        // thinking dictation was broken; migrate any stored "axapiThenClipboard"
+        // raw value to `clipboardSimulatedV` here so existing installs
+        // upgrade cleanly without the user having to flip a toggle.
         let insertionRaw = UserDefaults.standard.string(forKey: Defaults.dictationInsertion)
             ?? DictationInsertionStrategy.clipboardSimulatedV.rawValue
-        self.dictationInsertion = DictationInsertionStrategy(rawValue: insertionRaw) ?? .clipboardSimulatedV
+        let migrated = (insertionRaw == "axapiThenClipboard")
+            ? DictationInsertionStrategy.clipboardSimulatedV.rawValue
+            : insertionRaw
+        if migrated != insertionRaw {
+            UserDefaults.standard.set(migrated, forKey: Defaults.dictationInsertion)
+        }
+        self.dictationInsertion = DictationInsertionStrategy(rawValue: migrated) ?? .clipboardSimulatedV
         self.transcriptCleanupEnabled = (UserDefaults.standard.object(forKey: Defaults.transcriptCleanupEnabled) as? Bool) ?? true
         let maxSecs = UserDefaults.standard.integer(forKey: Defaults.dictationMaxSeconds)
         self.dictationMaxSeconds = maxSecs > 0 ? maxSecs : 60
@@ -660,12 +637,6 @@ final class AppSettings {
         self.s3Bucket = UserDefaults.standard.string(forKey: Defaults.s3Bucket) ?? ""
         let ttl = UserDefaults.standard.integer(forKey: Defaults.s3PresignTTLHours)
         self.s3PresignTTLHours = ttl > 0 ? ttl : 168
-
-        self.streamingEnabled = UserDefaults.standard.bool(forKey: Defaults.streamingEnabled)
-        self.rtmpURL = UserDefaults.standard.string(forKey: Defaults.rtmpURL) ?? ""
-        self.streamingPrivacyAcknowledged = UserDefaults.standard.bool(forKey: Defaults.streamingPrivacyAcknowledged)
-        // rtmpStreamKey is read from Keychain at the end of init via
-        // loadKeysFromKeychain — see the openaiApiKey / s3SecretKey pattern.
 
         // Storage profile defaults to .balanced for new installs (50 % smaller than
         // the legacy "Quality" default). Existing installs that have no UserDefaults
@@ -724,7 +695,6 @@ final class AppSettings {
         geminiApiKey = (try? keychain.get(KeychainAccount.gemini.rawValue)) ?? ""
         s3AccessKey = (try? keychain.get(KeychainAccount.s3AccessKey.rawValue)) ?? ""
         s3SecretKey = (try? keychain.get(KeychainAccount.s3SecretKey.rawValue)) ?? ""
-        rtmpStreamKey = (try? keychain.get(KeychainAccount.rtmpStreamKey.rawValue)) ?? ""
     }
 
     /// Persist all currently-loaded values to Keychain. Empty strings are
@@ -738,7 +708,6 @@ final class AppSettings {
         commit(.gemini, value: geminiApiKey)
         commit(.s3AccessKey, value: s3AccessKey)
         commit(.s3SecretKey, value: s3SecretKey)
-        commit(.rtmpStreamKey, value: rtmpStreamKey)
     }
 
     func commit(_ account: KeychainAccount, value: String) {
@@ -812,7 +781,6 @@ final class AppSettings {
             "pushToMarkdownEnabled=\(pushToMarkdownEnabled)",
             "agentEnabled=\(agentEnabled) agentBackend=\(agentBackend.rawValue)",
             "cameraBubbleEnabled=\(cameraBubbleEnabled)",
-            "streamingEnabled=\(streamingEnabled)",
             "s3Configured=\(!s3Endpoint.isEmpty && !s3Bucket.isEmpty && !s3AccessKey.isEmpty)",
             "openaiKeySet=\(!openaiApiKey.isEmpty)",
             "anthropicKeySet=\(!anthropicApiKey.isEmpty)",

@@ -290,7 +290,7 @@ public final class DictationPipeline {
         emit(.pasteIssued)
         let pasteResult = paster(finalText)
         switch pasteResult {
-        case .axInserted, .clipboardSimulatedV, .clipboardOnly:
+        case .clipboardSimulatedV, .clipboardOnly:
             // clipboardOnly is a successful outcome — text reached the
             // clipboard, the user just pastes it manually. The pipeline
             // status doesn't distinguish; the app layer can read

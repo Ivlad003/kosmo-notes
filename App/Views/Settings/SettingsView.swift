@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+@preconcurrency import ScreenCaptureKit
 import SwiftUI
 import AIKit
 import CaptureKit
@@ -34,9 +35,6 @@ struct SettingsView: View {
 
             SharingTab(settings: settings)
                 .tabItem { Label("Sharing", systemImage: "square.and.arrow.up") }
-
-            StreamingTab(settings: settings)
-                .tabItem { Label("Streaming", systemImage: "dot.radiowaves.left.and.right") }
 
             MarkdownExportTab(settings: settings)
                 .tabItem { Label("Markdown", systemImage: "doc.text") }
@@ -162,6 +160,15 @@ private struct TranscriptionTab: View {
                 Text("Opus falls back to HE-AAC inside .m4a containers (Opus muxing requires a different container).")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+            }
+
+            if settings.recordingMode == .audioAndScreen {
+                Section("Display (when Audio + Screen mode)") {
+                    ScreenDisplayPicker(settings: settings)
+                    Text("Picks which monitor goes into screen.mp4. The list is fetched from ScreenCaptureKit, so external displays appear once Screen Recording permission is granted. Changes take effect on the next recording.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
 
             Section("Video codec (when Audio + Screen mode)") {
@@ -857,7 +864,6 @@ private struct HotkeysTab: View {
                 KeyboardShortcuts.Recorder("Meeting record toggle", name: .toggleMeeting)
                 KeyboardShortcuts.Recorder("Voice Note toggle", name: .toggleVoiceNote)
                 KeyboardShortcuts.Recorder("Open Library", name: .openLibrary)
-                KeyboardShortcuts.Recorder("Standalone RTMP stream toggle (mic-only)", name: .toggleStandaloneStreaming)
                 KeyboardShortcuts.Recorder("Dictation (push-to-talk)", name: .dictation)
                 KeyboardShortcuts.Recorder("Push-to-Markdown (hold + speak → save .md)", name: .pushToMarkdown)
                 KeyboardShortcuts.Recorder("Agent (hold + speak → autonomous agent)", name: .agentTrigger)
@@ -953,54 +959,6 @@ private struct SharingTab: View {
     }
 }
 
-// MARK: - Streaming tab
-
-@available(macOS 14.0, *)
-private struct StreamingTab: View {
-    @Bindable var settings: AppSettings
-
-    var body: some View {
-        Form {
-            Section("Live RTMP broadcast") {
-                Toggle("Also broadcast to RTMP while recording", isOn: $settings.streamingEnabled)
-                Text("When ON, every recording also streams audio to the RTMP endpoint below. Phase 2b: audio-only sync-with-recording. Standalone stream-only mode and screen video land in upcoming phases.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                HStack {
-                    Text("RTMP URL")
-                    Spacer()
-                    TextField("rtmp://localhost:1935/live", text: $settings.rtmpURL)
-                        .frame(width: 320)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                APIKeyField(
-                    title: "Stream key",
-                    text: $settings.rtmpStreamKey,
-                    onCommit: { settings.commit(.rtmpStreamKey, value: settings.rtmpStreamKey) }
-                )
-                Text("Stream key is stored in the macOS Keychain under service `dev.kosmonotes.studio`, account `rtmp.stream_key` — same security posture as the other API keys. Press Enter or focus-out to save.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Privacy") {
-                Text("RTMP streaming uploads your microphone (and, in upcoming phases, system audio + screen) in real time to the configured server. Verify you trust the destination before enabling. Toggle off to stop broadcasting on the next recording.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Tested against") {
-                Text("• MediaMTX (`docker run --rm -it -p 1935:1935 bluenviron/mediamtx`)\n• YouTube Live ingest (`rtmp://a.rtmp.youtube.com/live2`)\n• Twitch ingest (`rtmp://live.twitch.tv/app`)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.leading)
-            }
-        }
-        .formStyle(.grouped)
-    }
-}
 
 // MARK: - Privacy tab
 
@@ -1294,6 +1252,81 @@ private struct APIKeyField: View {
 
             Button("Save", action: onCommit)
                 .keyboardShortcut(.defaultAction)
+        }
+    }
+}
+
+// MARK: - ScreenDisplayPicker
+
+/// Picker for the display to capture in Audio + Screen mode (Settings →
+/// Transcription). Loads the live display list from ScreenCaptureKit on
+/// appear — external monitors appear once Screen Recording permission is
+/// granted. "Auto" (tag = 0) defers to ScreenRecorder's first-display fallback.
+@available(macOS 14.0, *)
+private struct ScreenDisplayPicker: View {
+    @Bindable var settings: AppSettings
+    @State private var displays: [DisplayInfo] = []
+    @State private var loadError: String? = nil
+    @State private var refreshTick: Int = 0
+
+    struct DisplayInfo: Identifiable, Sendable, Hashable {
+        let id: UInt32   // CGDirectDisplayID
+        let width: Int
+        let height: Int
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Display", selection: $settings.screenCaptureDisplayID) {
+                Text("Auto (primary display)").tag(UInt32(0))
+                if !displays.isEmpty {
+                    Divider()
+                    ForEach(displays) { d in
+                        Text("Display \(d.id) — \(d.width)×\(d.height)").tag(d.id)
+                    }
+                }
+            }
+            .id(refreshTick)
+
+            HStack(spacing: 8) {
+                Button("Refresh display list") {
+                    Task { await load() }
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+
+                if settings.screenCaptureDisplayID != 0,
+                   !displays.contains(where: { $0.id == settings.screenCaptureDisplayID }) {
+                    Label("Selected display not connected — will fall back to primary",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            if let err = loadError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .task { await load() }
+    }
+
+    @MainActor
+    private func load() async {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                false, onScreenWindowsOnly: true
+            )
+            self.displays = content.displays
+                .map { DisplayInfo(id: $0.displayID, width: $0.width, height: $0.height) }
+                .sorted { $0.id < $1.id }
+            self.loadError = nil
+            self.refreshTick &+= 1
+        } catch {
+            self.displays = []
+            self.loadError = "Could not list displays — Screen Recording permission may be missing. (\(error.localizedDescription))"
         }
     }
 }

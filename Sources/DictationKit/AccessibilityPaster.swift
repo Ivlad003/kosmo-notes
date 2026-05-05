@@ -8,16 +8,15 @@ private let pasterLog = Logger(subsystem: "dev.kosmonotes.dictation", category: 
 
 /// How a dictated transcript reaches the user's destination.
 ///
-/// Three explicit modes. The default is `clipboardSimulatedV` — it works
-/// universally (Slack, Discord, Cursor, VS Code, Telegram, etc.) and is what
-/// every reliable Mac dictation tool uses. The other two are escape hatches.
+/// Two modes — clipboard with auto-paste (default) and clipboard-only. An
+/// earlier revision had a third mode (`axapiThenClipboard`) that used the
+/// AXAPI `kAXSelectedTextAttribute` direct-insert path; it was removed on
+/// 2026-05-04 because the AX call returns `.success` in most Electron-based
+/// targets (Slack, Discord, Cursor, VS Code, Telegram web, etc.) without
+/// actually inserting any text — the pipeline marked the dictation as
+/// "completed" while the user saw nothing. Clipboard+⌘V is what every
+/// reliable Mac dictation tool uses.
 public enum DictationInsertionStrategy: String, Sendable, Codable, CaseIterable, Hashable {
-
-    /// Try `kAXSelectedTextAttribute` (direct insert) first. Faster in apps that
-    /// honour it (Notes, TextEdit, Mail, Safari address). Known false-positive
-    /// in Electron-based targets — the AX call returns success while no text
-    /// actually appears. Falls back to clipboard+⌘V on AX failure.
-    case axapiThenClipboard
 
     /// Default. Write to clipboard, simulate ⌘V, restore previous clipboard.
     case clipboardSimulatedV
@@ -30,7 +29,6 @@ public enum DictationInsertionStrategy: String, Sendable, Codable, CaseIterable,
     /// Human-readable name for the Settings picker.
     public var displayName: String {
         switch self {
-        case .axapiThenClipboard: return "AXAPI direct insert (faster, less reliable)"
         case .clipboardSimulatedV: return "Clipboard + ⌘V (recommended)"
         case .clipboardOnly: return "Clipboard only (paste manually)"
         }
@@ -39,8 +37,6 @@ public enum DictationInsertionStrategy: String, Sendable, Codable, CaseIterable,
     /// Sub-caption shown under the Settings picker.
     public var detailDescription: String {
         switch self {
-        case .axapiThenClipboard:
-            return "Tries AXAPI direct insertion first; falls back to clipboard+⌘V if AX is unavailable. Many Electron apps (Slack/Discord/Cursor/VS Code) silently swallow AX without inserting."
         case .clipboardSimulatedV:
             return "Universally compatible. Writes the transcript to your clipboard, simulates ⌘V, and restores your previous clipboard ~150 ms later."
         case .clipboardOnly:
@@ -56,7 +52,6 @@ public enum DictationInsertionStrategy: String, Sendable, Codable, CaseIterable,
 public enum AccessibilityPaster {
 
     public enum PasteResult: Sendable, Equatable {
-        case axInserted
         case clipboardSimulatedV
         /// Clipboard-only path: text was placed on the clipboard but no ⌘V
         /// was simulated. Caller is expected to surface a notification.
@@ -81,36 +76,6 @@ public enum AccessibilityPaster {
         pasterLog.info("paste: strategy=\(strategy.rawValue, privacy: .public) chars=\(text.count, privacy: .public)")
 
         switch strategy {
-        case .axapiThenClipboard:
-            if isTrusted() {
-                let systemWide = AXUIElementCreateSystemWide()
-                var focusedElement: CFTypeRef?
-                let getErr = AXUIElementCopyAttributeValue(
-                    systemWide,
-                    kAXFocusedUIElementAttribute as CFString,
-                    &focusedElement
-                )
-                if getErr == .success, let element = focusedElement {
-                    let axElement = element as! AXUIElement  // swiftlint:disable:this force_cast
-                    let setErr = AXUIElementSetAttributeValue(
-                        axElement,
-                        kAXSelectedTextAttribute as CFString,
-                        text as CFTypeRef
-                    )
-                    if setErr == .success {
-                        pasterLog.info("paste: AXAPI .success — note: many Electron apps return success without inserting")
-                        return .axInserted
-                    } else {
-                        pasterLog.info("paste: AXAPI setErr=\(setErr.rawValue, privacy: .public) — falling back to clipboard")
-                    }
-                } else {
-                    pasterLog.info("paste: AXAPI getErr=\(getErr.rawValue, privacy: .public) — falling back to clipboard")
-                }
-            } else {
-                pasterLog.info("paste: AXAPI requested but process not trusted — using clipboard")
-            }
-            return pasteViaClipboard(text, simulateCmdV: true)
-
         case .clipboardSimulatedV:
             return pasteViaClipboard(text, simulateCmdV: true)
 

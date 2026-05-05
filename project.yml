@@ -17,9 +17,6 @@ packages:
   KeyboardShortcuts:
     url: https://github.com/sindresorhus/KeyboardShortcuts
     from: 2.2.0
-  HaishinKit:
-    url: https://github.com/shogo4405/HaishinKit.swift
-    from: 1.9.5
   KosmoNotesCore:
     path: .
 
@@ -46,7 +43,7 @@ targets:
         # entry below overwrites it with a YYYYMMDD.HHMM timestamp on every
         # build, so each rebuild has a visibly distinct build number in the
         # menu-bar version line.
-        CFBundleVersion: "13"
+        CFBundleVersion: "14"
         CFBundleShortVersionString: "0.0.2"
         CFBundlePackageType: APPL
         CFBundleExecutable: "$(EXECUTABLE_NAME)"
@@ -97,8 +94,6 @@ targets:
         product: DictationKit
       - package: KosmoNotesCore
         product: SharingKit
-      - package: KosmoNotesCore
-        product: StreamingKit
     preBuildScripts:
       # Stamp CFBundleVersion with a YYYYMMDD.HHMM timestamp every build so
       # `KosmoNotes 0.0.2 (20260503.2154)` in the menu changes on every

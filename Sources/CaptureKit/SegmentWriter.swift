@@ -121,6 +121,21 @@ public actor SegmentWriter {
         // the buffer; ~tens of ms of audio loss per roll, which is invisible
         // for the use case (transcription doesn't notice).
         if finalizing { return }
+
+        // Defense in depth: AAC track in the .m4a is declared at `sampleRate`
+        // and `toCMSampleBuffer` writes its CMSampleBuffer's ASBD with the
+        // same rate. If a buffer arrives at a different rate (e.g. the
+        // upstream AudioEngine's converter failed silently after a route
+        // change, or someone wired raw HFP/SCO 16 kHz buffers directly here)
+        // and we wrote it as if it were 48 kHz, playback would render at the
+        // wrong speed — the "slow + bassy" artifact. Dropping the buffer
+        // costs ~100 ms of audio; writing it would corrupt the whole segment.
+        let bufferRate = pcmBuffer.format.sampleRate
+        if abs(bufferRate - sampleRate) > 0.01 {
+            segmentWriterLog.error("SegmentWriter.append: rate mismatch — buffer=\(bufferRate, privacy: .public) configured=\(self.sampleRate, privacy: .public) source=\(String(describing: source), privacy: .public). Dropping to prevent corrupt 'slow-bassy' playback. Upstream AudioEngine should be converting before delivery.")
+            return
+        }
+
         if assetWriter == nil {
             try openNewSegment()
         }

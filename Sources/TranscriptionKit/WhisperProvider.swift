@@ -17,9 +17,16 @@ private let whisperLog = Logger(subsystem: "dev.kosmonotes.studio", category: "W
 /// segment in the parser. Trade-off: gpt-4o models have higher accuracy
 /// but no segment-level timing, so transcripts lose `[mm:ss]` markers.
 ///
-/// File-size cap: Whisper rejects payloads >25 MB. For longer recordings,
-/// `RecorderState` (or a future helper) should split into chunks before
-/// calling `transcribe(audioFile:config:)`.
+/// **Length limits & auto-chunking.** OpenAI imposes:
+/// - 25 MB per upload (all models).
+/// - 1400 s per request (gpt-4o-transcribe / gpt-4o-mini-transcribe).
+///
+/// For recordings beyond `maxChunkDuration` (default 1200 s, well under
+/// the 1400 s gpt-4o ceiling and the 25 MB body limit at our 96 kbps AAC),
+/// `transcribe(audioFile:config:)` automatically slices the input via
+/// `AudioChunker`, transcribes each chunk, and merges results with
+/// segment timestamps shifted by each chunk's offset. Temp chunk files
+/// are cleaned up before return.
 public final class WhisperProvider: BatchTranscriptionProvider, Sendable {
 
     public typealias HTTPClient = @Sendable (URLRequest) async throws -> (Data, URLResponse)
@@ -29,6 +36,7 @@ public final class WhisperProvider: BatchTranscriptionProvider, Sendable {
     private let apiKey: String
     private let endpoint: URL
     private let model: String
+    private let maxChunkDuration: TimeInterval
     private let httpClient: HTTPClient
 
     // MARK: Init
@@ -37,11 +45,13 @@ public final class WhisperProvider: BatchTranscriptionProvider, Sendable {
         apiKey: String,
         endpoint: URL = WhisperProvider.defaultEndpoint,
         model: String = "whisper-1",
+        maxChunkDuration: TimeInterval = 1200,
         httpClient: @escaping HTTPClient = WhisperProvider.defaultHTTPClient
     ) {
         self.apiKey = apiKey
         self.endpoint = endpoint
         self.model = model
+        self.maxChunkDuration = maxChunkDuration
         self.httpClient = httpClient
     }
 
@@ -56,6 +66,69 @@ public final class WhisperProvider: BatchTranscriptionProvider, Sendable {
     // MARK: BatchTranscriptionProvider
 
     public func transcribe(audioFile: URL, config: TranscriptionConfig) async throws -> BatchTranscriptResult {
+        let chunker = AudioChunker()
+        let chunks: [AudioChunker.Chunk]
+        do {
+            chunks = try await chunker.chunk(audioFile: audioFile, maxChunkDuration: maxChunkDuration)
+        } catch {
+            // If chunking fails (corrupt asset, no audio tracks, etc.), don't
+            // hide the failure behind a fallback that the API will reject anyway.
+            // Surface a clean error so the user sees what really broke.
+            whisperLog.error("WhisperProvider.transcribe: chunker failed — \(error.localizedDescription, privacy: .public)")
+            throw TranscriptionError.sendFailed(message: "Could not prepare audio for upload: \(error.localizedDescription)")
+        }
+
+        // Single-chunk fast path: no temp dir, no merging, no cleanup.
+        if chunks.count == 1, chunks[0].url == audioFile {
+            return try await transcribeSingle(audioFile: audioFile, config: config)
+        }
+
+        whisperLog.info("WhisperProvider.transcribe: chunked \(audioFile.lastPathComponent, privacy: .public) into \(chunks.count, privacy: .public) parts (max \(self.maxChunkDuration, privacy: .public) s each)")
+
+        // Multi-chunk path. Always clean up the temp dir on exit, even on throw.
+        let tempDir = chunker.tempDirectory(for: chunks, originalAudioFile: audioFile)
+        defer {
+            if let dir = tempDir { try? FileManager.default.removeItem(at: dir) }
+        }
+
+        var mergedSegments: [TranscriptSegment] = []
+        var mergedTexts: [String] = []
+        var totalDuration: TimeInterval = 0
+        var detectedLanguage: String? = nil
+
+        for (idx, chunk) in chunks.enumerated() {
+            whisperLog.info("WhisperProvider.transcribe: uploading chunk \(idx + 1, privacy: .public)/\(chunks.count, privacy: .public) (start=\(chunk.startTime, privacy: .public)s dur=\(chunk.duration, privacy: .public)s)")
+            let result = try await transcribeSingle(audioFile: chunk.url, config: config)
+            let offset = chunk.startTime
+            for seg in result.segments {
+                mergedSegments.append(TranscriptSegment(
+                    start: seg.start + offset,
+                    end: seg.end + offset,
+                    text: seg.text,
+                    confidence: seg.confidence,
+                    isFinal: seg.isFinal,
+                    speaker: seg.speaker
+                ))
+            }
+            // Trim to avoid double-spaces between chunks.
+            let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { mergedTexts.append(trimmed) }
+            totalDuration = max(totalDuration, offset + result.duration)
+            if detectedLanguage == nil { detectedLanguage = result.language }
+        }
+
+        return BatchTranscriptResult(
+            language: detectedLanguage,
+            duration: totalDuration,
+            segments: mergedSegments,
+            text: mergedTexts.joined(separator: " ")
+        )
+    }
+
+    /// Transcribe a single (already-bounded) audio file. Used both by the
+    /// single-chunk fast path and as the inner call for each chunk in the
+    /// multi-chunk path.
+    private func transcribeSingle(audioFile: URL, config: TranscriptionConfig) async throws -> BatchTranscriptResult {
         let audioData: Data
         do {
             audioData = try Data(contentsOf: audioFile)

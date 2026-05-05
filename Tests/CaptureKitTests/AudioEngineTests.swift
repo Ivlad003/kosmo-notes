@@ -94,4 +94,24 @@ struct AudioEngineTests {
             // Expected on CI — no mic. Pass.
         }
     }
+
+    @Test("Tap bootstrap uses pre-start install when input format is already valid")
+    func tapBootstrapUsesPreStartInstallForUsableFormat() {
+        #expect(
+            AudioEngine.tapBootstrapStrategy(
+                preStartSampleRate: 48_000,
+                preStartChannelCount: 2
+            ) == .installBeforeEngineStart
+        )
+    }
+
+    @Test("Tap bootstrap falls back to delayed install when pre-start format is degenerate")
+    func tapBootstrapFallsBackForDegenerateFormat() {
+        #expect(
+            AudioEngine.tapBootstrapStrategy(
+                preStartSampleRate: 0,
+                preStartChannelCount: 0
+            ) == .installAfterEngineStart
+        )
+    }
 }

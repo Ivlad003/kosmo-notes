@@ -14,10 +14,4 @@ extension KeyboardShortcuts.Name {
     /// Open the Library window. Default ⌘L (chord-only when an app window is foreground;
     /// global registration via KeyboardShortcuts works regardless).
     static let openLibrary = Self("openLibrary", default: .init(.l, modifiers: [.command, .shift]))
-
-    /// Toggle standalone RTMP streaming (mic-only, no recording, no disk).
-    /// Default ⌘⇧S. Useful for live broadcasts that don't need a saved
-    /// session — e.g. driving a live demo / talk straight from the menu bar.
-    /// The sync-with-recording RTMP path remains tied to ⌘⇧R / ⌘⇧N.
-    static let toggleStandaloneStreaming = Self("toggleStandaloneStreaming", default: .init(.s, modifiers: [.command, .shift]))
 }
