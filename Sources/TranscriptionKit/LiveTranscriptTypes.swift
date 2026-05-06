@@ -60,15 +60,84 @@ extension LiveTranscriptState {
     public func merging(_ result: LiveTranscriptWindowResult, mutableHorizon: TimeInterval) -> LiveTranscriptState {
         let lockBefore = max(0, result.emittedAt - mutableHorizon)
 
-        let promoted = draftUnits
-            .filter { $0.end <= lockBefore }
-            .map { LiveTranscriptUnit(start: $0.start, end: $0.end, text: $0.text, state: .stable) }
+        // Helper: split a unit at a time t (t between start and end).
+        // Splits text proportionally by words according to time fraction.
+        func splitUnitAt(_ unit: LiveTranscriptUnit, _ t: TimeInterval) -> (LiveTranscriptUnit?, LiveTranscriptUnit?) {
+            guard t > unit.start && t < unit.end else { return (unit, nil) }
+            let duration = unit.end - unit.start
+            guard duration > 0 else { return (unit, nil) }
 
-        let keptDraft = draftUnits.filter { $0.end > lockBefore && $0.end <= result.windowStart }
+            let words = unit.text
+                .split { $0.isWhitespace || $0.isNewline }
+                .map(String.init)
+
+            // fraction of the left segment
+            let frac = (t - unit.start) / duration
+            let leftCount = Int(floor(Double(words.count) * frac))
+
+            if leftCount <= 0 {
+                return (nil, unit)
+            } else if leftCount >= words.count {
+                return (unit, nil)
+            }
+
+            let leftText = words[0..<leftCount].joined(separator: " ")
+            let rightText = words[leftCount..<words.count].joined(separator: " ")
+
+            let left = LiveTranscriptUnit(start: unit.start, end: t, text: leftText.trimmingCharacters(in: .whitespacesAndNewlines), state: unit.state)
+            let right = LiveTranscriptUnit(start: t, end: unit.end, text: rightText.trimmingCharacters(in: .whitespacesAndNewlines), state: unit.state)
+            return (left, right)
+        }
+
+        // Decide promotion cut: we only promote prefixes that are both older than the mutable horizon
+        // and that occur before the incoming result window. This avoids rewriting stable text that lies
+        // before the new windowStart while still promoting parts that are effectively locked.
+        let promotionCut = min(lockBefore, result.windowStart)
+
+        // Start from existing drafts, but split them at both promotionCut and result.windowStart
+        var segments: [LiveTranscriptUnit] = []
+        for unit in draftUnits {
+            var work: [LiveTranscriptUnit] = [unit]
+
+            // split at promotionCut if inside
+            if promotionCut > unit.start && promotionCut < unit.end {
+                work = work.flatMap { u -> [LiveTranscriptUnit] in
+                    let (left, right) = splitUnitAt(u, promotionCut)
+                    return [left, right].compactMap { $0 }
+                }
+            }
+
+            // split at result.windowStart if inside
+            if result.windowStart > unit.start && result.windowStart < unit.end {
+                work = work.flatMap { u -> [LiveTranscriptUnit] in
+                    let (left, right) = splitUnitAt(u, result.windowStart)
+                    return [left, right].compactMap { $0 }
+                }
+            }
+
+            segments.append(contentsOf: work)
+        }
+
+        var promoted: [LiveTranscriptUnit] = []
+        var keptDraft: [LiveTranscriptUnit] = []
+
+        for seg in segments {
+            if seg.end <= promotionCut {
+                promoted.append(LiveTranscriptUnit(start: seg.start, end: seg.end, text: seg.text, state: .stable))
+            } else if seg.start >= result.windowStart {
+                // This segment falls inside/after the new result window start and will be replaced by the new result.
+                continue
+            } else {
+                // Mutable draft portion that precedes the incoming result windowStart
+                keptDraft.append(LiveTranscriptUnit(start: seg.start, end: seg.end, text: seg.text, state: .draft))
+            }
+        }
+
+        let newDraftText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let newDraft = LiveTranscriptUnit(
             start: result.windowStart,
             end: result.windowEnd,
-            text: result.text.trimmingCharacters(in: .whitespacesAndNewlines),
+            text: newDraftText,
             state: .draft
         )
 
