@@ -139,9 +139,6 @@ public actor LiveTranscriptEngine {
             }
         }
         
-        // Start transcription
-        lastTranscribeTime = now
-        
         // Compute window bounds
         let windowEnd = min(now, latestSampleTime)
         let windowStart = max(0, windowEnd - windowDuration)
@@ -162,6 +159,8 @@ public actor LiveTranscriptEngine {
                 windowDuration: windowEnd - windowStart
             )
             tempFiles.append(windowFile)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw EngineError.exportFailed(underlying: error.localizedDescription)
         }
@@ -175,6 +174,8 @@ public actor LiveTranscriptEngine {
                 windowEnd: windowEnd,
                 config: config
             )
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             state.status = .failed(lastError: error.localizedDescription)
             throw EngineError.transcriptionFailed(underlying: error.localizedDescription)
@@ -182,6 +183,7 @@ public actor LiveTranscriptEngine {
         
         // Merge result into state
         state = state.merging(result, mutableHorizon: mutableHorizon)
+        lastTranscribeTime = now
         
         // Return to healthy if we were delayed
         if state.status == .delayed {
@@ -217,6 +219,8 @@ public actor LiveTranscriptEngine {
                 windowDuration: windowEnd - windowStart
             )
             tempFiles.append(windowFile)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw EngineError.exportFailed(underlying: error.localizedDescription)
         }
@@ -230,6 +234,8 @@ public actor LiveTranscriptEngine {
                 windowEnd: windowEnd,
                 config: config
             )
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             state.status = .failed(lastError: error.localizedDescription)
             throw EngineError.transcriptionFailed(underlying: error.localizedDescription)

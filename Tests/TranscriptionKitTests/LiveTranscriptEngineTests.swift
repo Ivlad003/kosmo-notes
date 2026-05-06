@@ -190,6 +190,112 @@ actor MockLiveTranscriptionProvider: LiveTranscriptionProvider {
     #expect(cadenceValue == 3)
 }
 
+@Test func engine_tick_cancellation_does_not_poison_state_or_cadence() async throws {
+    let fixture = try await createAudioFixture(duration: 10)
+    defer { try? FileManager.default.removeItem(at: fixture) }
+    
+    let provider = MockLiveTranscriptionProvider()
+    await provider.addDelay(1.0)
+    await provider.addResult(LiveTranscriptWindowResult(
+        windowStart: 0,
+        windowEnd: 5,
+        text: "cancelled attempt",
+        emittedAt: 5
+    ))
+    await provider.addResult(LiveTranscriptWindowResult(
+        windowStart: 0,
+        windowEnd: 5,
+        text: "retry succeeded",
+        emittedAt: 5
+    ))
+    
+    let engine = LiveTranscriptEngine(
+        provider: provider,
+        exporter: LiveWindowExporter(),
+        windowDuration: 5,
+        cadence: 3,
+        mutableHorizon: 10,
+        delayThreshold: 5
+    )
+    
+    await engine.attach(audioFile: fixture)
+    await engine.ingest(sampleTime: 10, pcmData: Data())
+    
+    let tickTask = Task {
+        try await engine.tick(now: 5, config: TranscriptionConfig(language: "en"))
+    }
+    
+    tickTask.cancel()
+    
+    do {
+        try await tickTask.value
+        Issue.record("Expected tick to throw CancellationError")
+    } catch is CancellationError {
+    }
+    
+    let stateAfterCancellation = await engine.snapshot()
+    #expect(stateAfterCancellation.status == .healthy)
+    
+    try await engine.tick(now: 5, config: TranscriptionConfig(language: "en"))
+    
+    let stateAfterRetry = await engine.snapshot()
+    #expect(stateAfterRetry.mutableText.contains("retry succeeded"))
+    #expect(stateAfterRetry.status == .healthy)
+    
+    let callCount = await provider.callIndex
+    #expect(callCount == 2)
+    
+    await engine.cleanup()
+}
+
+@Test func engine_tick_failure_does_not_consume_cadence() async throws {
+    let fixture = try await createAudioFixture(duration: 10)
+    defer { try? FileManager.default.removeItem(at: fixture) }
+    
+    let provider = MockLiveTranscriptionProvider()
+    await provider.addError(URLError(.badServerResponse))
+    await provider.addResult(LiveTranscriptWindowResult(
+        windowStart: 0,
+        windowEnd: 5,
+        text: "unused",
+        emittedAt: 5
+    ))
+    await provider.addResult(LiveTranscriptWindowResult(
+        windowStart: 0,
+        windowEnd: 5,
+        text: "retry success",
+        emittedAt: 5
+    ))
+    
+    let engine = LiveTranscriptEngine(
+        provider: provider,
+        exporter: LiveWindowExporter(),
+        windowDuration: 5,
+        cadence: 3,
+        mutableHorizon: 10,
+        delayThreshold: 5
+    )
+    
+    await engine.attach(audioFile: fixture)
+    await engine.ingest(sampleTime: 10, pcmData: Data())
+    
+    do {
+        try await engine.tick(now: 5, config: TranscriptionConfig(language: "en"))
+        Issue.record("Expected tick to throw transcription failure")
+    } catch {
+    }
+    
+    try await engine.tick(now: 5, config: TranscriptionConfig(language: "en"))
+    
+    let state = await engine.snapshot()
+    #expect(state.mutableText.contains("retry success"))
+    
+    let callCount = await provider.callIndex
+    #expect(callCount == 2)
+    
+    await engine.cleanup()
+}
+
 @Test func engine_snapshot_returns_current_state() async {
     let engine = LiveTranscriptEngine(
         provider: MockLiveTranscriptionProvider(),
