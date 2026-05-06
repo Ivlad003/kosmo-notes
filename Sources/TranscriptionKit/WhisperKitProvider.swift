@@ -127,6 +127,28 @@ public actor WhisperKitProvider: BatchTranscriptionProvider {
         )
     }
 
+    // MARK: - LiveTranscriptionProvider
+
+    /// Transcribe a short audio window for live display.
+    ///
+    /// This adapter calls the existing `transcribe(audioFile:config:)` method
+    /// and converts the `BatchTranscriptResult` into a `LiveTranscriptWindowResult`
+    /// with session-relative timestamps.
+    public func transcribeLiveWindow(
+        audioFile: URL,
+        windowStart: TimeInterval,
+        windowEnd: TimeInterval,
+        config: TranscriptionConfig
+    ) async throws -> LiveTranscriptWindowResult {
+        let result = try await transcribe(audioFile: audioFile, config: config)
+        return LiveTranscriptWindowResult(
+            windowStart: windowStart,
+            windowEnd: windowEnd,
+            text: result.text,
+            emittedAt: windowEnd
+        )
+    }
+
     // MARK: - Private
 
     private func ensureLoaded() async throws -> WhisperKit {
@@ -170,6 +192,10 @@ public actor WhisperKitProvider: BatchTranscriptionProvider {
         }
     }
 }
+
+// MARK: - LiveTranscriptionProvider conformance
+
+extension WhisperKitProvider: LiveTranscriptionProvider {}
 
 // MARK: - Errors
 

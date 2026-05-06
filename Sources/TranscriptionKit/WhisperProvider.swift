@@ -292,6 +292,30 @@ public final class WhisperProvider: BatchTranscriptionProvider, Sendable {
     }
 }
 
+// MARK: - LiveTranscriptionProvider conformance
+
+extension WhisperProvider: LiveTranscriptionProvider {
+    /// Transcribe a short audio window for live display.
+    ///
+    /// This adapter calls the existing `transcribeSingle(audioFile:config:)`
+    /// method and converts the `BatchTranscriptResult` into a
+    /// `LiveTranscriptWindowResult` with session-relative timestamps.
+    public func transcribeLiveWindow(
+        audioFile: URL,
+        windowStart: TimeInterval,
+        windowEnd: TimeInterval,
+        config: TranscriptionConfig
+    ) async throws -> LiveTranscriptWindowResult {
+        let result = try await transcribeSingle(audioFile: audioFile, config: config)
+        return LiveTranscriptWindowResult(
+            windowStart: windowStart,
+            windowEnd: windowEnd,
+            text: result.text,
+            emittedAt: windowEnd
+        )
+    }
+}
+
 // MARK: - Whisper JSON model (private)
 
 private struct WhisperResponse: Decodable {

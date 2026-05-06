@@ -256,3 +256,63 @@ struct WhisperProviderE2ETests {
         #expect(bodyString.contains("AUDIO_BYTES"))
     }
 }
+
+// MARK: - LiveTranscriptionProvider tests
+
+@Suite("WhisperProvider live transcription")
+struct WhisperProviderLiveTests {
+
+    /// Helper: write a tmp audio file with arbitrary bytes for upload.
+    private func makeTempAudioFile(bytes: Data = Data([0x01, 0x02, 0x03])) throws -> URL {
+        let url = URL.temporaryDirectory.appendingPathComponent("whisper-live-test-\(UUID().uuidString).m4a")
+        try bytes.write(to: url)
+        return url
+    }
+
+    @Test("transcribeLiveWindow returns LiveTranscriptWindowResult with session-relative timestamps")
+    func liveWindowReturnsCorrectTimestamps() async throws {
+        let audio = try makeTempAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio) }
+
+        let mockResponse = """
+        {"text":"hello from window","language":"en","duration":5.0,"segments":[{"start":0,"end":5,"text":"hello from window","no_speech_prob":0.05}]}
+        """
+
+        let provider = WhisperProvider(apiKey: "sk-x", httpClient: { _ in
+            let resp = HTTPURLResponse(url: WhisperProvider.defaultEndpoint, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(mockResponse.utf8), resp)
+        })
+
+        let result = try await provider.transcribeLiveWindow(
+            audioFile: audio,
+            windowStart: 10.0,
+            windowEnd: 15.0,
+            config: TranscriptionConfig()
+        )
+
+        #expect(result.windowStart == 10.0)
+        #expect(result.windowEnd == 15.0)
+        #expect(result.emittedAt == 15.0)
+        #expect(result.text == "hello from window")
+    }
+
+    @Test("transcribeLiveWindow propagates transcription errors")
+    func liveWindowPropagatesErrors() async throws {
+        let audio = try makeTempAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio) }
+
+        let provider = WhisperProvider(apiKey: "sk-bad", httpClient: { _ in
+            let resp = HTTPURLResponse(url: WhisperProvider.defaultEndpoint, statusCode: 401, httpVersion: nil, headerFields: nil)!
+            return (Data("{\"error\":\"invalid_api_key\"}".utf8), resp)
+        })
+
+        await #expect(throws: TranscriptionError.self) {
+            _ = try await provider.transcribeLiveWindow(
+                audioFile: audio,
+                windowStart: 0.0,
+                windowEnd: 5.0,
+                config: TranscriptionConfig()
+            )
+        }
+    }
+}
