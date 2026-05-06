@@ -22,6 +22,7 @@ public actor LiveWindowExporter {
         case invalidParameters
         case assetLoadFailed(underlying: String)
         case compositionFailed
+        case emptyComposition
         case exportSessionCreationFailed
         case exportFailed(status: Int, underlying: String?)
 
@@ -33,6 +34,8 @@ public actor LiveWindowExporter {
                 return "Could not load audio asset for window export: \(s)"
             case .compositionFailed:
                 return "Could not build the AVMutableComposition for window export."
+            case .emptyComposition:
+                return "No audio could be inserted for the requested window."
             case .exportSessionCreationFailed:
                 return "Could not create the AVAssetExportSession for window export."
             case .exportFailed(let status, let underlying):
@@ -101,6 +104,7 @@ public actor LiveWindowExporter {
         }
 
         let composition = AVMutableComposition()
+        var insertedTrackCount = 0
         let timeRange = CMTimeRange(
             start: CMTime(seconds: actualStart, preferredTimescale: 48_000),
             duration: CMTime(seconds: actualDuration, preferredTimescale: 48_000)
@@ -115,12 +119,15 @@ public actor LiveWindowExporter {
             }
             do {
                 try compTrack.insertTimeRange(timeRange, of: sourceTrack, at: .zero)
+                insertedTrackCount += 1
             } catch {
                 exporterLog.error("LiveWindowExporter.export: track \(trackIdx, privacy: .public) insertTimeRange failed — \(error.localizedDescription, privacy: .public)")
                 // Per-track failure isn't fatal — keep going so we still
                 // export whatever this window has.
             }
         }
+
+        try Self.ensureInsertedTrackCount(insertedTrackCount)
 
         let outputURL = URL.temporaryDirectory.appendingPathComponent("live-window-\(UUID().uuidString).m4a")
         guard let exporter = AVAssetExportSession(
@@ -139,6 +146,12 @@ public actor LiveWindowExporter {
     }
 
     // MARK: Private
+
+    internal static func ensureInsertedTrackCount(_ insertedTrackCount: Int) throws {
+        guard insertedTrackCount > 0 else {
+            throw ExportError.emptyComposition
+        }
+    }
 
     private nonisolated func runExport(_ exporter: AVAssetExportSession) async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in

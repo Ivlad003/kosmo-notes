@@ -123,6 +123,21 @@ struct LiveWindowExporterTests {
         }
     }
 
+    @Test("Throws when no audio track was inserted")
+    func throwsWhenNoTracksInsert() async throws {
+        do {
+            try LiveWindowExporter.ensureInsertedTrackCount(0)
+            #expect(Bool(false), "Expected empty compositions to throw")
+        } catch let error as LiveWindowExporter.ExportError {
+            switch error {
+            case .emptyComposition:
+                break
+            default:
+                #expect(Bool(false), "Expected .emptyComposition, got \(error)")
+            }
+        }
+    }
+
     @Test("Exports consecutive non-overlapping windows")
     func exportsConsecutiveWindows() async throws {
         let audio = try writeFakeAudioFile(duration: 20.0)
