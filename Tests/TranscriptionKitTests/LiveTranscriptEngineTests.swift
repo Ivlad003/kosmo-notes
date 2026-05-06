@@ -1,7 +1,7 @@
 import Testing
 @testable import TranscriptionKit
 
-@Test func merge_rewrites_only_mutable_tail() async throws {
+@Test func merge_rewrites_only_mutable_tail() {
     var state = LiveTranscriptState.empty
     state = state.merging(
         LiveTranscriptWindowResult(
@@ -26,7 +26,7 @@ import Testing
     #expect(state.mutableText == "brave new world")
 }
 
-@Test func merge_never_rewrites_stable_prefix() async throws {
+@Test func merge_never_rewrites_stable_prefix() {
     let state = LiveTranscriptState(
         stableUnits: [.init(start: 0, end: 10, text: "locked", state: .stable)],
         draftUnits: [.init(start: 10, end: 20, text: "draft", state: .draft)],
