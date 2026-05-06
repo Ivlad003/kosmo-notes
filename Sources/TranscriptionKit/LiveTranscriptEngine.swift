@@ -286,22 +286,31 @@ public actor LiveTranscriptEngine {
             
             // Wait for first result
             var transcriptionResult: LiveTranscriptWindowResult?
-            var timedOut = false
+            var wasDelayed = false
             
-            while let taskResult = try await group.next() {
+            for try await taskResult in group {
                 switch taskResult {
                 case .success(let r):
                     transcriptionResult = r
                     group.cancelAll()
+                    // Break out of the loop - we have our result
                     break
                 case .timeout:
-                    timedOut = true
-                    // Mark as delayed but keep waiting for transcription to finish
+                    wasDelayed = true
+                    // Mark as delayed and keep waiting for transcription to finish
+                    await self.markDelayed()
+                }
+                
+                // If we have a result, stop waiting
+                if transcriptionResult != nil {
+                    break
                 }
             }
             
-            if timedOut {
-                await self.markDelayed()
+            // Only return to healthy if we didn't enter delayed state
+            // (The caller will handle resetting to healthy after merge)
+            if wasDelayed {
+                // Keep delayed state - caller will reset after successful merge
             }
             
             return transcriptionResult
