@@ -105,6 +105,7 @@ final class BlockingTestPCMSink: @unchecked Sendable, LivePCMSink {
     private let stateQueue = DispatchQueue(label: "BlockingTestPCMSink.state")
     private var _startedCount = 0
     private var _finishedCount = 0
+    private var _receivedOrder: [UInt64] = []
     let delay: Duration
 
     init(delay: Duration = .milliseconds(250)) {
@@ -116,7 +117,10 @@ final class BlockingTestPCMSink: @unchecked Sendable, LivePCMSink {
 
         try? await Task.sleep(for: delay)
 
-        stateQueue.sync { _finishedCount += 1 }
+        stateQueue.sync {
+            _finishedCount += 1
+            _receivedOrder.append(hostTime)
+        }
     }
 
     func startedCount() -> Int {
@@ -125,5 +129,9 @@ final class BlockingTestPCMSink: @unchecked Sendable, LivePCMSink {
 
     func finishedCount() -> Int {
         stateQueue.sync { _finishedCount }
+    }
+
+    func receivedOrder() -> [UInt64] {
+        stateQueue.sync { _receivedOrder }
     }
 }

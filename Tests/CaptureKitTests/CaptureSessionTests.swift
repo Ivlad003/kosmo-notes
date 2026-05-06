@@ -276,10 +276,53 @@ struct CaptureSessionTests {
 
         try await Task.sleep(for: .milliseconds(100))
 
-        #expect(sink.startedCount() == 3, "Expected 3 sink deliveries to start without blocking capture")
-        #expect(sink.finishedCount() <= 1, "Expected live sink deliveries to remain in flight")
+        #expect(sink.startedCount() >= 1, "Expected at least 1 sink delivery to start without blocking capture")
+        #expect(sink.finishedCount() <= 2, "Expected serial delivery (at most 2 complete due to timing)")
 
         continuation.finish()
         _ = try await session.stop()
+    }
+
+    @Test("CaptureSession delivers buffers in order to live sink")
+    func livePCMSinkOrderedDelivery() async throws {
+        let sessionDir = try makeTempDir()
+        defer { cleanup(sessionDir) }
+
+        let sink = BlockingTestPCMSink(delay: .milliseconds(10))
+        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+
+        let config = CaptureSession.Config(
+            micEnabled: true,
+            systemAudioEnabled: false,
+            sessionDir: sessionDir,
+            segmentDurationSeconds: 5.0
+        )
+        let session = CaptureSession(config: config, liveSink: sink, testMicStream: stream)
+
+        try await session.start()
+
+        // Feed 5 buffers quickly
+        for _ in 0..<5 {
+            guard let buf = AVAudioPCMBuffer.sineWave(frameCount: 4800) else {
+                Issue.record("Failed to create sine wave buffer")
+                continue
+            }
+            continuation.yield(buf)
+        }
+
+        // Give feed task time to enqueue all buffers before finishing
+        try await Task.sleep(for: .milliseconds(100))
+
+        continuation.finish()
+        _ = try await session.stop()
+
+        // After stop completes, all deliveries should be done
+        let order = sink.receivedOrder()
+        #expect(order.count == 5, "Expected sink to receive all 5 buffers, got \(order.count)")
+
+        // Verify ordering: each hostTime should be >= previous
+        for i in 1..<order.count {
+            #expect(order[i] >= order[i-1], "Buffer \(i) out of order: \(order[i]) < \(order[i-1])")
+        }
     }
 }

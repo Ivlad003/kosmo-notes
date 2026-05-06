@@ -39,6 +39,45 @@ public protocol LivePCMSink: Sendable {
     func receive(_ buffer: AVAudioPCMBuffer, at hostTime: UInt64) async
 }
 
+// MARK: - LiveSinkDelivery
+
+/// Serial delivery coordinator for live PCM sink.
+///
+/// Prevents unbounded task-per-buffer spawning while keeping capture isolated
+/// from sink slowness. Buffers are delivered in-order to the sink without
+/// blocking the capture loop. If the sink falls behind, delivery continues
+/// serially — there's no fixed queue limit, but at most one delivery is active
+/// at a time (serial execution).
+private actor LiveSinkDelivery {
+    private let sink: any LivePCMSink
+    private var deliveryTask: Task<Void, Never>?
+    private let continuation: AsyncStream<(AVAudioPCMBuffer, UInt64)>.Continuation
+
+    init(sink: any LivePCMSink) {
+        self.sink = sink
+        let (stream, continuation) = AsyncStream<(AVAudioPCMBuffer, UInt64)>.makeStream()
+        self.continuation = continuation
+        // Wrap stream in UncheckedSendableBox to satisfy Swift 6 strict concurrency
+        let streamBox = UncheckedSendableBox(stream)
+        self.deliveryTask = Task.detached {
+            for await (buffer, hostTime) in streamBox.value {
+                await sink.receive(buffer, at: hostTime)
+            }
+        }
+    }
+
+    /// Enqueue a buffer for serial delivery. Returns immediately without awaiting sink.
+    func enqueue(_ buffer: AVAudioPCMBuffer, hostTime: UInt64) {
+        continuation.yield((buffer, hostTime))
+    }
+
+    /// Stop accepting new buffers and wait for in-flight delivery to complete.
+    func finish() async {
+        continuation.finish()
+        await deliveryTask?.value
+    }
+}
+
 // MARK: - CaptureSession
 
 /// Top-level coordinator for audio capture.
@@ -51,6 +90,10 @@ public protocol LivePCMSink: Sendable {
 /// sink in real-time. The sink path is best-effort and does not affect the
 /// main recording path.
 public actor CaptureSession {
+
+    // MARK: - State
+
+    private var liveDelivery: LiveSinkDelivery?
 
     // MARK: - Config
 
@@ -181,6 +224,11 @@ public actor CaptureSession {
     public func start() async throws {
         guard recordingState == .idle else { return }
 
+        // Set up serial delivery for live sink if configured
+        if let sink = liveSink {
+            liveDelivery = LiveSinkDelivery(sink: sink)
+        }
+
         let writer = try SegmentWriter(
             sessionDir: config.sessionDir,
             segmentDurationSeconds: config.segmentDurationSeconds,
@@ -193,11 +241,11 @@ public actor CaptureSession {
         if config.micEnabled {
             // Use test stream if provided (test seam), otherwise create real engine
             if let testStream = testMicStream {
-                micTask = makeTestMicTask(stream: testStream, writer: writer, liveSink: liveSink)
+                micTask = makeTestMicTask(stream: testStream, writer: writer, liveSink: liveSink, delivery: liveDelivery)
             } else {
                 let engine = AudioEngine(config: Self.micAudioEngineConfig(for: config))
                 self.audioEngine = engine
-                micTask = try await makeMicTask(engine: engine, writer: writer, liveSink: liveSink)
+                micTask = try await makeMicTask(engine: engine, writer: writer, liveSink: liveSink, delivery: liveDelivery)
             }
         }
 
@@ -215,7 +263,7 @@ public actor CaptureSession {
                 do {
                     let capture = DeviceAudioCapture(config: .init(deviceUID: deviceUID))
                     self.deviceAudioCapture = capture
-                    systemTask = try await makeDeviceCaptureTask(capture: capture, writer: writer, liveSink: liveSink)
+                    systemTask = try await makeDeviceCaptureTask(capture: capture, writer: writer, liveSink: liveSink, delivery: liveDelivery)
                     systemStarted = true
                     captureSessionLog.info("CaptureSession.start: system audio via custom device UID=\(deviceUID, privacy: .public)")
                 } catch {
@@ -228,7 +276,7 @@ public actor CaptureSession {
                 do {
                     let box = TapBox()
                     self.tapBoxAny = box
-                    systemTask = try await makeTapTask(box: box, bundleIDs: config.processTapBundleIDs, writer: writer, liveSink: liveSink)
+                    systemTask = try await makeTapTask(box: box, bundleIDs: config.processTapBundleIDs, writer: writer, liveSink: liveSink, delivery: liveDelivery)
                     systemStarted = true
                 } catch {
                     self.tapBoxAny = nil
@@ -237,7 +285,7 @@ public actor CaptureSession {
             if !systemStarted, #available(macOS 12.3, *) {
                 let box = SCKitBox()
                 self.scKitBox = box
-                systemTask = try await makeSystemTask(box: box, writer: writer, liveSink: liveSink)
+                systemTask = try await makeSystemTask(box: box, writer: writer, liveSink: liveSink, delivery: liveDelivery)
             }
         }
 
@@ -264,11 +312,23 @@ public actor CaptureSession {
         cancelFeedTasks()
         _ = try await segmentWriter?.close()
         segmentWriter = nil
+
+        // Finish pending deliveries during pause
+        if let delivery = liveDelivery {
+            await delivery.finish()
+            liveDelivery = nil
+        }
+
         recordingState = .paused
     }
 
     public func resume() async throws {
         guard recordingState == .paused else { return }
+
+        // Restart serial delivery if sink is configured
+        if let sink = liveSink {
+            liveDelivery = LiveSinkDelivery(sink: sink)
+        }
 
         let writer = try SegmentWriter(
             sessionDir: config.sessionDir,
@@ -280,17 +340,17 @@ public actor CaptureSession {
         self.segmentWriter = writer
 
         if let engine = audioEngine {
-            micTask = try await makeMicTask(engine: engine, writer: writer, liveSink: liveSink)
+            micTask = try await makeMicTask(engine: engine, writer: writer, liveSink: liveSink, delivery: liveDelivery)
         }
 
         if config.systemAudioEnabled {
             // Restart whichever system-audio path was originally chosen.
             if let capture = deviceAudioCapture {
-                systemTask = try await makeDeviceCaptureTask(capture: capture, writer: writer, liveSink: liveSink)
+                systemTask = try await makeDeviceCaptureTask(capture: capture, writer: writer, liveSink: liveSink, delivery: liveDelivery)
             } else if #available(macOS 14.4, *), let box = tapBoxAny as? TapBox {
-                systemTask = try await makeTapTask(box: box, bundleIDs: config.processTapBundleIDs, writer: writer, liveSink: liveSink)
+                systemTask = try await makeTapTask(box: box, bundleIDs: config.processTapBundleIDs, writer: writer, liveSink: liveSink, delivery: liveDelivery)
             } else if let box = scKitBox, #available(macOS 12.3, *) {
-                systemTask = try await makeSystemTask(box: box, writer: writer, liveSink: liveSink)
+                systemTask = try await makeSystemTask(box: box, writer: writer, liveSink: liveSink, delivery: liveDelivery)
             }
         }
 
@@ -359,7 +419,8 @@ public actor CaptureSession {
     private nonisolated func makeTestMicTask(
         stream: AsyncStream<AVAudioPCMBuffer>,
         writer: SegmentWriter,
-        liveSink: (any LivePCMSink)?
+        liveSink: (any LivePCMSink)?,
+        delivery: LiveSinkDelivery?
     ) -> Task<Void, Never> {
         let box = UncheckedSendableBox(stream)
         return Task.detached {
@@ -375,8 +436,10 @@ public actor CaptureSession {
                 } catch {
                     captureSessionLog.error("CaptureSession.testMic: writer.append threw — \(error.localizedDescription, privacy: .public) (buffer #\(bufferIndex, privacy: .public))")
                 }
-                // Forward to live sink (best-effort)
-                Self.fireAndForgetLiveSink(buffer: buffer, hostTime: hostTime, sink: liveSink)
+                // Forward to live sink via serial delivery (best-effort)
+                if let delivery {
+                    await delivery.enqueue(buffer, hostTime: hostTime)
+                }
             }
             captureSessionLog.info("CaptureSession.testMic: stream ended after \(bufferIndex, privacy: .public) buffers")
         }
@@ -389,7 +452,8 @@ public actor CaptureSession {
     private nonisolated func makeMicTask(
         engine: AudioEngine,
         writer: SegmentWriter,
-        liveSink: (any LivePCMSink)?
+        liveSink: (any LivePCMSink)?,
+        delivery: LiveSinkDelivery?
     ) async throws -> Task<Void, Never> {
         let stream = try await engine.start()
         // AVAudioPCMBuffer is not Sendable; we assert single-consumer ownership here.
@@ -407,8 +471,10 @@ public actor CaptureSession {
                 } catch {
                     captureSessionLog.error("CaptureSession.mic: writer.append threw — \(error.localizedDescription, privacy: .public) (buffer #\(bufferIndex, privacy: .public))")
                 }
-                // Forward to live sink (best-effort)
-                Self.fireAndForgetLiveSink(buffer: buffer, hostTime: hostTime, sink: liveSink)
+                // Forward to live sink via serial delivery (best-effort)
+                if let delivery {
+                    await delivery.enqueue(buffer, hostTime: hostTime)
+                }
             }
             captureSessionLog.info("CaptureSession.mic: stream ended after \(bufferIndex, privacy: .public) buffers")
         }
@@ -418,7 +484,8 @@ public actor CaptureSession {
     private nonisolated func makeSystemTask(
         box: SCKitBox,
         writer: SegmentWriter,
-        liveSink: (any LivePCMSink)?
+        liveSink: (any LivePCMSink)?,
+        delivery: LiveSinkDelivery?
     ) async throws -> Task<Void, Never> {
         let stream = try await box.capture.start()
         let streamBox = UncheckedSendableBox(stream)
@@ -432,8 +499,10 @@ public actor CaptureSession {
                 } catch {
                     captureSessionLog.error("CaptureSession.system(SCKit): writer.append threw — \(error.localizedDescription, privacy: .public)")
                 }
-                // Forward to live sink (best-effort)
-                Self.fireAndForgetLiveSink(buffer: buffer, hostTime: hostTime, sink: liveSink)
+                // Forward to live sink via serial delivery (best-effort)
+                if let delivery {
+                    await delivery.enqueue(buffer, hostTime: hostTime)
+                }
             }
             captureSessionLog.info("CaptureSession.system(SCKit): stream ended after \(bufferIndex, privacy: .public) buffers")
         }
@@ -445,7 +514,8 @@ public actor CaptureSession {
     private nonisolated func makeDeviceCaptureTask(
         capture: DeviceAudioCapture,
         writer: SegmentWriter,
-        liveSink: (any LivePCMSink)?
+        liveSink: (any LivePCMSink)?,
+        delivery: LiveSinkDelivery?
     ) async throws -> Task<Void, Never> {
         let stream = try await capture.start()
         let streamBox = UncheckedSendableBox(stream)
@@ -462,8 +532,10 @@ public actor CaptureSession {
                 } catch {
                     captureSessionLog.error("CaptureSession.system(Device): writer.append threw — \(error.localizedDescription, privacy: .public)")
                 }
-                // Forward to live sink (best-effort)
-                Self.fireAndForgetLiveSink(buffer: buffer, hostTime: hostTime, sink: liveSink)
+                // Forward to live sink via serial delivery (best-effort)
+                if let delivery {
+                    await delivery.enqueue(buffer, hostTime: hostTime)
+                }
             }
             captureSessionLog.info("CaptureSession.system(Device): stream ended after \(bufferIndex, privacy: .public) buffers")
         }
@@ -474,7 +546,8 @@ public actor CaptureSession {
         box: TapBox,
         bundleIDs: [String],
         writer: SegmentWriter,
-        liveSink: (any LivePCMSink)?
+        liveSink: (any LivePCMSink)?,
+        delivery: LiveSinkDelivery?
     ) async throws -> Task<Void, Never> {
         let stream = try await box.tap.start(bundleIDs: bundleIDs)
         let streamBox = UncheckedSendableBox(stream)
@@ -488,22 +561,12 @@ public actor CaptureSession {
                 } catch {
                     captureSessionLog.error("CaptureSession.system(Tap): writer.append threw — \(error.localizedDescription, privacy: .public)")
                 }
-                // Forward to live sink (best-effort)
-                Self.fireAndForgetLiveSink(buffer: buffer, hostTime: hostTime, sink: liveSink)
+                // Forward to live sink via serial delivery (best-effort)
+                if let delivery {
+                    await delivery.enqueue(buffer, hostTime: hostTime)
+                }
             }
             captureSessionLog.info("CaptureSession.system(Tap): stream ended after \(bufferIndex, privacy: .public) buffers")
-        }
-    }
-
-    private nonisolated static func fireAndForgetLiveSink(
-        buffer: AVAudioPCMBuffer,
-        hostTime: UInt64,
-        sink: (any LivePCMSink)?
-    ) {
-        guard let sink else { return }
-        let bufferBox = UncheckedSendableBox(buffer)
-        Task.detached(priority: .utility) {
-            await sink.receive(bufferBox.value, at: hostTime)
         }
     }
 }
