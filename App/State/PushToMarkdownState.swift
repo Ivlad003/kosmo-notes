@@ -159,14 +159,17 @@ final class PushToMarkdownState {
         let resolved = AIProviderResolver.resolve(settings.aiProviderConfig)
         let llm: (any AIProvider)? = settings.dictationLLMCleanup ? resolved?.provider : nil
         let model = resolved?.model ?? ""
+        let finalTranscriptSink: HoldToTalkLiveAdapter.Sink = { [weak self] cleanedText in
+            await self?.handleFinalTranscript(cleanedText)
+        }
 
         // Hijack the paster injection: instead of pasting, fire a detached
         // Task that runs the cleaned text through MarkdownExporter and
         // saves the resulting `.md`. Return .clipboardSimulatedV so the
         // pipeline's own `.completed` state fires.
-        let saver: DictationPipeline.Paster = { [weak self] cleanedText in
-            Task { @MainActor [weak self] in
-                await self?.saveMarkdown(cleanedText: cleanedText)
+        let saver: DictationPipeline.Paster = { cleanedText in
+            Task { @MainActor in
+                await finalTranscriptSink(cleanedText)
             }
             return .clipboardSimulatedV
         }
@@ -180,6 +183,12 @@ final class PushToMarkdownState {
             llmModel: model,
             maxDurationSeconds: max(15, settings.dictationMaxSeconds)
         )
+    }
+
+    /// Separate downstream sink so HoldToTalkLiveAdapter can reuse the same
+    /// release-path behavior once live capture is wired into hold-to-talk.
+    private func handleFinalTranscript(_ cleanedText: String) async {
+        await saveMarkdown(cleanedText: cleanedText)
     }
 
     /// Run the cleaned dictation text through MarkdownExporter and stash

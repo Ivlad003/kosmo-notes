@@ -40,6 +40,7 @@ final class DictationState {
     private let settings: AppSettings
     private let sessionStore: SessionStore?
     private var pipeline: DictationPipeline?
+    private var liveAdapter: HoldToTalkLiveAdapter?
     private let installer = TriggerHotkeyInstaller(comboName: .dictation, label: "Dictation")
     /// NotificationCenter token observing AppSettings.dictationTriggerDidChange,
     /// so a Settings change re-registers the hotkey live.
@@ -130,6 +131,26 @@ final class DictationState {
         } catch {
             dictationLog.error("Dictation.handlePress: startRecording threw — \(error.localizedDescription, privacy: .public)")
             uiStatus = .failed("Could not start dictation: \(error.localizedDescription)")
+            return
+        }
+
+        // Wire a live adapter if the current transcription provider supports it.
+        // When available, handleRelease will use the adapter path instead of the
+        // batch DictationPipeline path — no double-transcription.
+        if let liveURL = p.currentLiveAudioURL,
+           let liveProvider = settings.makeLiveProvider() {
+            let engine = LiveTranscriptEngine(provider: liveProvider, exporter: LiveWindowExporter())
+            engine.attach(audioFile: liveURL)
+            liveAdapter = HoldToTalkLiveAdapter(
+                engine: engine,
+                configSource: { [settings = self.settings] in
+                    TranscriptionConfig(language: nil, sampleRate: 16_000)
+                },
+                sink: { [weak self] text in
+                    await self?.handleLiveFinalTranscript(text)
+                }
+            )
+            dictationLog.info("Dictation.handlePress: live adapter armed (\(liveProvider.self, privacy: .public))")
         }
     }
 
@@ -139,6 +160,19 @@ final class DictationState {
             dictationLog.error("Dictation.handleRelease: no active pipeline (press did not register?)")
             return
         }
+
+        // Live path: stop the engine (closes + flushes the CAF), then let the
+        // live adapter transcribe the closed file. Mutually exclusive with the
+        // batch path — avoids double-transcription.
+        if let adapter = liveAdapter {
+            liveAdapter = nil
+            await p.stopCapture()    // closes CAF; stores PCM/sampleRate/duration for persistence
+            uiStatus = .processing
+            await adapter.stopAndFlush()  // → handleLiveFinalTranscript (sets uiStatus, pastes, persists)
+            return
+        }
+
+        // Batch path (original flow).
         uiStatus = .processing
         await p.stopAndProcess()
         switch p.status {
@@ -175,21 +209,94 @@ final class DictationState {
         let resolved = AIProviderResolver.resolve(settings.aiProviderConfig)
         let llm: (any AIProvider)? = settings.dictationLLMCleanup ? resolved?.provider : nil
         let model = resolved?.model ?? ""
+        let insertionStrategy = settings.dictationInsertion
 
         return DictationPipeline(
-            whisperProvider: whisper,
+            transcriber: { url, cfg in
+                try await whisper.transcribe(audioFile: url, config: cfg)
+            },
+            paster: { finalText in
+                Self.pasteDictation(finalText, strategy: insertionStrategy)
+            },
             llmProvider: llm,
             llmModel: model,
-            maxDurationSeconds: settings.dictationMaxSeconds,
-            insertionStrategy: settings.dictationInsertion
+            maxDurationSeconds: settings.dictationMaxSeconds
         )
+    }
+
+    /// Kept separate so the hold-to-talk live adapter can target the same
+    /// downstream insertion step once DictationPipeline exposes live capture hooks.
+    private nonisolated static func pasteDictation(
+        _ text: String,
+        strategy: DictationInsertionStrategy
+    ) -> AccessibilityPaster.PasteResult {
+        AccessibilityPaster.paste(text, strategy: strategy)
+    }
+
+    /// Downstream sink for the live-adapter path (called by HoldToTalkLiveAdapter.stopAndFlush).
+    ///
+    /// Runs the same optional LLM cleanup as the batch pipeline, then pastes
+    /// and persists the session. The pipeline has already stored PCM data via
+    /// `stopCapture()`, so `persistIfPossible` can write audio.m4a normally.
+    private func handleLiveFinalTranscript(_ rawText: String) async {
+        dictationLog.info("Dictation.handleLiveFinalTranscript: \(rawText.prefix(60), privacy: .public)…")
+        var finalText = rawText
+
+        // Optional LLM cleanup — same logic as DictationPipeline.stopAndProcess.
+        if settings.dictationLLMCleanup,
+           let resolved = AIProviderResolver.resolve(settings.aiProviderConfig) {
+            let context = AppContextDetector.detect()
+            let prompt = """
+                You are a dictation cleanup assistant. The user just dictated raw \
+                transcribed text. Clean it up: fix punctuation, capitalisation, \
+                paragraph breaks, common speech artifacts ("um", "you know"). \
+                DO NOT add meaning or change wording. Output ONLY the cleaned \
+                text — no preamble, no explanation.
+
+                Application context: \(context.rawValue)
+                Context-specific formatting: \(context.contextSpecificFormatting)
+
+                Raw transcript:
+                \(rawText)
+                """
+            let config = AIConfig(
+                model: resolved.model,
+                temperature: 0.2,
+                maxTokens: 1024,
+                systemPrompt: nil
+            )
+            if let cleaned = try? await resolved.provider.chat(
+                messages: [ChatMessage(role: .user, content: prompt)],
+                config: config
+            ) {
+                let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { finalText = trimmed }
+            }
+        }
+
+        lastResult = finalText
+        uiStatus = .completed
+        _ = Self.pasteDictation(finalText, strategy: settings.dictationInsertion)
+        dictationLog.info("Dictation.handleLiveFinalTranscript: pasted — persisting")
+
+        if let p = pipeline {
+            await persistIfPossible(pipeline: p, status: .complete, finalText: finalText)
+        }
     }
 
     // MARK: - Persistence
 
     /// After stopAndProcess finishes (succeed or fail), copy the captured PCM
     /// + transcript out of the pipeline and into a new Library session.
-    private func persistIfPossible(pipeline p: DictationPipeline, status: SessionStatus) async {
+    ///
+    /// `finalText` overrides `p.lastTranscript` for the live-adapter path where
+    /// LLM cleanup runs in `handleLiveFinalTranscript` rather than inside the
+    /// pipeline itself.
+    private func persistIfPossible(
+        pipeline p: DictationPipeline,
+        status: SessionStatus,
+        finalText: String? = nil
+    ) async {
         guard let store = sessionStore else { return }
         guard let pcm = p.lastPCMData,
               let sampleRate = p.lastSampleRate,
@@ -212,7 +319,7 @@ final class DictationState {
             try await writeAACFile(pcmData: pcm, sampleRate: sampleRate, to: audioURL)
 
             // 3. Write transcript text + JSONL (single segment covering whole clip).
-            let transcript = (p.lastTranscript ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let transcript = (finalText ?? p.lastTranscript ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             try writeTranscriptFiles(transcript: transcript, durationSecs: duration, sessionDir: dir)
 
             // 4. Index FTS so the dictation is searchable in Library.

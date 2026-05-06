@@ -116,16 +116,12 @@ final class AgentHotkeyState {
         // instruction; pipeline returns .clipboardSimulatedV so its own
         // status flips to `.completed`.
         let whisper = WhisperProvider(apiKey: openaiKey, model: settings.openaiTranscribeModel.rawValue)
-        let saver: DictationPipeline.Paster = { [weak self] instruction in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.uiStatus = .processing
-                Task { @MainActor in
-                    await self.agentSession.start(initialInstruction: instruction)
-                }
-                if case .running(let id) = self.agentSession.status {
-                    self.uiStatus = .launched(sessionID: id)
-                }
+        let finalTranscriptSink: HoldToTalkLiveAdapter.Sink = { [weak self] instruction in
+            await self?.handleFinalTranscript(instruction)
+        }
+        let saver: DictationPipeline.Paster = { instruction in
+            Task { @MainActor in
+                await finalTranscriptSink(instruction)
             }
             return .clipboardSimulatedV
         }
@@ -162,6 +158,16 @@ final class AgentHotkeyState {
             uiStatus = .failed(msg)
         default:
             uiStatus = .idle
+        }
+    }
+
+    /// Separate downstream sink so HoldToTalkLiveAdapter can reuse the same
+    /// agent-launch behavior once live capture is wired into hold-to-talk.
+    private func handleFinalTranscript(_ instruction: String) async {
+        uiStatus = .processing
+        await agentSession.start(initialInstruction: instruction)
+        if case .running(let id) = agentSession.status {
+            uiStatus = .launched(sessionID: id)
         }
     }
 }

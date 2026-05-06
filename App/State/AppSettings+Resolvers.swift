@@ -42,6 +42,31 @@ extension AppSettings {
         )
     }
 
+    /// Returns a `LiveTranscriptionProvider` for the current transcription
+    /// settings, or `nil` if the selected provider doesn't support live
+    /// window-based transcription.
+    ///
+    /// Only OpenAI Whisper and WhisperKit conform to `LiveTranscriptionProvider`.
+    /// Deepgram / Gemini / OpenRouter use streaming APIs that are incompatible
+    /// with the `LiveWindowExporter` batch-window model.
+    func makeLiveProvider() -> (any LiveTranscriptionProvider)? {
+        switch transcriptionProvider {
+        case .openaiWhisper:
+            let key = openaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { return nil }
+            return WhisperProvider(apiKey: key, model: openaiTranscribeModel.rawValue)
+        case .whisperKit:
+            let variant = whisperKitModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !variant.isEmpty else { return nil }
+            return WhisperKitProvider(
+                modelVariant: variant,
+                modelsRootDir: AppSettings.whisperKitModelsRoot()
+            )
+        case .deepgram, .gemini, .openrouterAudio:
+            return nil
+        }
+    }
+
     // MARK: - Enum bridges
 
     private var aiResolverKind: AIProviderResolver.Kind {
