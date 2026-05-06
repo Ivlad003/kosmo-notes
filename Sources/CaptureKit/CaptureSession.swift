@@ -376,9 +376,7 @@ public actor CaptureSession {
                     captureSessionLog.error("CaptureSession.testMic: writer.append threw — \(error.localizedDescription, privacy: .public) (buffer #\(bufferIndex, privacy: .public))")
                 }
                 // Forward to live sink (best-effort)
-                if let sink = liveSink {
-                    await sink.receive(buffer, at: hostTime)
-                }
+                Self.fireAndForgetLiveSink(buffer: buffer, hostTime: hostTime, sink: liveSink)
             }
             captureSessionLog.info("CaptureSession.testMic: stream ended after \(bufferIndex, privacy: .public) buffers")
         }
@@ -410,9 +408,7 @@ public actor CaptureSession {
                     captureSessionLog.error("CaptureSession.mic: writer.append threw — \(error.localizedDescription, privacy: .public) (buffer #\(bufferIndex, privacy: .public))")
                 }
                 // Forward to live sink (best-effort)
-                if let sink = liveSink {
-                    await sink.receive(buffer, at: hostTime)
-                }
+                Self.fireAndForgetLiveSink(buffer: buffer, hostTime: hostTime, sink: liveSink)
             }
             captureSessionLog.info("CaptureSession.mic: stream ended after \(bufferIndex, privacy: .public) buffers")
         }
@@ -437,9 +433,7 @@ public actor CaptureSession {
                     captureSessionLog.error("CaptureSession.system(SCKit): writer.append threw — \(error.localizedDescription, privacy: .public)")
                 }
                 // Forward to live sink (best-effort)
-                if let sink = liveSink {
-                    await sink.receive(buffer, at: hostTime)
-                }
+                Self.fireAndForgetLiveSink(buffer: buffer, hostTime: hostTime, sink: liveSink)
             }
             captureSessionLog.info("CaptureSession.system(SCKit): stream ended after \(bufferIndex, privacy: .public) buffers")
         }
@@ -469,9 +463,7 @@ public actor CaptureSession {
                     captureSessionLog.error("CaptureSession.system(Device): writer.append threw — \(error.localizedDescription, privacy: .public)")
                 }
                 // Forward to live sink (best-effort)
-                if let sink = liveSink {
-                    await sink.receive(buffer, at: hostTime)
-                }
+                Self.fireAndForgetLiveSink(buffer: buffer, hostTime: hostTime, sink: liveSink)
             }
             captureSessionLog.info("CaptureSession.system(Device): stream ended after \(bufferIndex, privacy: .public) buffers")
         }
@@ -497,11 +489,21 @@ public actor CaptureSession {
                     captureSessionLog.error("CaptureSession.system(Tap): writer.append threw — \(error.localizedDescription, privacy: .public)")
                 }
                 // Forward to live sink (best-effort)
-                if let sink = liveSink {
-                    await sink.receive(buffer, at: hostTime)
-                }
+                Self.fireAndForgetLiveSink(buffer: buffer, hostTime: hostTime, sink: liveSink)
             }
             captureSessionLog.info("CaptureSession.system(Tap): stream ended after \(bufferIndex, privacy: .public) buffers")
+        }
+    }
+
+    private nonisolated static func fireAndForgetLiveSink(
+        buffer: AVAudioPCMBuffer,
+        hostTime: UInt64,
+        sink: (any LivePCMSink)?
+    ) {
+        guard let sink else { return }
+        let bufferBox = UncheckedSendableBox(buffer)
+        Task.detached(priority: .utility) {
+            await sink.receive(bufferBox.value, at: hostTime)
         }
     }
 }

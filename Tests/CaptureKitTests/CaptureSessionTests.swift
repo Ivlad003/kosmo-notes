@@ -247,4 +247,39 @@ struct CaptureSessionTests {
         continuation.finish()
         _ = try await session.stop()
     }
+
+    @Test("CaptureSession does not await live sink inline")
+    func livePCMSinkDeliveryIsNonblocking() async throws {
+        let sessionDir = try makeTempDir()
+        defer { cleanup(sessionDir) }
+
+        let sink = BlockingTestPCMSink(delay: .milliseconds(250))
+        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+
+        let config = CaptureSession.Config(
+            micEnabled: true,
+            systemAudioEnabled: false,
+            sessionDir: sessionDir,
+            segmentDurationSeconds: 5.0
+        )
+        let session = CaptureSession(config: config, liveSink: sink, testMicStream: stream)
+
+        try await session.start()
+
+        for _ in 0..<3 {
+            guard let buf = AVAudioPCMBuffer.sineWave(frameCount: 4800) else {
+                Issue.record("Failed to create sine wave buffer")
+                continue
+            }
+            continuation.yield(buf)
+        }
+
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(sink.startedCount() == 3, "Expected 3 sink deliveries to start without blocking capture")
+        #expect(sink.finishedCount() <= 1, "Expected live sink deliveries to remain in flight")
+
+        continuation.finish()
+        _ = try await session.stop()
+    }
 }

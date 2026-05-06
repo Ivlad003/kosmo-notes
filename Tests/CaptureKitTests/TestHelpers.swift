@@ -3,6 +3,7 @@
 // Swift Testing macro expansion in the test structs.
 
 import AVFoundation
+import Foundation
 @testable import CaptureKit
 
 // MARK: - AVAudioPCMBuffer test helpers
@@ -94,5 +95,35 @@ actor TestPCMSink: LivePCMSink {
     
     func reset() {
         receivedBuffers.removeAll()
+    }
+}
+
+// MARK: - BlockingTestPCMSink
+
+/// Sink used to prove capture does not wait on live delivery.
+final class BlockingTestPCMSink: @unchecked Sendable, LivePCMSink {
+    private let stateQueue = DispatchQueue(label: "BlockingTestPCMSink.state")
+    private var _startedCount = 0
+    private var _finishedCount = 0
+    let delay: Duration
+
+    init(delay: Duration = .milliseconds(250)) {
+        self.delay = delay
+    }
+
+    func receive(_ buffer: AVAudioPCMBuffer, at hostTime: UInt64) async {
+        stateQueue.sync { _startedCount += 1 }
+
+        try? await Task.sleep(for: delay)
+
+        stateQueue.sync { _finishedCount += 1 }
+    }
+
+    func startedCount() -> Int {
+        stateQueue.sync { _startedCount }
+    }
+
+    func finishedCount() -> Int {
+        stateQueue.sync { _finishedCount }
     }
 }
