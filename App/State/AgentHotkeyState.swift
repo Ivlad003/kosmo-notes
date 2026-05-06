@@ -45,6 +45,7 @@ final class AgentHotkeyState {
     private let settings: AppSettings
     private let agentSession: AgentSessionState
     private var pipeline: DictationPipeline?
+    private var liveAdapter: HoldToTalkLiveAdapter?
     private let installer = TriggerHotkeyInstaller(comboName: .agentTrigger, label: "Agent")
     private var triggerChangeObserver: NSObjectProtocol?
 
@@ -142,12 +143,40 @@ final class AgentHotkeyState {
         } catch {
             uiStatus = .failed("Could not start: \(error.localizedDescription)")
             agentHotkeyLog.error("AgentHotkey.startRecording threw — \(error.localizedDescription, privacy: .public)")
+            return
+        }
+
+        if let liveURL = p.currentLiveAudioURL,
+           let liveProvider = settings.makeLiveProvider() {
+            let engine = LiveTranscriptEngine(provider: liveProvider, exporter: LiveWindowExporter())
+            await engine.attach(audioFile: liveURL)
+            liveAdapter = HoldToTalkLiveAdapter(
+                engine: engine,
+                configSource: { TranscriptionConfig(language: nil, sampleRate: 16_000) },
+                sink: { [weak self] instruction in
+                    await self?.handleFinalTranscript(instruction)
+                }
+            )
+            agentHotkeyLog.info("AgentHotkey.handlePress: live adapter armed")
         }
     }
 
     private func handleRelease() async {
         agentHotkeyLog.info("AgentHotkey.handleRelease: stopping + transcribing")
         guard let p = pipeline else { return }
+
+        // Live path — mutually exclusive with batch. stopCapture() closes the
+        // CAF without re-transcribing; HoldToTalkLiveAdapter.stopAndFlush calls
+        // handleFinalTranscript with the merged transcript, which fires
+        // agentSession.start with the live result as initial instruction.
+        if let adapter = liveAdapter {
+            liveAdapter = nil
+            uiStatus = .processing
+            await p.stopCapture()
+            await adapter.stopAndFlush()
+            return
+        }
+
         uiStatus = .processing
         await p.stopAndProcess()
         switch p.status {

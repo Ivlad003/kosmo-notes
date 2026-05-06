@@ -128,6 +128,8 @@ final class RecorderState {
     /// it as part of `screen.mp4` — no separate compositing in our writer.
     private let cameraBubbleController = CameraBubbleWindowController()
     private var liveTranscriptAdapter = RecorderLiveAdapter()
+    private var liveTranscriptTee: RecorderLiveTee?
+    private var liveTranscriptRefreshTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -313,9 +315,24 @@ final class RecorderState {
                 }
             }
 
-            let capture = CaptureSession(config: config)
+            // Optional live transcript engine: only when a Whisper-class live
+            // provider is configured. Failure to arm is non-fatal — recorder
+            // proceeds in batch-only mode (existing post-stop transcript path).
+            let liveTee: RecorderLiveTee?
+            if let liveProvider = settings.makeLiveProvider() {
+                let engine = LiveTranscriptEngine(provider: liveProvider, exporter: LiveWindowExporter())
+                let tee = RecorderLiveTee(engine: engine)
+                liveTee = tee
+                Self.recorderLog.info("RecorderState.start: live transcript engine armed")
+            } else {
+                liveTee = nil
+            }
+
+            let capture = CaptureSession(config: config, liveSink: liveTee)
             try await capture.start()
             self.captureSession = capture
+            await liveTee?.start()
+            self.liveTranscriptTee = liveTee
 
             let meter = MicLevelMeter()
             try meter.start { [weak self] level in
@@ -650,11 +667,29 @@ final class RecorderState {
     }
 
     private func configureLiveTranscriptForRecording() async {
-        liveTranscriptAdapter = RecorderLiveAdapter()
+        if let tee = liveTranscriptTee {
+            liveTranscriptAdapter = RecorderLiveAdapter(snapshotSource: { await tee.snapshot() })
+            liveTranscriptRefreshTask?.cancel()
+            liveTranscriptRefreshTask = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    if Task.isCancelled { return }
+                    await self?.refreshLiveTranscript()
+                }
+            }
+        } else {
+            liveTranscriptAdapter = RecorderLiveAdapter()
+        }
         await refreshLiveTranscript()
     }
 
     private func clearLiveTranscript() {
+        liveTranscriptRefreshTask?.cancel()
+        liveTranscriptRefreshTask = nil
+        if let tee = liveTranscriptTee {
+            Task.detached { await tee.stop() }
+        }
+        liveTranscriptTee = nil
         liveTranscriptAdapter = RecorderLiveAdapter()
         applyLiveTranscript(.empty)
     }

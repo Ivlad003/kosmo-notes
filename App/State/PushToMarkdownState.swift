@@ -44,6 +44,7 @@ final class PushToMarkdownState {
     private let settings: AppSettings
     private let sessionStore: SessionStore
     private var pipeline: DictationPipeline?
+    private var liveAdapter: HoldToTalkLiveAdapter?
     private let installer = TriggerHotkeyInstaller(comboName: .pushToMarkdown, label: "PushToMarkdown")
     private var triggerChangeObserver: NSObjectProtocol?
 
@@ -128,12 +129,43 @@ final class PushToMarkdownState {
         } catch {
             uiStatus = .failed("Could not start: \(error.localizedDescription)")
             pushToMDLog.error("PushToMarkdown: startRecording threw — \(error.localizedDescription, privacy: .public)")
+            return
+        }
+
+        if let liveURL = p.currentLiveAudioURL,
+           let liveProvider = settings.makeLiveProvider() {
+            let engine = LiveTranscriptEngine(provider: liveProvider, exporter: LiveWindowExporter())
+            await engine.attach(audioFile: liveURL)
+            liveAdapter = HoldToTalkLiveAdapter(
+                engine: engine,
+                configSource: { TranscriptionConfig(language: nil, sampleRate: 16_000) },
+                sink: { [weak self] cleanedText in
+                    await self?.handleFinalTranscript(cleanedText)
+                }
+            )
+            pushToMDLog.info("PushToMarkdown.handlePress: live adapter armed")
         }
     }
 
     private func handleRelease() async {
         pushToMDLog.info("PushToMarkdown.handleRelease: hotkey released")
         guard let p = pipeline else { return }
+
+        // Live path — mutually exclusive with batch. stopCapture() flushes the
+        // CAF without re-transcribing; HoldToTalkLiveAdapter.stopAndFlush calls
+        // handleFinalTranscript with the merged stable+mutable transcript.
+        // NOTE: live path skips the post-Whisper LLM cleanup pass that batch
+        // mode runs. The live engine already does micro-batch merging on each
+        // window; an extra cleanup at release would defeat the latency goal.
+        if let adapter = liveAdapter {
+            liveAdapter = nil
+            uiStatus = .processing
+            await p.stopCapture()
+            await adapter.stopAndFlush()
+            uiStatus = .completed(lastSavedURL)
+            return
+        }
+
         uiStatus = .processing
         await p.stopAndProcess()
         switch p.status {

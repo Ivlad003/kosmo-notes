@@ -140,7 +140,7 @@ final class DictationState {
         if let liveURL = p.currentLiveAudioURL,
            let liveProvider = settings.makeLiveProvider() {
             let engine = LiveTranscriptEngine(provider: liveProvider, exporter: LiveWindowExporter())
-            engine.attach(audioFile: liveURL)
+            await engine.attach(audioFile: liveURL)
             liveAdapter = HoldToTalkLiveAdapter(
                 engine: engine,
                 configSource: { [settings = self.settings] in
@@ -150,7 +150,7 @@ final class DictationState {
                     await self?.handleLiveFinalTranscript(text)
                 }
             )
-            dictationLog.info("Dictation.handlePress: live adapter armed (\(liveProvider.self, privacy: .public))")
+            dictationLog.info("Dictation.handlePress: live adapter armed (\(String(describing: type(of: liveProvider)), privacy: .public))")
         }
     }
 
