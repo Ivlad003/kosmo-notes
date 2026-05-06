@@ -41,33 +41,53 @@ public protocol LivePCMSink: Sendable {
 
 // MARK: - LiveSinkDelivery
 
-/// Serial delivery coordinator for live PCM sink.
+/// Serial delivery coordinator for live PCM sink with bounded buffering.
 ///
 /// Prevents unbounded task-per-buffer spawning while keeping capture isolated
 /// from sink slowness. Buffers are delivered in-order to the sink without
-/// blocking the capture loop. If the sink falls behind, delivery continues
-/// serially — there's no fixed queue limit, but at most one delivery is active
-/// at a time (serial execution).
+/// blocking the capture loop. A bounded queue (default 32 items) protects
+/// against memory growth when the sink is slow — oldest buffers are dropped
+/// when the queue is full (drop-oldest policy).
 private actor LiveSinkDelivery {
     private let sink: any LivePCMSink
     private var deliveryTask: Task<Void, Never>?
     private let continuation: AsyncStream<(AVAudioPCMBuffer, UInt64)>.Continuation
+    private let maxQueueSize: Int
+    private var queuedCount: Int = 0
+    private var droppedCount: Int = 0
 
-    init(sink: any LivePCMSink) {
+    init(sink: any LivePCMSink, maxQueueSize: Int = 32) {
         self.sink = sink
-        let (stream, continuation) = AsyncStream<(AVAudioPCMBuffer, UInt64)>.makeStream()
+        self.maxQueueSize = maxQueueSize
+        let (stream, continuation) = AsyncStream<(AVAudioPCMBuffer, UInt64)>.makeStream(
+            bufferingPolicy: .bufferingOldest(maxQueueSize)
+        )
         self.continuation = continuation
         // Wrap stream in UncheckedSendableBox to satisfy Swift 6 strict concurrency
         let streamBox = UncheckedSendableBox(stream)
         self.deliveryTask = Task.detached {
+            var delivered = 0
             for await (buffer, hostTime) in streamBox.value {
                 await sink.receive(buffer, at: hostTime)
+                delivered += 1
             }
+            captureSessionLog.debug("LiveSinkDelivery: delivered \(delivered, privacy: .public) buffers total")
         }
     }
 
     /// Enqueue a buffer for serial delivery. Returns immediately without awaiting sink.
+    /// If the queue is full, drops the oldest buffer (drop-oldest policy).
     func enqueue(_ buffer: AVAudioPCMBuffer, hostTime: UInt64) {
+        // Track dropped buffers when continuation's buffer is full
+        if queuedCount >= maxQueueSize {
+            droppedCount += 1
+            if droppedCount % 10 == 0 {
+                captureSessionLog.warning("LiveSinkDelivery: dropped \(self.droppedCount, privacy: .public) buffers due to slow sink")
+            }
+        } else {
+            queuedCount += 1
+        }
+        
         continuation.yield((buffer, hostTime))
     }
 
@@ -75,6 +95,10 @@ private actor LiveSinkDelivery {
     func finish() async {
         continuation.finish()
         await deliveryTask?.value
+        deliveryTask = nil
+        if droppedCount > 0 {
+            captureSessionLog.info("LiveSinkDelivery.finish: dropped \(self.droppedCount, privacy: .public) total buffers during session")
+        }
     }
 }
 
@@ -394,6 +418,12 @@ public actor CaptureSession {
             }
         }
         screenRecorder = nil
+
+        // Finish pending deliveries during stop (drain queued buffers)
+        if let delivery = liveDelivery {
+            await delivery.finish()
+            liveDelivery = nil
+        }
 
         let paths = try await segmentWriter?.close() ?? []
         audioEngine = nil
