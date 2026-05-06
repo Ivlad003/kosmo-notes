@@ -60,29 +60,46 @@ extension LiveTranscriptState {
     public func merging(_ result: LiveTranscriptWindowResult, mutableHorizon: TimeInterval) -> LiveTranscriptState {
         let lockBefore = max(0, result.emittedAt - mutableHorizon)
 
+        func splitText(_ text: String, fraction: Double) -> (String, String)? {
+            let words = text
+                .split { $0.isWhitespace || $0.isNewline }
+                .map(String.init)
+
+            if words.count > 1 {
+                let rawLeftCount = Int(floor(Double(words.count) * fraction))
+                let leftCount = min(words.count - 1, max(1, rawLeftCount))
+                if leftCount > 0 && leftCount < words.count {
+                    return (
+                        words[0..<leftCount].joined(separator: " "),
+                        words[leftCount..<words.count].joined(separator: " ")
+                    )
+                }
+            }
+
+            let graphemes = Array(text)
+            guard graphemes.count > 1 else { return nil }
+
+            let rawLeftCount = Int(floor(Double(graphemes.count) * fraction))
+            let leftCount = min(graphemes.count - 1, max(1, rawLeftCount))
+            guard leftCount > 0 && leftCount < graphemes.count else { return nil }
+
+            return (
+                String(graphemes[0..<leftCount]),
+                String(graphemes[leftCount..<graphemes.count])
+            )
+        }
+
         // Helper: split a unit at a time t (t between start and end).
-        // Splits text proportionally by words according to time fraction.
+        // Prefer word boundaries, then fall back to graphemes so locked time can still promote.
         func splitUnitAt(_ unit: LiveTranscriptUnit, _ t: TimeInterval) -> (LiveTranscriptUnit?, LiveTranscriptUnit?) {
             guard t > unit.start && t < unit.end else { return (unit, nil) }
             let duration = unit.end - unit.start
             guard duration > 0 else { return (unit, nil) }
 
-            let words = unit.text
-                .split { $0.isWhitespace || $0.isNewline }
-                .map(String.init)
-
-            // fraction of the left segment
             let frac = (t - unit.start) / duration
-            let leftCount = Int(floor(Double(words.count) * frac))
-
-            if leftCount <= 0 {
-                return (nil, unit)
-            } else if leftCount >= words.count {
+            guard let (leftText, rightText) = splitText(unit.text, fraction: frac) else {
                 return (unit, nil)
             }
-
-            let leftText = words[0..<leftCount].joined(separator: " ")
-            let rightText = words[leftCount..<words.count].joined(separator: " ")
 
             let left = LiveTranscriptUnit(start: unit.start, end: t, text: leftText.trimmingCharacters(in: .whitespacesAndNewlines), state: unit.state)
             let right = LiveTranscriptUnit(start: t, end: unit.end, text: rightText.trimmingCharacters(in: .whitespacesAndNewlines), state: unit.state)

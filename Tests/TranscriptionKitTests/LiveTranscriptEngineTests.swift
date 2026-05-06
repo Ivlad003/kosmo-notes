@@ -45,3 +45,45 @@ import Testing
 
     #expect(merged.stableText == "locked")
 }
+
+@Test func merge_splits_single_unit_across_promotion_and_window_boundaries() {
+    let state = LiveTranscriptState(
+        stableUnits: [],
+        draftUnits: [.init(start: 0, end: 12, text: "abcdef", state: .draft)],
+        status: .healthy
+    )
+
+    let merged = state.merging(
+        LiveTranscriptWindowResult(
+            windowStart: 8,
+            windowEnd: 16,
+            text: "rewrite",
+            emittedAt: 10
+        ),
+        mutableHorizon: 6
+    )
+
+    #expect(merged.stableText == "ab")
+    #expect(merged.mutableText == "cd rewrite")
+}
+
+@Test func merge_forces_non_empty_split_when_boundary_is_near_start() {
+    let state = LiveTranscriptState(
+        stableUnits: [],
+        draftUnits: [.init(start: 0, end: 2, text: "ab", state: .draft)],
+        status: .healthy
+    )
+
+    let merged = state.merging(
+        LiveTranscriptWindowResult(
+            windowStart: 1.5,
+            windowEnd: 4,
+            text: "rewrite",
+            emittedAt: 1.1
+        ),
+        mutableHorizon: 1
+    )
+
+    #expect(merged.stableText == "a")
+    #expect(merged.mutableText == "b rewrite")
+}
