@@ -46,28 +46,64 @@ public protocol LivePCMSink: Sendable {
 /// Prevents unbounded task-per-buffer spawning while keeping capture isolated
 /// from sink slowness. Buffers are delivered in-order to the sink without
 /// blocking the capture loop. A bounded queue (default 32 items) protects
-/// against memory growth when the sink is slow — oldest buffers are dropped
-/// when the queue is full (drop-oldest policy).
+/// against memory growth when the sink is slow — the queue retains the newest
+/// 32 buffers, dropping the oldest pending buffer when backpressure builds.
 private actor LiveSinkDelivery {
+    private actor Metrics {
+        private let maxQueueSize: Int
+        private var queuedCount: Int = 0
+        private var droppedCount: Int = 0
+
+        init(maxQueueSize: Int) {
+            self.maxQueueSize = maxQueueSize
+        }
+
+        func recordEnqueue(result: AsyncStream<(AVAudioPCMBuffer, UInt64)>.Continuation.YieldResult) -> Int? {
+            switch result {
+            case .enqueued:
+                queuedCount = min(queuedCount + 1, maxQueueSize)
+                return nil
+            case .dropped:
+                queuedCount = maxQueueSize
+                droppedCount += 1
+                return droppedCount
+            case .terminated:
+                return nil
+            @unknown default:
+                return nil
+            }
+        }
+
+        func recordDequeue() {
+            if queuedCount > 0 {
+                queuedCount -= 1
+            }
+        }
+
+        func totalDropped() -> Int {
+            droppedCount
+        }
+    }
+
     private let sink: any LivePCMSink
     private var deliveryTask: Task<Void, Never>?
     private let continuation: AsyncStream<(AVAudioPCMBuffer, UInt64)>.Continuation
-    private let maxQueueSize: Int
-    private var queuedCount: Int = 0
-    private var droppedCount: Int = 0
+    private let metrics: Metrics
 
     init(sink: any LivePCMSink, maxQueueSize: Int = 32) {
         self.sink = sink
-        self.maxQueueSize = maxQueueSize
+        self.metrics = Metrics(maxQueueSize: maxQueueSize)
         let (stream, continuation) = AsyncStream<(AVAudioPCMBuffer, UInt64)>.makeStream(
-            bufferingPolicy: .bufferingOldest(maxQueueSize)
+            bufferingPolicy: .bufferingNewest(maxQueueSize)
         )
         self.continuation = continuation
         // Wrap stream in UncheckedSendableBox to satisfy Swift 6 strict concurrency
         let streamBox = UncheckedSendableBox(stream)
+        let metrics = self.metrics
         self.deliveryTask = Task.detached {
             var delivered = 0
             for await (buffer, hostTime) in streamBox.value {
+                await metrics.recordDequeue()
                 await sink.receive(buffer, at: hostTime)
                 delivered += 1
             }
@@ -77,18 +113,11 @@ private actor LiveSinkDelivery {
 
     /// Enqueue a buffer for serial delivery. Returns immediately without awaiting sink.
     /// If the queue is full, drops the oldest buffer (drop-oldest policy).
-    func enqueue(_ buffer: AVAudioPCMBuffer, hostTime: UInt64) {
-        // Track dropped buffers when continuation's buffer is full
-        if queuedCount >= maxQueueSize {
-            droppedCount += 1
-            if droppedCount % 10 == 0 {
-                captureSessionLog.warning("LiveSinkDelivery: dropped \(self.droppedCount, privacy: .public) buffers due to slow sink")
-            }
-        } else {
-            queuedCount += 1
+    func enqueue(_ buffer: AVAudioPCMBuffer, hostTime: UInt64) async {
+        if let droppedCount = await metrics.recordEnqueue(result: continuation.yield((buffer, hostTime))),
+           droppedCount % 10 == 0 {
+            captureSessionLog.warning("LiveSinkDelivery: dropped \(droppedCount, privacy: .public) buffers due to slow sink")
         }
-        
-        continuation.yield((buffer, hostTime))
     }
 
     /// Stop accepting new buffers and wait for in-flight delivery to complete.
@@ -96,8 +125,9 @@ private actor LiveSinkDelivery {
         continuation.finish()
         await deliveryTask?.value
         deliveryTask = nil
+        let droppedCount = await metrics.totalDropped()
         if droppedCount > 0 {
-            captureSessionLog.info("LiveSinkDelivery.finish: dropped \(self.droppedCount, privacy: .public) total buffers during session")
+            captureSessionLog.info("LiveSinkDelivery.finish: dropped \(droppedCount, privacy: .public) total buffers during session")
         }
     }
 }
@@ -153,6 +183,8 @@ public actor CaptureSession {
         /// Lets users avoid the speaker → mic echo loop by routing system audio
         /// through a virtual device that the mic doesn't pick up.
         public let systemAudioDeviceUID: String?
+        /// Preferred display ID for screen recording. `0` means use the first available display.
+        public let screenCaptureDisplayID: UInt32
 
         public init(
             micEnabled: Bool = true,
@@ -168,7 +200,8 @@ public actor CaptureSession {
             audioBitrate: Int = 48_000,
             audioSampleRate: Int = 48_000,
             audioCodec: AudioCodecChoice = .heAAC,
-            systemAudioDeviceUID: String? = nil
+            systemAudioDeviceUID: String? = nil,
+            screenCaptureDisplayID: UInt32 = 0
         ) {
             self.micEnabled = micEnabled
             self.systemAudioEnabled = systemAudioEnabled
@@ -184,6 +217,7 @@ public actor CaptureSession {
             self.audioSampleRate = audioSampleRate
             self.audioCodec = audioCodec
             self.systemAudioDeviceUID = systemAudioDeviceUID
+            self.screenCaptureDisplayID = screenCaptureDisplayID
         }
     }
 
@@ -318,6 +352,7 @@ public actor CaptureSession {
                 let recorder = ScreenRecorder()
                 let srConfig = ScreenRecorder.Config(
                     outputURL: outputURL,
+                    displayID: config.screenCaptureDisplayID,
                     useHEVC: config.videoUseHEVC,
                     videoBitrate: config.videoBitrate,
                     audioBitrate: config.audioBitrate,

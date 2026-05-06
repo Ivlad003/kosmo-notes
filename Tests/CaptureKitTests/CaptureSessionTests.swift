@@ -366,13 +366,12 @@ struct CaptureSessionTests {
         #expect(order.count == 10, "Expected sink to receive all 10 buffers after stop(), got \(order.count)")
     }
 
-    @Test("LiveSinkDelivery drops oldest buffers when queue is full")
-    func liveDeliveryDropsOldestWhenFull() async throws {
+    @Test("LiveSinkDelivery keeps newest buffers when queue is full")
+    func liveDeliveryKeepsNewestWhenFull() async throws {
         let sessionDir = try makeTempDir()
         defer { cleanup(sessionDir) }
 
-        // Use a blocking sink with significant delay to fill the queue
-        let sink = BlockingTestPCMSink(delay: .milliseconds(100))
+        let sink = TaggedIndexPCMSink(delay: .milliseconds(100))
         let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
 
         let config = CaptureSession.Config(
@@ -386,28 +385,33 @@ struct CaptureSessionTests {
         try await session.start()
 
         // Feed 50 buffers rapidly to exceed the default queue size (32)
-        for _ in 0..<50 {
-            guard let buf = AVAudioPCMBuffer.sineWave(frameCount: 4800) else {
-                Issue.record("Failed to create sine wave buffer")
+        for index in 0..<50 {
+            guard let buf = AVAudioPCMBuffer.taggedIndex(index, frameCount: 4800) else {
+                Issue.record("Failed to create tagged buffer")
                 continue
             }
             continuation.yield(buf)
         }
 
-        // Give a moment for capture to enqueue them
+        // Give the mic feed loop time to enqueue the burst before stopping.
         try await Task.sleep(for: .milliseconds(200))
 
         continuation.finish()
         _ = try await session.stop()
 
-        // After stop completes, some buffers should have been dropped
-        let order = sink.receivedOrder()
-        #expect(order.count < 50, "Expected some buffers to be dropped, but got \(order.count) (fed 50)")
-        #expect(order.count > 0, "Expected at least some buffers to be delivered")
-        
-        // Verify the ones that were delivered are still in order
-        for i in 1..<order.count {
-            #expect(order[i] >= order[i-1], "Buffer \(i) out of order")
+        let indices = await sink.receivedIndices
+        #expect(indices.count <= 33, "Expected 1 in-flight delivery plus at most 32 queued buffers, got \(indices.count)")
+        #expect(indices.count > 0, "Expected at least some buffers to be delivered")
+        #expect(indices.count < 50, "Expected some older pending buffers to be dropped, got \(indices)")
+        #expect(indices.last == 49, "Expected newest buffer to survive queue pressure")
+        if indices.count > 1 {
+            #expect(indices[1] > 0, "Expected oldest pending buffers to be dropped, got \(indices)")
+        }
+
+        if indices.count > 1 {
+            for i in 1..<indices.count {
+                #expect(indices[i] > indices[i - 1], "Tagged indices should stay in ascending order")
+            }
         }
     }
 }

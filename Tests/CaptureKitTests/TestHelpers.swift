@@ -49,6 +49,16 @@ extension AVAudioPCMBuffer {
         buffer.frameLength = frameCount
         return buffer
     }
+
+    /// Create a mono Float32 PCM buffer whose first sample encodes an index.
+    static func taggedIndex(_ index: Int, frameCount: AVAudioFrameCount, sampleRate: Double = 48_000) -> AVAudioPCMBuffer? {
+        guard let buffer = silence(frameCount: frameCount, sampleRate: sampleRate) else {
+            return nil
+        }
+
+        buffer.floatChannelData?[0][0] = Float(index)
+        return buffer
+    }
 }
 
 // MARK: - MockAudioEngine
@@ -133,5 +143,25 @@ final class BlockingTestPCMSink: @unchecked Sendable, LivePCMSink {
 
     func receivedOrder() -> [UInt64] {
         stateQueue.sync { _receivedOrder }
+    }
+}
+
+// MARK: - TaggedIndexPCMSink
+
+actor TaggedIndexPCMSink: LivePCMSink {
+    let delay: Duration
+    private(set) var receivedIndices: [Int] = []
+
+    init(delay: Duration = .zero) {
+        self.delay = delay
+    }
+
+    func receive(_ buffer: AVAudioPCMBuffer, at hostTime: UInt64) async {
+        _ = hostTime
+        if delay > .zero {
+            try? await Task.sleep(for: delay)
+        }
+        let firstSample = buffer.floatChannelData?[0][0] ?? -1
+        receivedIndices.append(Int(firstSample.rounded()))
     }
 }

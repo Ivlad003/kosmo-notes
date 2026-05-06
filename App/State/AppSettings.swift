@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import AIKit
 import DictationKit
 @preconcurrency import KeychainAccess
@@ -77,6 +78,7 @@ final class AppSettings {
         static let cameraBubblePositionX = "cameraBubblePositionX"
         static let cameraBubblePositionY = "cameraBubblePositionY"
         static let cameraBubbleSize = "cameraBubbleSize"
+        static let screenCaptureDisplayID = "screenCaptureDisplayID"
         // Chat auto-frame sampling — when on, every chat message that
         // has an attached session with screen.mp4 gets N evenly-spaced
         // baseline frames added as vision context (in addition to any
@@ -146,6 +148,11 @@ final class AppSettings {
     /// SCKit whole-system mixdown (default). Set via Settings → Transcription.
     var systemAudioDeviceUID: String {
         didSet { UserDefaults.standard.set(systemAudioDeviceUID, forKey: Defaults.systemAudioDeviceUID) }
+    }
+
+    /// Preferred display ID for screen capture. `0` means auto / primary display.
+    var screenCaptureDisplayID: UInt32 {
+        didSet { UserDefaults.standard.set(Int(screenCaptureDisplayID), forKey: Defaults.screenCaptureDisplayID) }
     }
 
     /// Show a Loom-style floating webcam bubble during Audio + Screen recordings.
@@ -535,6 +542,8 @@ final class AppSettings {
         self.whisperKitModel = UserDefaults.standard.string(forKey: Defaults.whisperKitModel) ?? ""
 
         self.systemAudioDeviceUID = UserDefaults.standard.string(forKey: Defaults.systemAudioDeviceUID) ?? ""
+        let savedDisplayID = UserDefaults.standard.integer(forKey: Defaults.screenCaptureDisplayID)
+        self.screenCaptureDisplayID = savedDisplayID > 0 ? UInt32(savedDisplayID) : 0
 
         self.cameraBubbleEnabled = (UserDefaults.standard.object(forKey: Defaults.cameraBubbleEnabled) as? Bool) ?? false
         self.cameraDeviceUID = UserDefaults.standard.string(forKey: Defaults.cameraDeviceUID) ?? ""
@@ -768,6 +777,7 @@ final class AppSettings {
             "systemAudioEnabled=\(systemAudioEnabled)",
             "useProcessTap=\(useProcessTap)",
             "systemAudioDeviceUID=\(systemAudioDeviceUID.isEmpty ? "(default SCKit)" : systemAudioDeviceUID)",
+            "screenCaptureDisplayID=\(screenCaptureDisplayID)",
             "audioCodec=\(audioCodec.rawValue) bitrate=\(audioBitrate) sampleRate=\(audioSampleRate)",
             "videoUseHEVC=\(videoUseHEVC) videoBitrate=\(videoBitrate)",
             "dictationInsertion=\(dictationInsertion.rawValue)",

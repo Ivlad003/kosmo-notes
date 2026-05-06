@@ -28,6 +28,7 @@ public actor ScreenRecorder: NSObject {
 
     public struct Config: Sendable {
         public let outputURL: URL
+        public let displayID: UInt32
         public let captureSystemAudio: Bool
         public let frameRate: Int
         public let scaleFactor: CGFloat
@@ -43,6 +44,7 @@ public actor ScreenRecorder: NSObject {
 
         public init(
             outputURL: URL,
+            displayID: UInt32 = 0,
             captureSystemAudio: Bool = true,
             frameRate: Int = 24,
             scaleFactor: CGFloat = 1.0,
@@ -52,6 +54,7 @@ public actor ScreenRecorder: NSObject {
             audioSampleRate: Int = 48_000
         ) {
             self.outputURL = outputURL
+            self.displayID = displayID
             self.captureSystemAudio = captureSystemAudio
             self.frameRate = frameRate
             self.scaleFactor = scaleFactor
@@ -95,14 +98,15 @@ public actor ScreenRecorder: NSObject {
             screenRecorderLog.error("ScreenRecorder.start: SCShareableContent failed — \(error.localizedDescription, privacy: .public). Likely Screen Recording TCC denied; reset with `tccutil reset ScreenCapture dev.kosmonotes.studio` and re-grant.")
             throw error
         }
-        guard let display = content.displays.first else {
+        let display = Self.selectDisplay(from: content.displays, preferredID: config.displayID)
+        guard let display else {
             screenRecorderLog.error("ScreenRecorder.start: no displays available")
             throw ScreenRecorderError.noDisplayAvailable
         }
 
         let width = Int(CGFloat(display.width) * config.scaleFactor)
         let height = Int(CGFloat(display.height) * config.scaleFactor)
-        screenRecorderLog.info("ScreenRecorder.start: display \(display.width, privacy: .public)×\(display.height, privacy: .public) → output \(width, privacy: .public)×\(height, privacy: .public)")
+        screenRecorderLog.info("ScreenRecorder.start: selected displayID=\(display.displayID, privacy: .public) source=\(display.width, privacy: .public)×\(display.height, privacy: .public) → output \(width, privacy: .public)×\(height, privacy: .public)")
 
         // Configure SCStream for video + optional audio.
         let streamConfig = SCStreamConfiguration()
@@ -190,6 +194,14 @@ public actor ScreenRecorder: NSObject {
         }
         self.stream = scStream
         screenRecorderLog.info("ScreenRecorder.start: SCStream capturing, awaiting first frame")
+    }
+
+    private static func selectDisplay(from displays: [SCDisplay], preferredID: UInt32) -> SCDisplay? {
+        if preferredID != 0,
+           let preferred = displays.first(where: { $0.displayID == preferredID }) {
+            return preferred
+        }
+        return displays.first
     }
 
     /// Stop capture, finalize the MP4, and return the output URL.
