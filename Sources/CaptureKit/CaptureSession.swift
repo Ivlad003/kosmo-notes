@@ -33,7 +33,10 @@ public enum AudioCodecChoice: String, Sendable {
 public protocol LivePCMSink: Sendable {
     /// Receives a PCM buffer from the specified audio source.
     /// Called on a detached Task; implementers may be isolated actors.
-    func receive(_ buffer: AVAudioPCMBuffer, source: AudioSource) async
+    /// - Parameters:
+    ///   - buffer: The PCM buffer to receive
+    ///   - hostTime: Mach absolute time at which the buffer was captured
+    func receive(_ buffer: AVAudioPCMBuffer, at hostTime: UInt64) async
 }
 
 // MARK: - CaptureSession
@@ -154,12 +157,23 @@ public actor CaptureSession {
     /// to the sink after appending to the SegmentWriter. Best-effort: sink
     /// failures do not interrupt the main recording path.
     private var liveSink: (any LivePCMSink)?
+    /// Test seam: when set, this stream is used instead of starting a real mic.
+    /// Internal for testing only; never exposed to public API.
+    private let testMicStream: AsyncStream<AVAudioPCMBuffer>?
 
     // MARK: - Init
 
     public init(config: Config, liveSink: (any LivePCMSink)? = nil) {
         self.config = config
         self.liveSink = liveSink
+        self.testMicStream = nil
+    }
+
+    /// Internal test init that accepts a mock mic stream.
+    internal init(config: Config, liveSink: (any LivePCMSink)?, testMicStream: AsyncStream<AVAudioPCMBuffer>) {
+        self.config = config
+        self.liveSink = liveSink
+        self.testMicStream = testMicStream
     }
 
     // MARK: - Public API
@@ -177,9 +191,14 @@ public actor CaptureSession {
         self.segmentWriter = writer
 
         if config.micEnabled {
-            let engine = AudioEngine(config: Self.micAudioEngineConfig(for: config))
-            self.audioEngine = engine
-            micTask = try await makeMicTask(engine: engine, writer: writer, liveSink: liveSink)
+            // Use test stream if provided (test seam), otherwise create real engine
+            if let testStream = testMicStream {
+                micTask = makeTestMicTask(stream: testStream, writer: writer, liveSink: liveSink)
+            } else {
+                let engine = AudioEngine(config: Self.micAudioEngineConfig(for: config))
+                self.audioEngine = engine
+                micTask = try await makeMicTask(engine: engine, writer: writer, liveSink: liveSink)
+            }
         }
 
         if config.systemAudioEnabled {
@@ -335,6 +354,36 @@ public actor CaptureSession {
         systemTask = nil
     }
 
+    /// Build a Task that drains a test mic stream into the writer.
+    /// Used by test seam only — does not create or manage an AudioEngine.
+    private nonisolated func makeTestMicTask(
+        stream: AsyncStream<AVAudioPCMBuffer>,
+        writer: SegmentWriter,
+        liveSink: (any LivePCMSink)?
+    ) -> Task<Void, Never> {
+        let box = UncheckedSendableBox(stream)
+        return Task.detached {
+            var bufferIndex = 0
+            for await buffer in box.value {
+                bufferIndex += 1
+                let hostTime = mach_absolute_time()
+                do {
+                    try await writer.append(buffer, source: .mic)
+                    if bufferIndex == 1 || bufferIndex % 50 == 0 {
+                        captureSessionLog.info("CaptureSession.testMic: appended buffer #\(bufferIndex, privacy: .public) frames=\(buffer.frameLength, privacy: .public)")
+                    }
+                } catch {
+                    captureSessionLog.error("CaptureSession.testMic: writer.append threw — \(error.localizedDescription, privacy: .public) (buffer #\(bufferIndex, privacy: .public))")
+                }
+                // Forward to live sink (best-effort)
+                if let sink = liveSink {
+                    await sink.receive(buffer, at: hostTime)
+                }
+            }
+            captureSessionLog.info("CaptureSession.testMic: stream ended after \(bufferIndex, privacy: .public) buffers")
+        }
+    }
+
     /// Build a Task that drains the mic stream into the writer.
     /// nonisolated so that the call to engine.start() (AudioEngine actor)
     /// and the resulting AsyncStream never cross into CaptureSession's isolation
@@ -351,6 +400,7 @@ public actor CaptureSession {
             var bufferIndex = 0
             for await buffer in box.value {
                 bufferIndex += 1
+                let hostTime = mach_absolute_time()
                 do {
                     try await writer.append(buffer, source: .mic)
                     if bufferIndex == 1 || bufferIndex % 50 == 0 {
@@ -361,7 +411,7 @@ public actor CaptureSession {
                 }
                 // Forward to live sink (best-effort)
                 if let sink = liveSink {
-                    await sink.receive(buffer, source: .mic)
+                    await sink.receive(buffer, at: hostTime)
                 }
             }
             captureSessionLog.info("CaptureSession.mic: stream ended after \(bufferIndex, privacy: .public) buffers")
@@ -380,6 +430,7 @@ public actor CaptureSession {
             var bufferIndex = 0
             for await buffer in streamBox.value {
                 bufferIndex += 1
+                let hostTime = mach_absolute_time()
                 do {
                     try await writer.append(buffer, source: .system)
                 } catch {
@@ -387,7 +438,7 @@ public actor CaptureSession {
                 }
                 // Forward to live sink (best-effort)
                 if let sink = liveSink {
-                    await sink.receive(buffer, source: .system)
+                    await sink.receive(buffer, at: hostTime)
                 }
             }
             captureSessionLog.info("CaptureSession.system(SCKit): stream ended after \(bufferIndex, privacy: .public) buffers")
@@ -408,6 +459,7 @@ public actor CaptureSession {
             var bufferIndex = 0
             for await buffer in streamBox.value {
                 bufferIndex += 1
+                let hostTime = mach_absolute_time()
                 do {
                     try await writer.append(buffer, source: .system)
                     if bufferIndex == 1 || bufferIndex % 50 == 0 {
@@ -418,7 +470,7 @@ public actor CaptureSession {
                 }
                 // Forward to live sink (best-effort)
                 if let sink = liveSink {
-                    await sink.receive(buffer, source: .system)
+                    await sink.receive(buffer, at: hostTime)
                 }
             }
             captureSessionLog.info("CaptureSession.system(Device): stream ended after \(bufferIndex, privacy: .public) buffers")
@@ -438,6 +490,7 @@ public actor CaptureSession {
             var bufferIndex = 0
             for await buffer in streamBox.value {
                 bufferIndex += 1
+                let hostTime = mach_absolute_time()
                 do {
                     try await writer.append(buffer, source: .system)
                 } catch {
@@ -445,7 +498,7 @@ public actor CaptureSession {
                 }
                 // Forward to live sink (best-effort)
                 if let sink = liveSink {
-                    await sink.receive(buffer, source: .system)
+                    await sink.receive(buffer, at: hostTime)
                 }
             }
             captureSessionLog.info("CaptureSession.system(Tap): stream ended after \(bufferIndex, privacy: .public) buffers")

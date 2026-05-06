@@ -205,64 +205,46 @@ struct CaptureSessionTests {
 
         let sink = TestPCMSink()
         
-        // Create a session with the test sink
+        // Create a test mic stream
+        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+        
+        // Create a session with the test sink and mock stream
         let config = CaptureSession.Config(
             micEnabled: true,
             systemAudioEnabled: false,
             sessionDir: sessionDir,
             segmentDurationSeconds: 5.0
         )
+        let session = CaptureSession(config: config, liveSink: sink, testMicStream: stream)
         
-        // We need to test with SegmentWriter, which means we need synthetic buffers
-        // feeding into the actual capture path. Direct SegmentWriter test:
-        let writer = try SegmentWriter(
-            sessionDir: sessionDir,
-            segmentDurationSeconds: 2.0,
-            sampleRate: 48_000
-        )
+        // Start the session (uses test stream instead of real mic)
+        try await session.start()
         
-        // Manually create a PCM forwarding path similar to makeMicTask
-        // Feed 5 buffers and verify sink receives them
-        for i in 0..<5 {
+        // Feed 3 buffers through the test stream
+        for _ in 0..<3 {
             guard let buf = AVAudioPCMBuffer.sineWave(frameCount: 4800) else {
-                Issue.record("Failed to create sine wave buffer \(i)")
+                Issue.record("Failed to create sine wave buffer")
                 continue
             }
-            try await writer.append(buf, source: .mic)
-            await sink.receive(buf, source: .mic)
+            continuation.yield(buf)
         }
         
+        // Give the feed task a moment to process
+        try await Task.sleep(for: .milliseconds(100))
+        
+        // Verify sink received all buffers
         let count = await sink.count()
-        #expect(count == 5, "Expected sink to receive 5 buffers, got \(count)")
+        #expect(count == 3, "Expected sink to receive 3 buffers, got \(count)")
         
-        _ = try await writer.close()
-    }
-
-    @Test("LivePCMSink receives buffers from both mic and system sources")
-    func livePCMSinkReceivesMixedSources() async throws {
-        let sink = TestPCMSink()
-        
-        // Feed 3 mic buffers
-        for _ in 0..<3 {
-            guard let buf = AVAudioPCMBuffer.sineWave(frameCount: 4800) else { continue }
-            await sink.receive(buf, source: .mic)
-        }
-        
-        // Feed 2 system buffers
-        for _ in 0..<2 {
-            guard let buf = AVAudioPCMBuffer.sineWave(frameCount: 4800) else { continue }
-            await sink.receive(buf, source: .system)
-        }
-        
-        let count = await sink.count()
-        #expect(count == 5, "Expected sink to receive 5 total buffers, got \(count)")
-        
-        // Verify sources
+        // Verify host times are non-zero
         let buffers = await sink.receivedBuffers
-        let micCount = buffers.filter { $0.source == .mic }.count
-        let systemCount = buffers.filter { $0.source == .system }.count
+        for (index, recorded) in buffers.enumerated() {
+            #expect(recorded.hostTime > 0, "Buffer \(index) has zero host time")
+            #expect(recorded.frameLength == 4800, "Buffer \(index) has wrong frameLength: \(recorded.frameLength)")
+        }
         
-        #expect(micCount == 3, "Expected 3 mic buffers, got \(micCount)")
-        #expect(systemCount == 2, "Expected 2 system buffers, got \(systemCount)")
+        // Clean stop
+        continuation.finish()
+        _ = try await session.stop()
     }
 }

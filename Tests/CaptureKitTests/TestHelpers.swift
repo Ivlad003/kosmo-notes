@@ -76,11 +76,16 @@ actor MockAudioEngine {
 
 /// Test sink that records received PCM buffers.
 actor TestPCMSink: LivePCMSink {
-    private(set) var receivedBuffers: [(buffer: AVAudioPCMBuffer, source: AudioSource)] = []
+    struct RecordedBuffer {
+        let frameLength: AVAudioFrameCount
+        let hostTime: UInt64
+    }
     
-    func receive(_ buffer: AVAudioPCMBuffer, source: AudioSource) async {
+    private(set) var receivedBuffers: [RecordedBuffer] = []
+    
+    func receive(_ buffer: AVAudioPCMBuffer, at hostTime: UInt64) async {
         // Store key properties rather than the buffer itself (AVAudioPCMBuffer isn't Sendable)
-        receivedBuffers.append((buffer, source))
+        receivedBuffers.append(RecordedBuffer(frameLength: buffer.frameLength, hostTime: hostTime))
     }
     
     func count() -> Int {
