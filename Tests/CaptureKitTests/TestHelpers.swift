@@ -3,6 +3,7 @@
 // Swift Testing macro expansion in the test structs.
 
 import AVFoundation
+@testable import CaptureKit
 
 // MARK: - AVAudioPCMBuffer test helpers
 
@@ -68,5 +69,25 @@ actor MockAudioEngine {
     func stop() async {
         continuation?.finish()
         continuation = nil
+    }
+}
+
+// MARK: - TestPCMSink
+
+/// Test sink that records received PCM buffers.
+actor TestPCMSink: LivePCMSink {
+    private(set) var receivedBuffers: [(buffer: AVAudioPCMBuffer, source: AudioSource)] = []
+    
+    func receive(_ buffer: AVAudioPCMBuffer, source: AudioSource) async {
+        // Store key properties rather than the buffer itself (AVAudioPCMBuffer isn't Sendable)
+        receivedBuffers.append((buffer, source))
+    }
+    
+    func count() -> Int {
+        receivedBuffers.count
+    }
+    
+    func reset() {
+        receivedBuffers.removeAll()
     }
 }

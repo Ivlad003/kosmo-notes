@@ -23,6 +23,19 @@ public enum AudioCodecChoice: String, Sendable {
     }
 }
 
+// MARK: - LivePCMSink
+
+/// Protocol for receiving live PCM buffers during capture.
+///
+/// Conformers receive a copy of each PCM buffer as it flows through
+/// CaptureSession's feed loops. The sink is best-effort: if the sink throws
+/// or fails, the main capture path (SegmentWriter) continues unaffected.
+public protocol LivePCMSink: Sendable {
+    /// Receives a PCM buffer from the specified audio source.
+    /// Called on a detached Task; implementers may be isolated actors.
+    func receive(_ buffer: AVAudioPCMBuffer, source: AudioSource) async
+}
+
 // MARK: - CaptureSession
 
 /// Top-level coordinator for audio capture.
@@ -30,6 +43,10 @@ public enum AudioCodecChoice: String, Sendable {
 /// Combines `AudioEngine` (mic) and `SCKitAudioCapture` (system audio) into
 /// a single API. Both sources feed one `SegmentWriter` which writes 5-second
 /// rolling segments to `<sessionDir>/segments/<n>.m4a`.
+///
+/// When a `LivePCMSink` is provided, PCM buffers are also forwarded to the
+/// sink in real-time. The sink path is best-effort and does not affect the
+/// main recording path.
 public actor CaptureSession {
 
     // MARK: - Config
@@ -133,11 +150,16 @@ public actor CaptureSession {
     /// Mutually exclusive with `scKitBox` / `tapBoxAny` — when set, system
     /// audio comes from this device instead of SCKit's whole-system mixdown.
     private var deviceAudioCapture: DeviceAudioCapture?
+    /// Optional sink for live PCM buffers. When set, each buffer is forwarded
+    /// to the sink after appending to the SegmentWriter. Best-effort: sink
+    /// failures do not interrupt the main recording path.
+    private var liveSink: (any LivePCMSink)?
 
     // MARK: - Init
 
-    public init(config: Config) {
+    public init(config: Config, liveSink: (any LivePCMSink)? = nil) {
         self.config = config
+        self.liveSink = liveSink
     }
 
     // MARK: - Public API
@@ -157,7 +179,7 @@ public actor CaptureSession {
         if config.micEnabled {
             let engine = AudioEngine(config: Self.micAudioEngineConfig(for: config))
             self.audioEngine = engine
-            micTask = try await makeMicTask(engine: engine, writer: writer)
+            micTask = try await makeMicTask(engine: engine, writer: writer, liveSink: liveSink)
         }
 
         if config.systemAudioEnabled {
@@ -174,7 +196,7 @@ public actor CaptureSession {
                 do {
                     let capture = DeviceAudioCapture(config: .init(deviceUID: deviceUID))
                     self.deviceAudioCapture = capture
-                    systemTask = try await makeDeviceCaptureTask(capture: capture, writer: writer)
+                    systemTask = try await makeDeviceCaptureTask(capture: capture, writer: writer, liveSink: liveSink)
                     systemStarted = true
                     captureSessionLog.info("CaptureSession.start: system audio via custom device UID=\(deviceUID, privacy: .public)")
                 } catch {
@@ -187,7 +209,7 @@ public actor CaptureSession {
                 do {
                     let box = TapBox()
                     self.tapBoxAny = box
-                    systemTask = try await makeTapTask(box: box, bundleIDs: config.processTapBundleIDs, writer: writer)
+                    systemTask = try await makeTapTask(box: box, bundleIDs: config.processTapBundleIDs, writer: writer, liveSink: liveSink)
                     systemStarted = true
                 } catch {
                     self.tapBoxAny = nil
@@ -196,7 +218,7 @@ public actor CaptureSession {
             if !systemStarted, #available(macOS 12.3, *) {
                 let box = SCKitBox()
                 self.scKitBox = box
-                systemTask = try await makeSystemTask(box: box, writer: writer)
+                systemTask = try await makeSystemTask(box: box, writer: writer, liveSink: liveSink)
             }
         }
 
@@ -239,17 +261,17 @@ public actor CaptureSession {
         self.segmentWriter = writer
 
         if let engine = audioEngine {
-            micTask = try await makeMicTask(engine: engine, writer: writer)
+            micTask = try await makeMicTask(engine: engine, writer: writer, liveSink: liveSink)
         }
 
         if config.systemAudioEnabled {
             // Restart whichever system-audio path was originally chosen.
             if let capture = deviceAudioCapture {
-                systemTask = try await makeDeviceCaptureTask(capture: capture, writer: writer)
+                systemTask = try await makeDeviceCaptureTask(capture: capture, writer: writer, liveSink: liveSink)
             } else if #available(macOS 14.4, *), let box = tapBoxAny as? TapBox {
-                systemTask = try await makeTapTask(box: box, bundleIDs: config.processTapBundleIDs, writer: writer)
+                systemTask = try await makeTapTask(box: box, bundleIDs: config.processTapBundleIDs, writer: writer, liveSink: liveSink)
             } else if let box = scKitBox, #available(macOS 12.3, *) {
-                systemTask = try await makeSystemTask(box: box, writer: writer)
+                systemTask = try await makeSystemTask(box: box, writer: writer, liveSink: liveSink)
             }
         }
 
@@ -317,7 +339,11 @@ public actor CaptureSession {
     /// nonisolated so that the call to engine.start() (AudioEngine actor)
     /// and the resulting AsyncStream never cross into CaptureSession's isolation
     /// domain — avoiding the Swift 6 non-Sendable stream crossing error.
-    private nonisolated func makeMicTask(engine: AudioEngine, writer: SegmentWriter) async throws -> Task<Void, Never> {
+    private nonisolated func makeMicTask(
+        engine: AudioEngine,
+        writer: SegmentWriter,
+        liveSink: (any LivePCMSink)?
+    ) async throws -> Task<Void, Never> {
         let stream = try await engine.start()
         // AVAudioPCMBuffer is not Sendable; we assert single-consumer ownership here.
         let box = UncheckedSendableBox(stream)
@@ -333,13 +359,21 @@ public actor CaptureSession {
                 } catch {
                     captureSessionLog.error("CaptureSession.mic: writer.append threw — \(error.localizedDescription, privacy: .public) (buffer #\(bufferIndex, privacy: .public))")
                 }
+                // Forward to live sink (best-effort)
+                if let sink = liveSink {
+                    await sink.receive(buffer, source: .mic)
+                }
             }
             captureSessionLog.info("CaptureSession.mic: stream ended after \(bufferIndex, privacy: .public) buffers")
         }
     }
 
     @available(macOS 12.3, *)
-    private nonisolated func makeSystemTask(box: SCKitBox, writer: SegmentWriter) async throws -> Task<Void, Never> {
+    private nonisolated func makeSystemTask(
+        box: SCKitBox,
+        writer: SegmentWriter,
+        liveSink: (any LivePCMSink)?
+    ) async throws -> Task<Void, Never> {
         let stream = try await box.capture.start()
         let streamBox = UncheckedSendableBox(stream)
         return Task.detached {
@@ -351,6 +385,10 @@ public actor CaptureSession {
                 } catch {
                     captureSessionLog.error("CaptureSession.system(SCKit): writer.append threw — \(error.localizedDescription, privacy: .public)")
                 }
+                // Forward to live sink (best-effort)
+                if let sink = liveSink {
+                    await sink.receive(buffer, source: .system)
+                }
             }
             captureSessionLog.info("CaptureSession.system(SCKit): stream ended after \(bufferIndex, privacy: .public) buffers")
         }
@@ -359,7 +397,11 @@ public actor CaptureSession {
     /// Drain DeviceAudioCapture's PCM stream into the segment writer as the
     /// system-audio source. nonisolated mirrors the other makeXTask helpers
     /// so the AsyncStream never crosses CaptureSession's actor boundary.
-    private nonisolated func makeDeviceCaptureTask(capture: DeviceAudioCapture, writer: SegmentWriter) async throws -> Task<Void, Never> {
+    private nonisolated func makeDeviceCaptureTask(
+        capture: DeviceAudioCapture,
+        writer: SegmentWriter,
+        liveSink: (any LivePCMSink)?
+    ) async throws -> Task<Void, Never> {
         let stream = try await capture.start()
         let streamBox = UncheckedSendableBox(stream)
         return Task.detached {
@@ -374,13 +416,22 @@ public actor CaptureSession {
                 } catch {
                     captureSessionLog.error("CaptureSession.system(Device): writer.append threw — \(error.localizedDescription, privacy: .public)")
                 }
+                // Forward to live sink (best-effort)
+                if let sink = liveSink {
+                    await sink.receive(buffer, source: .system)
+                }
             }
             captureSessionLog.info("CaptureSession.system(Device): stream ended after \(bufferIndex, privacy: .public) buffers")
         }
     }
 
     @available(macOS 14.4, *)
-    private nonisolated func makeTapTask(box: TapBox, bundleIDs: [String], writer: SegmentWriter) async throws -> Task<Void, Never> {
+    private nonisolated func makeTapTask(
+        box: TapBox,
+        bundleIDs: [String],
+        writer: SegmentWriter,
+        liveSink: (any LivePCMSink)?
+    ) async throws -> Task<Void, Never> {
         let stream = try await box.tap.start(bundleIDs: bundleIDs)
         let streamBox = UncheckedSendableBox(stream)
         return Task.detached {
@@ -391,6 +442,10 @@ public actor CaptureSession {
                     try await writer.append(buffer, source: .system)
                 } catch {
                     captureSessionLog.error("CaptureSession.system(Tap): writer.append threw — \(error.localizedDescription, privacy: .public)")
+                }
+                // Forward to live sink (best-effort)
+                if let sink = liveSink {
+                    await sink.receive(buffer, source: .system)
                 }
             }
             captureSessionLog.info("CaptureSession.system(Tap): stream ended after \(bufferIndex, privacy: .public) buffers")
