@@ -297,6 +297,11 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(recordingMode.rawValue, forKey: Defaults.recordingMode) }
     }
 
+    /// Display ID for screen capture (0 = auto/primary).
+    var screenCaptureDisplayID: UInt32 {
+        didSet { UserDefaults.standard.set(screenCaptureDisplayID, forKey: "screenCaptureDisplayID") }
+    }
+
     /// Per-session AI summary cost cap in USD. Requests estimated above this are silently skipped.
     var costCapUSD: Double {
         didSet { UserDefaults.standard.set(costCapUSD, forKey: Defaults.costCapUSD) }
@@ -574,6 +579,8 @@ final class AppSettings {
 
         let modeRaw = UserDefaults.standard.string(forKey: Defaults.recordingMode) ?? RecordingMode.audioOnly.rawValue
         self.recordingMode = RecordingMode(rawValue: modeRaw) ?? .audioOnly
+
+        self.screenCaptureDisplayID = UInt32(UserDefaults.standard.integer(forKey: "screenCaptureDisplayID"))
 
         // Default $1.00; treat stored 0.0 as "never set" and use the default.
         let cap = UserDefaults.standard.double(forKey: Defaults.costCapUSD)
