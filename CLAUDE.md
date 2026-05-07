@@ -132,6 +132,12 @@ These come from §3 of the Jarvis Note design doc.
 
 ## Build and run
 
+**First time after cloning** — generate the Xcode project (gitignored):
+
+```sh
+xcodegen generate
+```
+
 **Primary workflow — build, sign, and install in one step:**
 
 ```sh
@@ -147,7 +153,7 @@ The `Makefile` at repo root handles the full pipeline. `make install` signs the 
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
-280 tests pass in ~0.5 s. FTS5 perf benchmark is gated behind `JN_RUN_PERF=1`.
+280 tests pass in ~60 s. FTS5 perf benchmark is gated behind `JN_RUN_PERF=1`.
 
 Other commands:
 - `xed .` — open in Xcode

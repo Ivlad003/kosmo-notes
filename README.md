@@ -13,6 +13,14 @@ macOS menu-bar voice-first AI capture tool. Records mic + system audio (optional
 - `xcodegen` — `brew install xcodegen`
 - Apple Development certificate in your keychain (for signed builds that persist TCC permissions across updates)
 
+### First time after cloning
+
+```bash
+xcodegen generate   # creates KosmoNotes.xcodeproj (gitignored)
+```
+
+Only needed once after a fresh clone, or after changes to `project.yml`.
+
 ### Install to /Applications (recommended)
 
 ```bash
@@ -28,7 +36,7 @@ make test
 # or: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
-280 tests pass in ~0.5 s. A FTS5 perf benchmark is gated behind `JN_RUN_PERF=1`.
+280 tests pass in ~60 s. A FTS5 perf benchmark is gated behind `JN_RUN_PERF=1`.
 
 ### Open in Xcode
 
