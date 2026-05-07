@@ -1,126 +1,108 @@
-# Jarvis Note
+# KosmoNotes
 
-macOS menu-bar voice-first AI capture tool. Records audio (mic + system), transcribes via cloud APIs, runs AI processing for summaries / action items / dictation.
+macOS menu-bar voice-first AI capture tool. Records mic + system audio (optional screen), transcribes in real-time or batch, and runs AI processing for summaries, action items, dictation, and multi-turn chat.
 
-> **Status:** Phase 0 Day 1 complete — repo scaffold, SwiftPM manifest, and XcodeGen spec are in place. Xcode.app required to build. See the [design doc](docs/plans/2026-05-02-jarvis-note-design.md).
->
-> **Pivot history:** This project started as **Jarvis Studio** — a cross-platform Tauri/iced screen recorder. After ~5 weeks of build (37 passing tests, working v0.1.1) the scope was pivoted to a smaller voice-first product. The complete Rust workspace is preserved on the `archive/jarvis-studio-rust` branch.
+> **Status:** v1.0 feature-complete. All capture, transcription, AI, library, sharing, and chat features are wired. Manual smoke test pending before tagging. See the [design doc](docs/plans/2026-05-02-jarvis-note-design.md) and [v1.0 checklist](docs/release/v1.0-checklist.md).
 
-## Building
+## Building and installing
 
 ### Prerequisites
 
-- macOS 14+ (to run the build toolchain; the built app targets macOS 12.3+)
-- Xcode 15.4+ (download from [developer.apple.com](https://developer.apple.com/xcode/))
-- `xcodegen` (generates `KosmoNotes.xcodeproj` from `project.yml`)
+- macOS 14.0+ (both build machine and target)
+- Xcode 15.4+ — download from [developer.apple.com/xcode](https://developer.apple.com/xcode/)
+- `xcodegen` — `brew install xcodegen`
+- Apple Development certificate in your keychain (for signed builds that persist TCC permissions across updates)
 
-### One-time setup
+### Install to /Applications (recommended)
 
 ```bash
-brew install xcodegen
+make install
 ```
 
-### Generate project and build
+This builds a Release binary, signs it with your Apple Development certificate, and copies it to `/Applications/KosmoNotes.app`. TCC permissions (microphone, screen recording, accessibility) are preserved across subsequent `make install` runs because the code-signing identity stays stable.
+
+### Run tests
 
 ```bash
-# Generate KosmoNotes.xcodeproj from project.yml (re-run whenever project.yml changes)
-xcodegen generate
-
-# Debug build
-xcodebuild -scheme KosmoNotes -configuration Debug build
-
-# Release build
-xcodebuild -scheme KosmoNotes -configuration Release build
+make test
+# or: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
-### Run
+280 tests pass in ~0.5 s. A FTS5 perf benchmark is gated behind `JN_RUN_PERF=1`.
 
-After a successful build, locate and open the app:
-
-```bash
-find ~/Library/Developer/Xcode/DerivedData -name "KosmoNotes.app" -type d | head -1
-```
-
-Open the resulting path in Finder or run `open <path>`. The app shows a menu-bar icon (waveform.circle); no Dock icon (it is an `LSUIElement` app).
-
-### Distribution
+### Open in Xcode
 
 ```bash
-ditto -c -k --keepParent KosmoNotes.app KosmoNotes.app.zip
-```
-
-Recipients who receive the zip via file share must bypass Gatekeeper:
-
-```bash
-xattr -d com.apple.quarantine /Applications/KosmoNotes.app
+xed .
 ```
 
 ### Notes
 
 - `KosmoNotes.xcodeproj` is **gitignored** — only `project.yml` is committed. Run `xcodegen generate` after cloning.
 - App Sandbox is **off** (required for Accessibility paste in Dictation Mode).
-- Hardened Runtime is **off** (unsigned binary; hand-shared distribution only).
+- The build is signed with an Apple Development cert (not notarized). First launch from a hand-shared zip still requires Gatekeeper bypass: `xattr -d com.apple.quarantine /Applications/KosmoNotes.app`.
 
 ## What it does
 
-- **Meeting Mode** — long-form (30 min – 3 hr), mic + system audio, post-call AI summary in your client's language
-- **Dictation Mode** — short bursts (<60 s), mic only, paste-to-active-app, <1.5 s end-to-end latency
-- **Voice Note Mode** — medium-form (1–15 min), AI structures into note / task / journal / checklist
-- **Multi-language native** — UA / RU / EN / FR. Record UA-language call → FR summary for client.
-- **Self-hosted LLM via Ollama REST** — local or remote (Hetzner GPU box), bring your own
-- **Developer-context paste** — Cursor / VS Code / GitHub / Linear / Jira aware
+| Mode | Duration | Audio | Output |
+|---|---|---|---|
+| **Meeting** | 30 min – 3 hr | Mic + system | AI summary, action items, transcript |
+| **Voice Note** | 1 – 15 min | Mic | Structured note / task / journal / checklist |
+| **Dictation** | < 60 s | Mic | Paste to active app, < 1.5 s latency |
+
+Additional features:
+- **Live transcription** — real-time text as you speak (Deepgram WebSocket)
+- **Multi-turn chat** — ask questions about any session; vision-capable if screen recording is enabled
+- **Library** — full-text + semantic search across all sessions
+- **Multi-language** — UA / RU / EN / FR; record in one language, summarise in another
+- **S3 sharing** — presigned URLs, compatible with AWS / R2 / B2 / MinIO
+- **Global hotkeys** — ⌘⇧R Meeting · ⌘⇧N Voice Note · ⌘⇧L Library (rebindable)
+- **Optional screen recording** — H.264 screen.mp4 alongside audio; used for vision-chat frame extraction
 
 ## Stack
 
-- **App:** Pure Swift / SwiftUI / AppKit. No Rust, no FFI, no webview. Single `.app`, ~5–15 MB.
-- **Capture:** `AVAudioEngine` (mic) + Core Audio Tap on macOS 14.4+ / ScreenCaptureKit on 12.3–14.3 (system audio)
-- **Transcription:** Cloud only — Deepgram Nova-2 (default), OpenAI Whisper, AssemblyAI
+- **App:** Pure Swift / SwiftUI / AppKit. No Rust, no FFI, no webview. Single `.app`, ~16 MB installed.
+- **Capture:** `AVAudioEngine` (mic) + Core Audio Tap on macOS 14.4+ / ScreenCaptureKit on 14.0–14.3 (system audio). Optional SCStream screen recording.
+- **Transcription:** Deepgram Nova-2 (default, EU residency), OpenAI Whisper, Gemini, OpenRouter, **WhisperKit** (on-device CoreML, opt-in)
 - **AI processing:** Anthropic / OpenAI / OpenRouter / **Ollama (REST)** — single `Provider` protocol
-- **Storage:** GRDB.swift / SQLite (index, FTS5) + filesystem sidecars (transcript.jsonl, summary.md, audio.opus)
-- **Sharing:** Any S3-compatible — RustFS / MinIO / R2 / B2. Presigned URLs, no hosted viewer.
+- **Storage:** GRDB.swift / SQLite FTS5 + filesystem sidecars (`audio.m4a`, `transcript.jsonl`, `summary.md`, `actions.json`, optional `screen.mp4`)
+- **Sharing:** Hand-rolled AWS Sig V4. `S3Client.putObject` + presigned GET URLs. No aws-sdk dependency.
 
-## Platform Support
+## Platform support
 
-| OS | v1 | Notes |
+| OS | Status | Notes |
 |---|---|---|
-| macOS 14.4+ | ✅ | Core Audio Tap, full per-process system audio |
-| macOS 12.3–14.3 | ✅ | ScreenCaptureKit fallback (whole-system mixdown) |
-| macOS <12.3 | ❌ | Unsupported (no system audio API) |
-| Windows | ❌ | Out of scope |
-| Linux | ❌ | Out of scope |
+| macOS 14.4+ | ✅ | Core Audio Tap (per-process system audio) |
+| macOS 14.0–14.3 | ✅ | ScreenCaptureKit whole-system mixdown |
+| macOS < 14.0 | ❌ | `LSMinimumSystemVersion` blocks launch |
 
-## Privacy posture
+## Privacy
 
-**Honest version:** Audio always leaves the machine for transcription (Deepgram / OpenAI / AssemblyAI). The LLM stage can be local via Ollama, or cloud. **Privacy is partial** — see §12 of the design doc. If you require fully-local audio processing, this is not your tool — try Macwhisper or Aiko.
+**Default (cloud transcription):** Audio leaves the machine for Deepgram / OpenAI / Gemini / OpenRouter. The LLM stage can be local via Ollama.
 
-## Roadmap
-
-- [x] Design document (Jarvis Note)
-- [ ] v0.1 — Meeting Mode + transcript only (~2 weeks)
-- [ ] v0.2 — AI summary + Library window (~2 weeks)
-- [ ] v0.3 — Dictation Mode + Sharing (~2 weeks)
-- [ ] v1.0 — All three modes ship together
-- [ ] v1.1+ — Embedding-based semantic search, configurable third-party OpenAI-compat endpoints
-
-## Distribution
-
-Hand-shared binary. **No code signing, no notarization, no auto-update.** First-launch: right-click `.app` → Open to bypass Gatekeeper, or `xattr -d com.apple.quarantine /Applications/KosmoNotes.app`. Single-user, personal-tool positioning.
+**Opt-in fully local:** Switch to **WhisperKit** in Settings → Transcription. Models download on demand (~250 MB – 3 GB depending on variant) to `~/Library/Application Support/KosmoNotes/whisperkit/`. Nothing leaves the machine.
 
 ## Configuration
 
-API keys live in macOS Keychain. Other settings in `UserDefaults` + `~/Library/Application Support/KosmoNotes/KosmoNotes.config.json`. See §13 of the design doc.
+API keys live in **macOS Keychain**. Settings are in `~/Library/Preferences/dev.kosmonotes.studio.plist` (UserDefaults). See §13 of the design doc.
 
-## Contributing
+## Permissions
 
-Project is in design phase. Pull requests for code will open after v0.1 implementation begins.
+On first launch the app shows a permission-education dialog. On each new version install the app automatically re-requests any missing permissions (microphone, screen recording, accessibility) so macOS surfaces the system dialogs without requiring a manual visit to System Settings.
+
+## Distribution
+
+Hand-shared binary. No notarization, no auto-update. Pack for sharing:
+
+```bash
+ditto -c -k --keepParent /Applications/KosmoNotes.app KosmoNotes.zip
+```
+
+Recipients: `xattr -d com.apple.quarantine /Applications/KosmoNotes.app`
 
 ## Archive
 
-The Jarvis Studio Rust implementation (Tauri → iced pivot, 9 crates, 37 passing tests, 5 review rounds, audio-only mode, Whisper Cloud transcription, Settings tab, error-banner UX) is preserved at branch `archive/jarvis-studio-rust`. Out of scope for new development; checkout that branch only for historical reference.
-
-## Releasing v1.0
-
-Before tagging v1.0, run the manual Dictation latency measurement: see [docs/manual-smoke/2026-05-02-ac9b-dictation-latency-procedure.md](docs/manual-smoke/2026-05-02-ac9b-dictation-latency-procedure.md). Attach the resulting table to the release notes per AC-9b.
+The original **Jarvis Studio** Rust implementation (Tauri → iced pivot, 9 crates, 37 passing tests, working v0.1.1) is preserved at `archive/jarvis-studio-rust`. Do not check out that branch for new development.
 
 ## License
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVFoundation
 import KeyboardShortcuts
 import StorageKit
 import DictationKit
@@ -73,6 +74,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if !UserDefaults.standard.bool(forKey: "didOnboard") {
             showOnboarding()
+        }
+
+        checkPermissionsForNewVersion()
+    }
+
+    /// Re-requests system permissions that may have been reset after installing a new version.
+    /// Compares the current CFBundleVersion against the last stored build number.
+    /// On a version change, proactively requests each permission the app needs so the
+    /// system dialogs surface automatically rather than silently failing on first record.
+    private func checkPermissionsForNewVersion() {
+        let currentBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+        let storedBuild  = UserDefaults.standard.string(forKey: "lastPermissionCheckBuild") ?? ""
+        guard currentBuild != storedBuild else { return }
+
+        // Mark this build as checked immediately so a crash before completion
+        // doesn't re-trigger dialogs on the next launch of the same build.
+        UserDefaults.standard.set(currentBuild, forKey: "lastPermissionCheckBuild")
+
+        // Microphone — needed for all recording modes.
+        if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
+            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        }
+
+        // Screen recording — needed for system audio capture and optional screen.mp4.
+        if !CGPreflightScreenCaptureAccess() {
+            CGRequestScreenCaptureAccess()
+        }
+
+        // Accessibility — needed for dictation paste-to-frontmost-app.
+        if !AXIsProcessTrusted() {
+            let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+            _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
         }
     }
 

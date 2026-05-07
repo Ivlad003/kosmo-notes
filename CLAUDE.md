@@ -4,7 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-**v1.0 feature-complete UNVERIFIED — manual smoke pending.** All 18 acceptance criteria are wired in code; release path checklist is in `docs/release/v1.0-checklist.md`. The Swift Package exists, the menu-bar app records → transcribes via Whisper → AI-summarizes → indexes (FTS5 + optional embeddings) → opens for chat → exports → shares to S3. Local validation via `swift build && swift test` is required before tagging. Read `docs/plans/2026-05-02-jarvis-note-design.md` first — it is the canonical source of truth for all architectural decisions, and `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` for the phase-by-phase plan.
+**v1.0 feature-complete UNVERIFIED — manual smoke pending.** All 18 acceptance criteria are wired in code; release path checklist is in `docs/release/v1.0-checklist.md`. The Swift Package exists, the menu-bar app records → transcribes live (Deepgram WebSocket) or batch → AI-summarizes → indexes (FTS5 + optional embeddings) → opens for chat (vision-capable with screen.mp4) → exports → shares to S3. Local validation via `make test` exits 0 (280 tests). Read `docs/plans/2026-05-02-jarvis-note-design.md` first — it is the canonical source of truth for all architectural decisions, and `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` for the phase-by-phase plan.
+
+**Features added (latest session):**
+- **Live transcription hold-to-talk adapter.** `LiveTranscriptionHoldToTalkAdapter` debounces PTT key events and drives `LiveTranscriptionState` start/stop. Wired into `RecorderView` PTT button.
+- **ScreenRecorder concurrency fix.** Frame capture loop now uses a bounded serial actor queue with drain semantics (fire-and-forget + `maxConcurrentOperationCount=1` rather than unchecked `Task` spawning) — prevents memory pressure during long recordings. Frame rate dialled back to 15 fps / 1 Mbps defaults for sustainability on long calls.
+- **Auto-permission check on version change.** `AppDelegate.checkPermissionsForNewVersion()` compares `CFBundleVersion` against `lastPermissionCheckBuild` in UserDefaults. On a new version, re-requests mic, screen recording, and accessibility so macOS surfaces the system dialogs automatically. Works in tandem with stable Apple Development cert signing (`make install`).
+- **Signed builds via `make install`.** `Makefile` at repo root: build (unsigned) → `codesign --force --deep --sign <cert-hash>` → `cp -r` to `/Applications`. Cert: `Apple Development: Vladyslav Kosmach (7CP69K73N6)`, Team `Q7ZGRSDQSQ`. TCC permissions now survive reinstalls.
 
 **Features added 2026-05-03 (v1.0 scope expansion past the original v1.1 cut):**
 - **AC-6 startup gate.** `KosmoNotesApp.checkMinimumOS` surfaces a `<12.3` "upgrade" modal and a `<14.0` "core features disabled" warning.
@@ -140,19 +146,30 @@ These come from §3 of the Jarvis Note design doc.
 
 ## Build and run
 
-**Toolchain requirement:** `swift test` requires Xcode's toolchain, not Command Line Tools. Plain `swift test` with the CLT active will run zero tests (the `__swift5_tests` section that Swift Testing needs is only emitted by Xcode's toolchain). Always prefix with `DEVELOPER_DIR`:
+**Primary workflow — build, sign, and install in one step:**
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
+make install   # release build → codesign → cp to /Applications
+make test      # swift test with Xcode toolchain
+```
+
+The `Makefile` at repo root handles the full pipeline. `make install` signs the binary with the Apple Development certificate (`700E6802C639969593A1AC7F57C1FBFA0A1C7762`, Team `Q7ZGRSDQSQ`) so TCC permissions (microphone, screen recording, accessibility) persist across updates. **Always use `make install` rather than running xcodebuild manually.**
+
+**Toolchain requirement:** `swift test` (and `make test`) require Xcode's toolchain, not Command Line Tools only. Plain `swift test` without `DEVELOPER_DIR` set will run zero tests. The Makefile sets this automatically, but if running manually:
+
+```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
-Both exit 0. 215 tests pass in ~0.5 s. An additional FTS5 perf benchmark is gated behind `JN_RUN_PERF=1` (excluded from default test runs to keep the suite fast).
+280 tests pass in ~0.5 s. FTS5 perf benchmark is gated behind `JN_RUN_PERF=1`.
 
 Other commands:
 - `xed .` — open in Xcode
-- `xcodebuild -scheme KosmoNotes -configuration Release` — release build (once `.app` target exists)
-- Distribution: `.app` produced by Xcode → `ditto -c -k --keepParent KosmoNotes.app KosmoNotes.zip` → hand-share.
+- Distribution: `ditto -c -k --keepParent /Applications/KosmoNotes.app KosmoNotes.zip` → hand-share
+
+**Code signing note:** Builds are signed post-build (not via xcodebuild `CODE_SIGN_IDENTITY`) because SPM package dependencies use `CODE_SIGN_STYLE=Automatic` which conflicts with manual signing flags. The Makefile builds with `CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO`, then calls `codesign --force --deep` afterward.
+
+**Auto-permission check on version change:** `AppDelegate.checkPermissionsForNewVersion()` (in `KosmoNotesApp.swift`) compares the current `CFBundleVersion` against `lastPermissionCheckBuild` in UserDefaults. On a new build, it re-requests mic, screen recording, and accessibility permissions so system dialogs surface automatically. This is the correct fix for TCC resets after reinstall — not a workaround, it works in combination with stable code-signing identity.
 
 ## Editing the design doc
 
