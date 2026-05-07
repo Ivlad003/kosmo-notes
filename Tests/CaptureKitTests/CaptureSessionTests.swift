@@ -195,4 +195,223 @@ struct CaptureSessionTests {
             Issue.record("Expected .system")
         }
     }
+
+    // MARK: - Live PCM sink tests
+
+    @Test("CaptureSession forwards PCM buffers to LivePCMSink during capture")
+    func livePCMSinkReceivesBuffers() async throws {
+        let sessionDir = try makeTempDir()
+        defer { cleanup(sessionDir) }
+
+        let sink = TestPCMSink()
+        
+        // Create a test mic stream
+        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+        
+        // Create a session with the test sink and mock stream
+        let config = CaptureSession.Config(
+            micEnabled: true,
+            systemAudioEnabled: false,
+            sessionDir: sessionDir,
+            segmentDurationSeconds: 5.0
+        )
+        let session = CaptureSession(config: config, liveSink: sink, testMicStream: stream)
+        
+        // Start the session (uses test stream instead of real mic)
+        try await session.start()
+        
+        // Feed 3 buffers through the test stream
+        for _ in 0..<3 {
+            guard let buf = AVAudioPCMBuffer.sineWave(frameCount: 4800) else {
+                Issue.record("Failed to create sine wave buffer")
+                continue
+            }
+            continuation.yield(buf)
+        }
+        
+        // Give the feed task a moment to process
+        try await Task.sleep(for: .milliseconds(100))
+        
+        // Verify sink received all buffers
+        let count = await sink.count()
+        #expect(count == 3, "Expected sink to receive 3 buffers, got \(count)")
+        
+        // Verify host times are non-zero
+        let buffers = await sink.receivedBuffers
+        for (index, recorded) in buffers.enumerated() {
+            #expect(recorded.hostTime > 0, "Buffer \(index) has zero host time")
+            #expect(recorded.frameLength == 4800, "Buffer \(index) has wrong frameLength: \(recorded.frameLength)")
+        }
+        
+        // Clean stop
+        continuation.finish()
+        _ = try await session.stop()
+    }
+
+    @Test("CaptureSession does not await live sink inline")
+    func livePCMSinkDeliveryIsNonblocking() async throws {
+        let sessionDir = try makeTempDir()
+        defer { cleanup(sessionDir) }
+
+        let sink = BlockingTestPCMSink(delay: .milliseconds(250))
+        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+
+        let config = CaptureSession.Config(
+            micEnabled: true,
+            systemAudioEnabled: false,
+            sessionDir: sessionDir,
+            segmentDurationSeconds: 5.0
+        )
+        let session = CaptureSession(config: config, liveSink: sink, testMicStream: stream)
+
+        try await session.start()
+
+        for _ in 0..<3 {
+            guard let buf = AVAudioPCMBuffer.sineWave(frameCount: 4800) else {
+                Issue.record("Failed to create sine wave buffer")
+                continue
+            }
+            continuation.yield(buf)
+        }
+
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(sink.startedCount() >= 1, "Expected at least 1 sink delivery to start without blocking capture")
+        #expect(sink.finishedCount() <= 2, "Expected serial delivery (at most 2 complete due to timing)")
+
+        continuation.finish()
+        _ = try await session.stop()
+    }
+
+    @Test("CaptureSession delivers buffers in order to live sink")
+    func livePCMSinkOrderedDelivery() async throws {
+        let sessionDir = try makeTempDir()
+        defer { cleanup(sessionDir) }
+
+        let sink = BlockingTestPCMSink(delay: .milliseconds(10))
+        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+
+        let config = CaptureSession.Config(
+            micEnabled: true,
+            systemAudioEnabled: false,
+            sessionDir: sessionDir,
+            segmentDurationSeconds: 5.0
+        )
+        let session = CaptureSession(config: config, liveSink: sink, testMicStream: stream)
+
+        try await session.start()
+
+        // Feed 5 buffers quickly
+        for _ in 0..<5 {
+            guard let buf = AVAudioPCMBuffer.sineWave(frameCount: 4800) else {
+                Issue.record("Failed to create sine wave buffer")
+                continue
+            }
+            continuation.yield(buf)
+        }
+
+        // Give feed task time to enqueue all buffers before finishing
+        try await Task.sleep(for: .milliseconds(100))
+
+        continuation.finish()
+        _ = try await session.stop()
+
+        // After stop completes, all deliveries should be done
+        let order = sink.receivedOrder()
+        #expect(order.count == 5, "Expected sink to receive all 5 buffers, got \(order.count)")
+
+        // Verify ordering: each hostTime should be >= previous
+        for i in 1..<order.count {
+            #expect(order[i] >= order[i-1], "Buffer \(i) out of order: \(order[i]) < \(order[i-1])")
+        }
+    }
+
+    @Test("CaptureSession stop() drains pending live sink deliveries")
+    func stopDrainsPendingDeliveries() async throws {
+        let sessionDir = try makeTempDir()
+        defer { cleanup(sessionDir) }
+
+        let sink = BlockingTestPCMSink(delay: .milliseconds(50))
+        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+
+        let config = CaptureSession.Config(
+            micEnabled: true,
+            systemAudioEnabled: false,
+            sessionDir: sessionDir,
+            segmentDurationSeconds: 5.0
+        )
+        let session = CaptureSession(config: config, liveSink: sink, testMicStream: stream)
+
+        try await session.start()
+
+        // Feed 10 buffers quickly
+        for _ in 0..<10 {
+            guard let buf = AVAudioPCMBuffer.sineWave(frameCount: 4800) else {
+                Issue.record("Failed to create sine wave buffer")
+                continue
+            }
+            continuation.yield(buf)
+        }
+
+        // Give feed task time to enqueue all buffers
+        try await Task.sleep(for: .milliseconds(100))
+
+        continuation.finish()
+        
+        // stop() should drain all pending deliveries before returning
+        _ = try await session.stop()
+
+        // After stop completes, all 10 buffers should be delivered
+        let order = sink.receivedOrder()
+        #expect(order.count == 10, "Expected sink to receive all 10 buffers after stop(), got \(order.count)")
+    }
+
+    @Test("LiveSinkDelivery keeps newest buffers when queue is full")
+    func liveDeliveryKeepsNewestWhenFull() async throws {
+        let sessionDir = try makeTempDir()
+        defer { cleanup(sessionDir) }
+
+        let sink = TaggedIndexPCMSink(delay: .milliseconds(100))
+        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+
+        let config = CaptureSession.Config(
+            micEnabled: true,
+            systemAudioEnabled: false,
+            sessionDir: sessionDir,
+            segmentDurationSeconds: 5.0
+        )
+        let session = CaptureSession(config: config, liveSink: sink, testMicStream: stream)
+
+        try await session.start()
+
+        // Feed 50 buffers rapidly to exceed the default queue size (32)
+        for index in 0..<50 {
+            guard let buf = AVAudioPCMBuffer.taggedIndex(index, frameCount: 4800) else {
+                Issue.record("Failed to create tagged buffer")
+                continue
+            }
+            continuation.yield(buf)
+        }
+
+        // Give the mic feed loop time to enqueue the burst before stopping.
+        try await Task.sleep(for: .milliseconds(200))
+
+        continuation.finish()
+        _ = try await session.stop()
+
+        let indices = await sink.receivedIndices
+        #expect(indices.count <= 33, "Expected 1 in-flight delivery plus at most 32 queued buffers, got \(indices.count)")
+        #expect(indices.count > 0, "Expected at least some buffers to be delivered")
+        #expect(indices.count < 50, "Expected some older pending buffers to be dropped, got \(indices)")
+        #expect(indices.last == 49, "Expected newest buffer to survive queue pressure")
+        if indices.count > 1 {
+            #expect(indices[1] > 0, "Expected oldest pending buffers to be dropped, got \(indices)")
+        }
+
+        if indices.count > 1 {
+            for i in 1..<indices.count {
+                #expect(indices[i] > indices[i - 1], "Tagged indices should stay in ascending order")
+            }
+        }
+    }
 }

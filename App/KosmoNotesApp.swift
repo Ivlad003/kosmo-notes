@@ -221,6 +221,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         muteItem.identifier = NSUserInterfaceItemIdentifier("toggleMicMute")
         menu.addItem(muteItem)
 
+        let liveTranscriptItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        liveTranscriptItem.identifier = NSUserInterfaceItemIdentifier("liveTranscriptStatus")
+        liveTranscriptItem.isEnabled = false
+        liveTranscriptItem.isHidden = true
+        menu.addItem(liveTranscriptItem)
+
         menu.addItem(.separator())
 
         let openLastSessionItem = NSMenuItem(title: "Open last session in Finder",
@@ -468,7 +474,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     @objc private func toggleMicMuteAction() {
         guard #available(macOS 14.0, *), let recorder = recorderState else { return }
-        Task { @MainActor in await recorder.toggleMicMute() }
+        Task { @MainActor in
+            await recorder.toggleMicMute()
+            statusItem?.menu?.update()
+        }
     }
 
     @objc private func recordToggleAction() {
@@ -481,6 +490,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let recorder = recorderState else { return }
         Task { @MainActor in
             await recorder.toggle()
+            statusItem?.menu?.update()
             switch recorder.status {
             case .complete(_, let audioFile, let preview):
                 NSWorkspace.shared.activateFileViewerSelecting([audioFile])
@@ -524,6 +534,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .transcribing:
                 break
             }
+            statusItem?.menu?.update()
         }
     }
 
@@ -682,6 +693,7 @@ extension AppDelegate: NSMenuDelegate {
         guard let recordItem = menu.items.first(where: { $0.identifier?.rawValue == "recordToggle" }) else { return }
         let voiceNoteItem = menu.items.first(where: { $0.identifier?.rawValue == "voiceNoteToggle" })
         let muteItem = menu.items.first(where: { $0.identifier?.rawValue == "toggleMicMute" })
+        let liveTranscriptItem = menu.items.first(where: { $0.identifier?.rawValue == "liveTranscriptStatus" })
         guard let openLastItem = menu.items.first(where: { $0.identifier?.rawValue == "openLastSession" }) else { return }
 
         // Mute item: only meaningful while a recording is in flight.
@@ -694,6 +706,7 @@ extension AppDelegate: NSMenuDelegate {
         }
 
         if #available(macOS 14.0, *), let recorder = recorderState {
+            updateLiveTranscriptItem(liveTranscriptItem, recorder: recorder)
             switch recorder.status {
             case .idle:
                 recordItem.title = "Start Recording"
@@ -731,7 +744,51 @@ extension AppDelegate: NSMenuDelegate {
             recordItem.isEnabled = false
             voiceNoteItem?.isEnabled = false
             openLastItem.isEnabled = false
+            liveTranscriptItem?.isHidden = true
         }
+    }
+
+    @available(macOS 14.0, *)
+    private func updateLiveTranscriptItem(_ item: NSMenuItem?, recorder: RecorderState) {
+        guard let item else { return }
+        guard recorder.showsLiveTranscript else {
+            item.isHidden = true
+            item.title = ""
+            return
+        }
+
+        item.isHidden = false
+        item.title = formatLiveTranscriptLine(recorder)
+    }
+
+    @available(macOS 14.0, *)
+    private func formatLiveTranscriptLine(_ recorder: RecorderState) -> String {
+        let stable = recorder.liveTranscriptStableText
+        let mutable = recorder.liveTranscriptMutableText
+        let status = recorder.liveTranscriptStatusText
+
+        var parts: [String] = []
+        if !stable.isEmpty {
+            parts.append(clippedMenuText(stable, limit: 48))
+        }
+        if !mutable.isEmpty {
+            parts.append("[\(clippedMenuText(mutable, limit: 32))]")
+        }
+
+        let transcriptText = parts.joined(separator: " ")
+        if transcriptText.isEmpty {
+            return "Live: \(status ?? "Waiting…")"
+        }
+        if let status {
+            return "Live: \(transcriptText) • \(status)"
+        }
+        return "Live: \(transcriptText)"
+    }
+
+    private func clippedMenuText(_ text: String, limit: Int) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > limit else { return trimmed }
+        return String(trimmed.prefix(limit)) + "…"
     }
 }
 

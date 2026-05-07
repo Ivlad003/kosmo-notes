@@ -86,8 +86,9 @@ public final class DictationPipeline {
     // the await returns to write a SessionRecord + audio.m4a + transcript files
     // into the Library. Cleared on each new startRecording.
 
-    /// Final transcript that was paste-bound. `nil` until stopAndProcess
-    /// produces one; non-empty when the pipeline reached the paste stage.
+    /// Final transcript that was paste-bound. `nil` until stopAndProcess (or
+    /// stopCapture + live flush) produces one; non-empty when the pipeline
+    /// reached the paste stage.
     public private(set) var lastTranscript: String?
 
     /// Raw mono Float32 PCM samples captured by the engine, at `lastSampleRate`.
@@ -115,6 +116,13 @@ public final class DictationPipeline {
     // MARK: - Engine state (nonisolated storage via actor-hop-safe box)
 
     private var engineBox: EngineBox? = nil
+
+    /// The URL of the live CAF audio file being written during the current
+    /// recording. Non-nil between `startRecording()` and
+    /// `stopAndProcess()` / `stopCapture()` / `cancel()`.
+    /// The live-adapter path reads this immediately after `startRecording()`
+    /// returns to attach the engine before any audio arrives.
+    public var currentLiveAudioURL: URL? { engineBox?.liveAudioURL }
 
     // MARK: - Init
 
@@ -313,6 +321,30 @@ public final class DictationPipeline {
         logger?("[DictationPipeline] cancelled")
     }
 
+    /// Stop capture and store PCM for persistence without running transcription.
+    ///
+    /// Called by the live-adapter path instead of `stopAndProcess()`.
+    /// Sets `lastPCMData`, `lastSampleRate`, `lastDurationSecs` so the app
+    /// layer can persist the session after the live engine finishes.
+    /// The live audio CAF file is closed and flushed when this returns.
+    public func stopCapture() async {
+        guard status == .recording, let box = engineBox else { return }
+        engineBox = nil
+        let pcmData = await box.stop()
+        guard !pcmData.isEmpty else {
+            status = .failed("No audio captured")
+            logger?("[DictationPipeline] stopCapture: no audio data")
+            return
+        }
+        let sampleRate: Double = 16_000
+        let frameCount = pcmData.count / MemoryLayout<Float>.size
+        lastPCMData = pcmData
+        lastSampleRate = sampleRate
+        lastDurationSecs = TimeInterval(frameCount) / sampleRate
+        status = .idle
+        logger?("[DictationPipeline] stopCapture: audio stored (\(frameCount) frames)")
+    }
+
     // MARK: - Private: LLM prompt
 
     private func cleanupPrompt(transcript: String, context: DictationContext) -> String {
@@ -379,6 +411,15 @@ private final class EngineBox: @unchecked Sendable {
     private var maxFrames: Int = 0
     private let lock = NSLock()
 
+    /// Live CAF file written in parallel with the PCM accumulation.
+    /// Protected by `lock` — set before the tap fires, cleared in `stop()`.
+    private var liveCAFFile: AVAudioFile?
+
+    /// URL of the live CAF file. Set once in `start()` before the tap fires;
+    /// not mutated thereafter. Safe to read from the main actor between
+    /// `start()` and `stop()` without locking.
+    private(set) var liveAudioURL: URL?
+
     // 16 kHz mono Float32 — Whisper's preferred format
     private static let sampleRate: Double = 16_000
 
@@ -395,6 +436,17 @@ private final class EngineBox: @unchecked Sendable {
             channels: 1,
             interleaved: false
         ) else { throw DictationError.formatCreationFailed }
+
+        // Open a live CAF file in tapFormat so the LiveTranscriptEngine can
+        // read time windows from it while recording is in progress.
+        // CAF is the only Apple-managed container that accepts arbitrary PCM
+        // (Float32, non-interleaved, 16 kHz mono) without resampling.
+        let cafURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dictation_live_\(UUID().uuidString).caf")
+        if let cafFile = try? AVAudioFile(forWriting: cafURL, settings: tapFormat.settings) {
+            lock.withLock { liveCAFFile = cafFile }
+            liveAudioURL = cafURL
+        }
 
         let converter: AVAudioConverter?
         if inputFormat.sampleRate != Self.sampleRate || inputFormat.channelCount != 1 {
@@ -438,6 +490,11 @@ private final class EngineBox: @unchecked Sendable {
             try engine.start()
         } catch {
             engine.inputNode.removeTap(onBus: 0)
+            lock.withLock { liveCAFFile = nil }
+            if let url = liveAudioURL {
+                try? FileManager.default.removeItem(at: url)
+                liveAudioURL = nil
+            }
             throw error
         }
     }
@@ -448,6 +505,7 @@ private final class EngineBox: @unchecked Sendable {
         let captured: [Float] = lock.withLock {
             let snapshot = samples
             samples = []
+            liveCAFFile = nil  // ARC closes + flushes the CAF file
             return snapshot
         }
         var data = Data(count: captured.count * MemoryLayout<Float>.size)
@@ -466,6 +524,7 @@ private final class EngineBox: @unchecked Sendable {
         guard remaining > 0 else { lock.unlock(); return }
         let take = min(count, remaining)
         samples.append(contentsOf: UnsafeBufferPointer(start: channelData[0], count: take))
+        try? liveCAFFile?.write(from: buffer)  // non-fatal; keep recording even if write fails
         lock.unlock()
     }
 }

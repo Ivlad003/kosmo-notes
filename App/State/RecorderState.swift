@@ -82,8 +82,22 @@ final class RecorderState {
     /// forwards into the actor stack so the tap closure starts dropping
     /// buffers immediately. Resets to false on every new recording.
     var micMuted: Bool = false
+    /// Stable transcript text already outside the mutable rewrite horizon.
+    var liveTranscriptStableText: String = ""
+    /// Mutable tail still allowed to rewrite as fresh windows arrive.
+    var liveTranscriptMutableText: String = ""
+    /// User-facing health line for live transcription. Nil when healthy.
+    var liveTranscriptStatusText: String? = nil
+    /// True only when the adapter reports delayed health.
+    var liveTranscriptIsDelayed: Bool = false
     /// Set after a successful AI summary write; nil when no summary exists yet.
     var lastSummaryURL: URL? = nil
+
+    var showsLiveTranscript: Bool {
+        !liveTranscriptStableText.isEmpty ||
+        !liveTranscriptMutableText.isEmpty ||
+        liveTranscriptStatusText != nil
+    }
 
     // MARK: - Dependencies
 
@@ -113,6 +127,9 @@ final class RecorderState {
     /// granted. The bubble lives on screen for ScreenCaptureKit to capture
     /// it as part of `screen.mp4` — no separate compositing in our writer.
     private let cameraBubbleController = CameraBubbleWindowController()
+    private var liveTranscriptAdapter = RecorderLiveAdapter()
+    private var liveTranscriptTee: RecorderLiveTee?
+    private var liveTranscriptRefreshTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -279,7 +296,8 @@ final class RecorderState {
                 audioBitrate: settings.audioBitrate,
                 audioSampleRate: settings.audioSampleRate,
                 audioCodec: settings.audioCodec.captureChoice,
-                systemAudioDeviceUID: settings.systemAudioDeviceUID.isEmpty ? nil : settings.systemAudioDeviceUID
+                systemAudioDeviceUID: settings.systemAudioDeviceUID.isEmpty ? nil : settings.systemAudioDeviceUID,
+                screenCaptureDisplayID: settings.screenCaptureDisplayID
             )
             // Open the camera bubble window BEFORE starting SCStream so the
             // window is on screen by the time the first screen frame is
@@ -297,9 +315,24 @@ final class RecorderState {
                 }
             }
 
-            let capture = CaptureSession(config: config)
+            // Optional live transcript engine: only when a Whisper-class live
+            // provider is configured. Failure to arm is non-fatal — recorder
+            // proceeds in batch-only mode (existing post-stop transcript path).
+            let liveTee: RecorderLiveTee?
+            if let liveProvider = settings.makeLiveProvider() {
+                let engine = LiveTranscriptEngine(provider: liveProvider, exporter: LiveWindowExporter())
+                let tee = RecorderLiveTee(engine: engine)
+                liveTee = tee
+                Self.recorderLog.info("RecorderState.start: live transcript engine armed")
+            } else {
+                liveTee = nil
+            }
+
+            let capture = CaptureSession(config: config, liveSink: liveTee)
             try await capture.start()
             self.captureSession = capture
+            await liveTee?.start()
+            self.liveTranscriptTee = liveTee
 
             let meter = MicLevelMeter()
             try meter.start { [weak self] level in
@@ -346,6 +379,7 @@ final class RecorderState {
             // Reset live-mute on every new session so a previous mute doesn't
             // accidentally swallow the start of the next recording.
             self.micMuted = false
+            await configureLiveTranscriptForRecording()
             self.status = .recording(sessionId: session.id)
         } catch {
             await teardown()
@@ -372,6 +406,7 @@ final class RecorderState {
         micWatchdogTask = nil
         sleepAssertion.release()
         await cameraBubbleController.hide()
+        clearLiveTranscript()
 
         guard !segments.isEmpty else {
             self.status = .failed(message: "No audio captured (check Microphone permission in System Settings).")
@@ -611,11 +646,58 @@ final class RecorderState {
         micWatchdogTask = nil
         sleepAssertion.release()
         await cameraBubbleController.hide()
+        clearLiveTranscript()
     }
 
     private func previewText(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.count <= 240 { return trimmed }
         return String(trimmed.prefix(240)) + "…"
+    }
+
+    func attachLiveTranscriptSnapshotSource(
+        _ snapshotSource: @escaping RecorderLiveAdapter.SnapshotSource
+    ) async {
+        liveTranscriptAdapter = RecorderLiveAdapter(snapshotSource: snapshotSource)
+        await refreshLiveTranscript()
+    }
+
+    func refreshLiveTranscript() async {
+        applyLiveTranscript(await liveTranscriptAdapter.displayState())
+    }
+
+    private func configureLiveTranscriptForRecording() async {
+        if let tee = liveTranscriptTee {
+            liveTranscriptAdapter = RecorderLiveAdapter(snapshotSource: { await tee.snapshot() })
+            liveTranscriptRefreshTask?.cancel()
+            liveTranscriptRefreshTask = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    if Task.isCancelled { return }
+                    await self?.refreshLiveTranscript()
+                }
+            }
+        } else {
+            liveTranscriptAdapter = RecorderLiveAdapter()
+        }
+        await refreshLiveTranscript()
+    }
+
+    private func clearLiveTranscript() {
+        liveTranscriptRefreshTask?.cancel()
+        liveTranscriptRefreshTask = nil
+        if let tee = liveTranscriptTee {
+            Task.detached { await tee.stop() }
+        }
+        liveTranscriptTee = nil
+        liveTranscriptAdapter = RecorderLiveAdapter()
+        applyLiveTranscript(.empty)
+    }
+
+    private func applyLiveTranscript(_ display: RecorderLiveAdapter.DisplayState) {
+        liveTranscriptStableText = display.stableText
+        liveTranscriptMutableText = display.mutableText
+        liveTranscriptStatusText = display.statusText
+        liveTranscriptIsDelayed = display.isDelayed
     }
 }

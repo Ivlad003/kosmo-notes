@@ -43,6 +43,7 @@ node_modules/
 
 # Agent harness transient state — never commit
 .claude/
+.worktrees/
 .omc/state/
 .omc/project-memory.json
 .omc/sessions/

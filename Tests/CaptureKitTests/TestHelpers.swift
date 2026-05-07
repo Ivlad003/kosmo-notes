@@ -3,6 +3,8 @@
 // Swift Testing macro expansion in the test structs.
 
 import AVFoundation
+import Foundation
+@testable import CaptureKit
 
 // MARK: - AVAudioPCMBuffer test helpers
 
@@ -47,6 +49,16 @@ extension AVAudioPCMBuffer {
         buffer.frameLength = frameCount
         return buffer
     }
+
+    /// Create a mono Float32 PCM buffer whose first sample encodes an index.
+    static func taggedIndex(_ index: Int, frameCount: AVAudioFrameCount, sampleRate: Double = 48_000) -> AVAudioPCMBuffer? {
+        guard let buffer = silence(frameCount: frameCount, sampleRate: sampleRate) else {
+            return nil
+        }
+
+        buffer.floatChannelData?[0][0] = Float(index)
+        return buffer
+    }
 }
 
 // MARK: - MockAudioEngine
@@ -68,5 +80,88 @@ actor MockAudioEngine {
     func stop() async {
         continuation?.finish()
         continuation = nil
+    }
+}
+
+// MARK: - TestPCMSink
+
+/// Test sink that records received PCM buffers.
+actor TestPCMSink: LivePCMSink {
+    struct RecordedBuffer {
+        let frameLength: AVAudioFrameCount
+        let hostTime: UInt64
+    }
+    
+    private(set) var receivedBuffers: [RecordedBuffer] = []
+    
+    func receive(_ buffer: AVAudioPCMBuffer, at hostTime: UInt64) async {
+        // Store key properties rather than the buffer itself (AVAudioPCMBuffer isn't Sendable)
+        receivedBuffers.append(RecordedBuffer(frameLength: buffer.frameLength, hostTime: hostTime))
+    }
+    
+    func count() -> Int {
+        receivedBuffers.count
+    }
+    
+    func reset() {
+        receivedBuffers.removeAll()
+    }
+}
+
+// MARK: - BlockingTestPCMSink
+
+/// Sink used to prove capture does not wait on live delivery.
+final class BlockingTestPCMSink: @unchecked Sendable, LivePCMSink {
+    private let stateQueue = DispatchQueue(label: "BlockingTestPCMSink.state")
+    private var _startedCount = 0
+    private var _finishedCount = 0
+    private var _receivedOrder: [UInt64] = []
+    let delay: Duration
+
+    init(delay: Duration = .milliseconds(250)) {
+        self.delay = delay
+    }
+
+    func receive(_ buffer: AVAudioPCMBuffer, at hostTime: UInt64) async {
+        stateQueue.sync { _startedCount += 1 }
+
+        try? await Task.sleep(for: delay)
+
+        stateQueue.sync {
+            _finishedCount += 1
+            _receivedOrder.append(hostTime)
+        }
+    }
+
+    func startedCount() -> Int {
+        stateQueue.sync { _startedCount }
+    }
+
+    func finishedCount() -> Int {
+        stateQueue.sync { _finishedCount }
+    }
+
+    func receivedOrder() -> [UInt64] {
+        stateQueue.sync { _receivedOrder }
+    }
+}
+
+// MARK: - TaggedIndexPCMSink
+
+actor TaggedIndexPCMSink: LivePCMSink {
+    let delay: Duration
+    private(set) var receivedIndices: [Int] = []
+
+    init(delay: Duration = .zero) {
+        self.delay = delay
+    }
+
+    func receive(_ buffer: AVAudioPCMBuffer, at hostTime: UInt64) async {
+        _ = hostTime
+        if delay > .zero {
+            try? await Task.sleep(for: delay)
+        }
+        let firstSample = buffer.floatChannelData?[0][0] ?? -1
+        receivedIndices.append(Int(firstSample.rounded()))
     }
 }

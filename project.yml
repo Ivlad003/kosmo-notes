@@ -139,3 +139,24 @@ targets:
       testTargets:
         - KosmoNotesUITests
       gatherCoverageData: false
+
+  KosmoNotesTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - AppTests
+    dependencies:
+      - target: KosmoNotes
+      - package: KosmoNotesCore
+        product: TranscriptionKit
+    settings:
+      base:
+        SWIFT_VERSION: "5.10"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kosmonotes.studio.tests
+    scheme:
+      testTargets:
+        - KosmoNotesTests
+      gatherCoverageData: false
