@@ -53,6 +53,7 @@ struct LogsTab: View {
             }
         }
         .task { await refresh() }
+        .onChange(of: sinceMinutes) { Task { await refresh() } }
     }
 
     // MARK: - UI sections
