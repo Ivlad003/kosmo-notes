@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import AVFoundation
+import ScreenCaptureKit
 import KeyboardShortcuts
 import StorageKit
 import DictationKit
@@ -81,9 +82,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Checks and requests system permissions on every launch.
     /// - Mic / Accessibility: request only when not yet determined (system shows dialog).
-    /// - Screen recording: checked on every launch. If TCC is denied, shows an NSAlert
-    ///   with an "Open System Settings" button — because CGRequestScreenCaptureAccess()
-    ///   on macOS 15+ opens System Settings silently with no visible prompt.
+    /// - Screen recording: CGPreflightScreenCaptureAccess() is unreliable on macOS 15+
+    ///   (returns true even when TCC is denied). Instead we do an actual SCShareableContent
+    ///   probe — if it throws SCStreamErrorCode -3801 (userDeclined) we show an NSAlert.
     private func checkPermissionsOnStartup() {
         // Microphone — request if not yet determined; silent otherwise.
         if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
@@ -96,20 +97,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
         }
 
-        // Screen recording — always verify. On macOS 15+, CGRequestScreenCaptureAccess()
-        // is silent (no dialog). We show our own alert so the user knows action is needed.
-        if !CGPreflightScreenCaptureAccess() {
-            Task { @MainActor in
-                let alert = NSAlert()
-                alert.messageText = "Screen Recording Access Needed"
-                alert.informativeText = "KosmoNotes needs Screen Recording permission to capture system audio and record your screen. Please grant access in System Settings → Privacy & Security → Screen & System Audio Recording."
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "Open System Settings")
-                alert.addButton(withTitle: "Later")
-                if alert.runModal() == .alertFirstButtonReturn {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-                }
+        // Screen recording — probe via SCShareableContent; CGPreflightScreenCaptureAccess()
+        // returns true on macOS 15+ even when TCC is denied, so we can't trust it.
+        Task {
+            do {
+                _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                // Success — permission is granted, nothing to do.
+            } catch let err as NSError where err.code == -3801 {
+                // SCStreamErrorCode.userDeclined — TCC is denied.
+                await MainActor.run { self.showScreenRecordingAlert() }
+            } catch {
+                // Other errors (e.g. no displays) — ignore.
             }
+        }
+    }
+
+    @MainActor
+    private func showScreenRecordingAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Screen Recording Permission Required"
+        alert.informativeText = "KosmoNotes needs Screen & System Audio Recording access to capture your screen and system audio.\n\nGrant access in System Settings → Privacy & Security → Screen & System Audio Recording, then relaunch the app."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Later")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
         }
     }
 
