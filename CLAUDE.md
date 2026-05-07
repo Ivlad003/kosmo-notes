@@ -6,11 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **v1.0 feature-complete UNVERIFIED — manual smoke pending.** All 18 acceptance criteria are wired in code; release path checklist is in `docs/release/v1.0-checklist.md`. The Swift Package exists, the menu-bar app records → transcribes live (Deepgram WebSocket) or batch → AI-summarizes → indexes (FTS5 + optional embeddings) → opens for chat (vision-capable with screen.mp4) → exports → shares to S3. Local validation via `make test` exits 0 (280 tests). Read `docs/plans/2026-05-02-jarvis-note-design.md` first — it is the canonical source of truth for all architectural decisions, and `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` for the phase-by-phase plan.
 
-**Features added (latest session):**
+**Features added (latest session — 2026-05-07):**
+- **Screen recording non-fatal fallback.** `CaptureSession.start` now catches `ScreenRecorder.start` errors instead of propagating them. Audio recording always continues. `screenRecordingError` is exposed so `RecorderState` can surface a user-facing alert. On macOS 15+/26, `SCShareableContent` throws `-3801 userDeclined` even when TCC is granted in System Settings (TCC identity changed after signing). The alert offers three actions: open System Settings, run `tccutil reset ScreenCapture dev.kosmonotes.studio` + re-grant ("Fix Permission"), or continue audio-only.
+- **Permission check corrected.** `KosmoNotesApp.checkPermissionsOnStartup()` uses `CGPreflightScreenCaptureAccess()` on every launch. The earlier `SCShareableContent` async probe was removed — it gave false positives (threw `-3801` even when permission was granted) on macOS 15+/26.
+- **Logs Since filter auto-refresh.** `LogsTab` now calls `refresh()` via `onChange(of: sinceMinutes)` — switching between Last 5 min / 30 min / 2 h / 24 h immediately reloads entries without requiring a manual "Refresh" button click.
+- **`make install` rm-rf fix.** Makefile now runs `rm -rf /Applications/KosmoNotes.app` before `cp -r` to prevent stale `Info.plist` overlay on reinstall.
 - **Live transcription hold-to-talk adapter.** `LiveTranscriptionHoldToTalkAdapter` debounces PTT key events and drives `LiveTranscriptionState` start/stop. Wired into `RecorderView` PTT button.
-- **ScreenRecorder concurrency fix.** Frame capture loop now uses a bounded serial actor queue with drain semantics (fire-and-forget + `maxConcurrentOperationCount=1` rather than unchecked `Task` spawning) — prevents memory pressure during long recordings. Frame rate dialled back to 15 fps / 1 Mbps defaults for sustainability on long calls.
-- **Auto-permission check on version change.** `AppDelegate.checkPermissionsForNewVersion()` compares `CFBundleVersion` against `lastPermissionCheckBuild` in UserDefaults. On a new version, re-requests mic, screen recording, and accessibility so macOS surfaces the system dialogs automatically. Works in tandem with stable Apple Development cert signing (`make install`).
-- **Signed builds via `make install`.** `Makefile` at repo root: build (unsigned) → `codesign --force --deep --sign <cert-hash>` → `cp -r` to `/Applications`. Cert: `Apple Development: Vladyslav Kosmach (7CP69K73N6)`, Team `Q7ZGRSDQSQ`. TCC permissions now survive reinstalls.
+- **ScreenRecorder concurrency fix.** Frame capture loop uses a bounded serial actor queue with drain semantics. Frame rate: 15 fps / 1 Mbps defaults for sustainability on long calls.
+- **Signed builds via `make install`.** Build (unsigned) → `codesign --force --deep --sign <cert-hash>` → `rm -rf` + `cp -r` to `/Applications`. Cert: `Apple Development: Vladyslav Kosmach (7CP69K73N6)`, Team `Q7ZGRSDQSQ`. TCC permissions survive reinstalls.
 
 **Features added 2026-05-03 (v1.0 scope expansion past the original v1.1 cut):**
 - **AC-6 startup gate.** `KosmoNotesApp.checkMinimumOS` surfaces a `<12.3` "upgrade" modal and a `<14.0` "core features disabled" warning.
@@ -33,23 +36,6 @@ Phase A Week 2 (TranscriptionKit + recovery):
 Phase A Week 3 (StorageKit DB + session store):
 - `Sources/StorageKit/Database.swift` — GRDB-backed schema v1: `sessions` (id, recorded_at, duration_secs, mode, language, status) + `transcripts_fts` FTS5 virtual table. WAL journal mode. Idempotent migration via `DatabaseMigrator`.
 - `Sources/StorageKit/SessionStore.swift` — actor that creates `<root>/<sid>/`, writes `session.json` atomically via `AtomicWriter`, inserts/updates DB rows, indexes transcript text into FTS.
-
-**Still to land in Phase A:** `RecorderState` actor wiring CaptureKit → TranscriptionKit → SessionStore, popover Record button, mic level meter (Phase A Week 3 finish), Settings → Transcription panel + Test connection (Phase A Week 4).
-
-Phase A Week 1 deliverables implemented (CaptureKit):
-- `Sources/CaptureKit/AudioEngine.swift` — `AVAudioEngine` mic input, mono Float32 PCM @ 48 kHz, ~100 ms buffers via `AsyncStream`
-- `Sources/CaptureKit/ScreenCaptureKitAudio.swift` — `SCStream`-backed whole-system mixdown, `AsyncStream<AVAudioPCMBuffer>` (TCC required at runtime; CI tests gated)
-- `Sources/CaptureKit/AACEncoder.swift` — `AVAudioConverter` PCM→AAC encoder, 96 kbps mono. **See "Encoder deviation" below.**
-- `Sources/CaptureKit/SegmentWriter.swift` — 5 s rolling 2-track `.m4a` segments via `AVAssetWriter` (track 0 = mic, track 1 = system audio per AC-5). Crash bound: ≤5 s on SIGKILL
-- `Sources/CaptureKit/CaptureSession.swift` — actor coordinating mic + SCKit feeds into a single `SegmentWriter`; public API `start / pause / resume / stop`
-
-Phase 0 deliverables (still in place):
-- `.github/workflows/ci.yml` — GitHub Actions CI on push/PR (xcodegen + swift build + swift test + xcodebuild)
-- `App/Views/Onboarding/OnboardingView.swift` + `App/KosmoNotesApp.swift` — first-launch permission-education modal
-- `Sources/StorageKit/` — `AtomicWriter` + `KeychainStore`
-- `Sources/DependencyLifecycle/` — state machine + `StatePersistence` actor
-
-**Empty / next:** `Sources/TranscriptionKit/`, `Sources/AIKit/`, `Sources/DictationKit/` are stubs (`lib.swift` only). `Sources/StorageKit/` still needs `Database.swift`, `SessionStore.swift`, `RecoveryService.swift`. Phase A Week 2 (Deepgram + RecoveryService) is next.
 
 ### Encoder deviation: AAC, not Opus
 
@@ -138,7 +124,7 @@ These come from §3 of the Jarvis Note design doc.
 - **Filesystem sidecars are source of truth, SQLite is rebuildable index.** Sessions live in `~/Library/Application Support/KosmoNotes/recordings/<sid>/` with `audio.m4a` (AAC; was `audio.opus` in design — see "Encoder deviation"), `transcript.jsonl`, `summary.md`, `actions.json`. Optional: `screen.mp4` when recording mode is Audio + Screen. SQLite (`sessions.sqlite`) backs FTS5 + filtering and must be rebuildable from sidecars.
 - **macOS 14.0+ is the actual deployment target.** Package.swift and project.yml both pin `.macOS(.v14)`; LSMinimumSystemVersion mirrors that, so macOS will refuse to launch the binary on <14. The 12.3–13.x "best-effort" fallback described in earlier revisions of the design doc was never implemented (the Recorder, Library, Settings, RecorderState, AudioEngine etc. are all gated behind `@available(macOS 14.0, *)`). The startup `<12.3` modal in `KosmoNotesApp.checkMinimumOS` is dead code preserved for documentation. **If you genuinely need 12.3+ support, lowering the deployment target requires removing every `@available(macOS 14.0, *)` and replacing `@Observable` / `KeyboardShortcuts` 2.x APIs.** Within 14.x: Core Audio Tap is 14.4+, ScreenCaptureKit audio fallback covers 14.0–14.3.
 - **Screen recording is optional, configurable, and off by default.** `AppSettings.recordingMode` controls whether screen.mp4 is captured alongside audio. Requires Screen Recording TCC permission when enabled. Screen frames are used locally for vision-chat only — never uploaded.
-- **No code signing, no notarization, no auto-update.** Single-user product positioning. Document Gatekeeper bypass (`xattr -d com.apple.quarantine`) for hand-shared binaries.
+- **Signed builds, no notarization, no auto-update.** `make install` signs with Apple Development cert (`700E6802C639969593A1AC7F57C1FBFA0A1C7762`, Team `Q7ZGRSDQSQ`) so TCC permissions persist across updates. Not notarized — hand-shared binaries require Gatekeeper bypass: `xattr -d com.apple.quarantine /Applications/KosmoNotes.app`.
 - **Secrets in macOS Keychain.** Configuration JSON stores only Keychain account references; never plain-text secrets.
 - **Provider abstraction is one protocol.** `Provider` (in §7 of design doc) covers Anthropic / OpenAI / OpenRouter / Ollama. Default LLM: Anthropic Claude Sonnet (latest at ship time). Default transcription: Deepgram Nova-2 with EU residency.
 - **Ollama is REST-only.** No bundled inference. User configures their own endpoint. v1 supports both `/v1/chat/completions` (OpenAI-compat) and `/api/chat` (native) — picked at runtime, not compile time.
@@ -169,7 +155,7 @@ Other commands:
 
 **Code signing note:** Builds are signed post-build (not via xcodebuild `CODE_SIGN_IDENTITY`) because SPM package dependencies use `CODE_SIGN_STYLE=Automatic` which conflicts with manual signing flags. The Makefile builds with `CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO`, then calls `codesign --force --deep` afterward.
 
-**Auto-permission check on version change:** `AppDelegate.checkPermissionsForNewVersion()` (in `KosmoNotesApp.swift`) compares the current `CFBundleVersion` against `lastPermissionCheckBuild` in UserDefaults. On a new build, it re-requests mic, screen recording, and accessibility permissions so system dialogs surface automatically. This is the correct fix for TCC resets after reinstall — not a workaround, it works in combination with stable code-signing identity.
+**Permission check on startup:** `checkPermissionsOnStartup()` in `KosmoNotesApp.swift` runs on every launch. It uses `CGPreflightScreenCaptureAccess()` (reliable on macOS 15+/26) to check screen recording — shows an alert only when genuinely denied. Microphone access is requested at first record. **Do NOT use `SCShareableContent.excludingDesktopWindows` as a TCC probe** — on macOS 15+/26 it throws `-3801 userDeclined` even when permission IS granted (false positive confirmed).
 
 ## Editing the design doc
 

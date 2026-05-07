@@ -88,7 +88,14 @@ API keys live in **macOS Keychain**. Settings are in `~/Library/Preferences/dev.
 
 ## Permissions
 
-On first launch the app shows a permission-education dialog. On each new version install the app automatically re-requests any missing permissions (microphone, screen recording, accessibility) so macOS surfaces the system dialogs without requiring a manual visit to System Settings.
+The app checks screen recording permission on every launch via `CGPreflightScreenCaptureAccess()` — an alert is shown only when the permission is genuinely missing. Microphone access is requested at first record.
+
+**Screen recording on macOS 15+/26:** After installing a newly-signed binary, the TCC database may still have a grant for the old (unsigned) binary identity. If recording starts and screen capture fails, an alert offers three options:
+1. **Open System Settings** — go to Privacy → Screen Recording
+2. **Fix Permission** — runs `tccutil reset ScreenCapture dev.kosmonotes.studio` then opens System Settings to re-grant
+3. **Continue Audio-Only** — audio recording proceeds unaffected; screen.mp4 is skipped for this session
+
+Screen recording failure is **non-fatal**: audio always records. The `CaptureSession` catches `ScreenRecorder` errors and exposes `screenRecordingError` so callers can surface the warning without aborting the session.
 
 ## Distribution
 
