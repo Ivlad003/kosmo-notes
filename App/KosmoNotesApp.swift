@@ -76,36 +76,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showOnboarding()
         }
 
-        checkPermissionsForNewVersion()
+        checkPermissionsOnStartup()
     }
 
-    /// Re-requests system permissions that may have been reset after installing a new version.
-    /// Compares the current CFBundleVersion against the last stored build number.
-    /// On a version change, proactively requests each permission the app needs so the
-    /// system dialogs surface automatically rather than silently failing on first record.
-    private func checkPermissionsForNewVersion() {
-        let currentBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
-        let storedBuild  = UserDefaults.standard.string(forKey: "lastPermissionCheckBuild") ?? ""
-        guard currentBuild != storedBuild else { return }
-
-        // Mark this build as checked immediately so a crash before completion
-        // doesn't re-trigger dialogs on the next launch of the same build.
-        UserDefaults.standard.set(currentBuild, forKey: "lastPermissionCheckBuild")
-
-        // Microphone — needed for all recording modes.
-        if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
+    /// Checks and requests system permissions on every launch.
+    /// - Mic / Accessibility: request only when not yet determined (system shows dialog).
+    /// - Screen recording: checked on every launch. If TCC is denied, shows an NSAlert
+    ///   with an "Open System Settings" button — because CGRequestScreenCaptureAccess()
+    ///   on macOS 15+ opens System Settings silently with no visible prompt.
+    private func checkPermissionsOnStartup() {
+        // Microphone — request if not yet determined; silent otherwise.
+        if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
             AVCaptureDevice.requestAccess(for: .audio) { _ in }
         }
 
-        // Screen recording — needed for system audio capture and optional screen.mp4.
-        if !CGPreflightScreenCaptureAccess() {
-            CGRequestScreenCaptureAccess()
-        }
-
-        // Accessibility — needed for dictation paste-to-frontmost-app.
+        // Accessibility — prompt if not trusted (system shows its own dialog).
         if !AXIsProcessTrusted() {
             let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
             _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
+        }
+
+        // Screen recording — always verify. On macOS 15+, CGRequestScreenCaptureAccess()
+        // is silent (no dialog). We show our own alert so the user knows action is needed.
+        if !CGPreflightScreenCaptureAccess() {
+            Task { @MainActor in
+                let alert = NSAlert()
+                alert.messageText = "Screen Recording Access Needed"
+                alert.informativeText = "KosmoNotes needs Screen Recording permission to capture system audio and record your screen. Please grant access in System Settings → Privacy & Security → Screen & System Audio Recording."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Open System Settings")
+                alert.addButton(withTitle: "Later")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                }
+            }
         }
     }
 
