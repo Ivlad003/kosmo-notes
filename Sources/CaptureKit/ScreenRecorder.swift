@@ -34,7 +34,7 @@ public actor ScreenRecorder: NSObject {
         /// Use HEVC (H.265) instead of H.264. ~50 % smaller at the same quality;
         /// hardware-accelerated on Apple Silicon.
         public let useHEVC: Bool
-        /// Video bitrate in bits/sec. H.264 typically 4_000_000; HEVC 2_000_000.
+        /// Video bitrate in bits/sec. H.264 typically 2_000_000; HEVC 1_000_000.
         public let videoBitrate: Int
         /// Audio bitrate in bits/sec.
         public let audioBitrate: Int
@@ -44,10 +44,10 @@ public actor ScreenRecorder: NSObject {
         public init(
             outputURL: URL,
             captureSystemAudio: Bool = true,
-            frameRate: Int = 24,
+            frameRate: Int = 15,
             scaleFactor: CGFloat = 1.0,
             useHEVC: Bool = true,
-            videoBitrate: Int = 2_000_000,
+            videoBitrate: Int = 1_000_000,
             audioBitrate: Int = 48_000,
             audioSampleRate: Int = 48_000
         ) {
@@ -179,7 +179,7 @@ public actor ScreenRecorder: NSObject {
 
         let scStream = SCStream(filter: filter, configuration: streamConfig, delegate: nil)
         do {
-            try scStream.addStreamOutput(output, type: .screen, sampleHandlerQueue: .global(qos: .userInitiated))
+            try scStream.addStreamOutput(output, type: .screen, sampleHandlerQueue: .global(qos: .userInteractive))
             if config.captureSystemAudio {
                 try scStream.addStreamOutput(output, type: .audio, sampleHandlerQueue: .global(qos: .userInitiated))
             }
@@ -260,6 +260,12 @@ public actor ScreenRecorder: NSObject {
 
     private func _handleSampleBuffer(_ sampleBuffer: CMSampleBuffer, ofType type: SCStreamOutputType) {
         guard let w = writer else { return }
+        guard w.status == .writing else {
+            if w.status == .failed {
+                screenRecorderLog.error("ScreenRecorder: writer in failed state — dropping sample. error=\(w.error?.localizedDescription ?? "nil", privacy: .public)")
+            }
+            return
+        }
 
         // Drop SCStream frames flagged with status != .complete (e.g. .idle when
         // no on-screen change since last frame) BEFORE we anchor the timeline,
@@ -293,6 +299,9 @@ public actor ScreenRecorder: NSObject {
         case .screen:
             guard let vInput = videoInput, vInput.isReadyForMoreMediaData else {
                 screenFrameDropped += 1
+                if screenFrameDropped % 100 == 0 {
+                    screenRecorderLog.warning("ScreenRecorder: encoder backpressure — dropped=\(self.screenFrameDropped, privacy: .public) written=\(self.screenFrameCount, privacy: .public). Consider reducing frame rate or bitrate.")
+                }
                 return
             }
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
