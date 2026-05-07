@@ -531,6 +531,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             await recorder.toggle()
             statusItem?.menu?.update()
+            // Check for non-fatal screen recording failure and surface it once.
+            if let warning = recorder.screenRecordingWarning {
+                let alert = NSAlert()
+                alert.messageText = "Screen Recording Unavailable"
+                alert.informativeText = warning
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Open System Settings")
+                alert.addButton(withTitle: "Fix Permission")
+                alert.addButton(withTitle: "Continue Audio-Only")
+                let response = alert.runModal()
+                if response == .alertFirstButtonReturn {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                } else if response == .alertSecondButtonReturn {
+                    // Reset TCC for the signed bundle ID and open System Settings so user can re-grant.
+                    let task = Process()
+                    task.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+                    task.arguments = ["reset", "ScreenCapture", "dev.kosmonotes.studio"]
+                    try? task.run()
+                    task.waitUntilExit()
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                }
+                recorder.screenRecordingWarning = nil
+            }
             switch recorder.status {
             case .complete(_, let audioFile, let preview):
                 NSWorkspace.shared.activateFileViewerSelecting([audioFile])

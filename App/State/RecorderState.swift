@@ -92,6 +92,9 @@ final class RecorderState {
     var liveTranscriptIsDelayed: Bool = false
     /// Set after a successful AI summary write; nil when no summary exists yet.
     var lastSummaryURL: URL? = nil
+    /// Non-nil when screen recording was requested but failed (e.g. TCC denied/changed
+    /// after re-signing). Audio recording proceeds normally; this is a soft warning only.
+    var screenRecordingWarning: String? = nil
 
     var showsLiveTranscript: Bool {
         !liveTranscriptStableText.isEmpty ||
@@ -331,6 +334,22 @@ final class RecorderState {
             let capture = CaptureSession(config: config, liveSink: liveTee)
             try await capture.start()
             self.captureSession = capture
+
+            // Screen recording is non-fatal: if it failed, surface a soft warning
+            // so the user knows audio-only mode is active and how to fix it.
+            if let srErr = await capture.screenRecordingError {
+                let nsErr = srErr as NSError
+                let isTCC = nsErr.code == -3801  // SCStreamErrorCode.userDeclined
+                if isTCC {
+                    self.screenRecordingWarning = "Screen Recording permission changed — recording audio only. To fix: run `tccutil reset ScreenCapture dev.kosmonotes.studio` in Terminal, then re-grant in System Settings → Privacy → Screen Recording."
+                } else {
+                    self.screenRecordingWarning = "Screen recording unavailable (\(srErr.localizedDescription)) — recording audio only."
+                }
+                Self.recorderLog.warning("RecorderState.start: screen recording failed, continuing audio-only — \(srErr.localizedDescription, privacy: .public)")
+            } else {
+                self.screenRecordingWarning = nil
+            }
+
             await liveTee?.start()
             self.liveTranscriptTee = liveTee
 

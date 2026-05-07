@@ -246,6 +246,9 @@ public actor CaptureSession {
     private var systemTask: Task<Void, Never>?
     private var scKitBox: SCKitBox?
     private var screenRecorder: ScreenRecorder?
+    /// Set when screen recording was requested but failed at start (e.g. TCC denied).
+    /// Callers may surface a non-blocking warning to the user.
+    public private(set) var screenRecordingError: Error?
     /// Stored as `AnyObject?` because `TapBox` is `@available(macOS 14.4, *)` —
     /// stricter than the package's macOS 14.0 deployment target. Cast at the
     /// use site under `#available(macOS 14.4, *)`.
@@ -358,8 +361,17 @@ public actor CaptureSession {
                     audioBitrate: config.audioBitrate,
                     audioSampleRate: config.audioSampleRate
                 )
-                try await recorder.start(config: srConfig)
-                self.screenRecorder = recorder
+                do {
+                    try await recorder.start(config: srConfig)
+                    self.screenRecorder = recorder
+                } catch {
+                    // Screen recording is non-fatal: audio capture continues unaffected.
+                    // Common cause on macOS 15+/26: TCC identity changed after (re)signing.
+                    // The caller can inspect screenRecordingError and guide the user to
+                    // reset with `tccutil reset ScreenCapture dev.kosmonotes.studio`.
+                    captureSessionLog.error("CaptureSession.start: ScreenRecorder failed (non-fatal, audio-only) — \(error.localizedDescription, privacy: .public)")
+                    self.screenRecordingError = error
+                }
             }
         }
 
