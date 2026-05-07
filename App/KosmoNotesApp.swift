@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import AVFoundation
-import ScreenCaptureKit
 import KeyboardShortcuts
 import StorageKit
 import DictationKit
@@ -82,9 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Checks and requests system permissions on every launch.
     /// - Mic / Accessibility: request only when not yet determined (system shows dialog).
-    /// - Screen recording: CGPreflightScreenCaptureAccess() is unreliable on macOS 15+
-    ///   (returns true even when TCC is denied). Instead we do an actual SCShareableContent
-    ///   probe — if it throws SCStreamErrorCode -3801 (userDeclined) we show an NSAlert.
+    /// - Screen recording: show alert only when CGPreflightScreenCaptureAccess() returns
+    ///   false (permission genuinely not granted). The SCShareableContent async probe was
+    ///   removed — it throws -3801 on macOS 15+/26 even when TCC IS granted (false positive).
     private func checkPermissionsOnStartup() {
         // Microphone — request if not yet determined; silent otherwise.
         if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
@@ -97,18 +96,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
         }
 
-        // Screen recording — probe via SCShareableContent; CGPreflightScreenCaptureAccess()
-        // returns true on macOS 15+ even when TCC is denied, so we can't trust it.
-        Task {
-            do {
-                _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                // Success — permission is granted, nothing to do.
-            } catch let err as NSError where err.code == -3801 {
-                // SCStreamErrorCode.userDeclined — TCC is denied.
-                await MainActor.run { self.showScreenRecordingAlert() }
-            } catch {
-                // Other errors (e.g. no displays) — ignore.
-            }
+        // Screen recording — CGPreflightScreenCaptureAccess() correctly returns false
+        // when TCC is denied and true when granted. Show our alert only on genuine denial.
+        if !CGPreflightScreenCaptureAccess() {
+            showScreenRecordingAlert()
         }
     }
 
