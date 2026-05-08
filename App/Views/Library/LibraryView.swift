@@ -234,6 +234,7 @@ private struct SessionDetailView: View {
     @State private var segments: [TranscriptSegment] = []
     @State private var segmentsLoading = true
     @State private var hasScreenVideo: Bool = false
+    @State private var sharedLinks: SharedLinksSnapshot?
     @State private var exportError: String?
     @State private var confirmDelete: Bool = false
 
@@ -324,6 +325,14 @@ private struct SessionDetailView: View {
             .padding(.horizontal)
             .padding(.bottom, 8)
 
+            if let sharedLinks, !sharedLinks.links.isEmpty {
+                Divider()
+
+                SharedLinksSection(snapshot: sharedLinks)
+                    .padding(.horizontal)
+                    .padding(.vertical, 12)
+            }
+
             Divider()
 
             // Transcript
@@ -343,6 +352,7 @@ private struct SessionDetailView: View {
         .task {
             await loadAudio()  // also sets hasScreenVideo
             await loadTranscript()
+            await loadSharedLinks()
         }
         .alert("Export Failed", isPresented: Binding(
             get: { exportError != nil },
@@ -396,6 +406,10 @@ private struct SessionDetailView: View {
         } catch {
             print("[SessionDetailView] loadSegments failed: \(error)")
         }
+    }
+
+    private func loadSharedLinks() async {
+        sharedLinks = await state.sharedLinks(for: session.id)
     }
 
     private func openInFinder() {
@@ -472,6 +486,56 @@ private struct SessionDetailView: View {
         guard let settings = state.settings else { return }
         let coordinator = ShareCoordinator(settings: settings, sessionStore: state.sessionStore)
         await coordinator.share(sessionId: session.id)
+        await loadSharedLinks()
+    }
+}
+
+// MARK: - SharedLinksSection
+
+@available(macOS 14.0, *)
+private struct SharedLinksSection: View {
+
+    let snapshot: SharedLinksSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Shared Links")
+                    .font(.headline)
+                Spacer()
+                Text(snapshot.sharedAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(snapshot.links, id: \.kind) { link in
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(link.kind.displayName)
+                        .font(.subheadline)
+                        .frame(width: 160, alignment: .leading)
+
+                    Text(link.url.absoluteString)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Spacer(minLength: 0)
+
+                    Button("Open") {
+                        NSWorkspace.shared.open(link.url)
+                    }
+                    .buttonStyle(.borderless)
+
+                    Button("Copy") {
+                        let pb = NSPasteboard.general
+                        pb.clearContents()
+                        pb.setString(link.url.absoluteString, forType: .string)
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+        }
     }
 }
 

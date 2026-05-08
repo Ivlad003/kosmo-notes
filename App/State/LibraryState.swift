@@ -157,6 +157,15 @@ final class LibraryState {
         return dir.appendingPathComponent("audio.m4a")
     }
 
+    func sharedLinks(for sid: String) async -> SharedLinksSnapshot? {
+        do {
+            return try await sessionStore.loadSharedLinksSnapshot(for: sid)
+        } catch {
+            print("[LibraryState] sharedLinks failed: \(error)")
+            return nil
+        }
+    }
+
     /// Delete a session: DB rows (sessions / FTS / embeddings) + the on-disk
     /// session directory. Best-effort on the filesystem side — the DB delete
     /// runs first so a row never points at a half-deleted directory. After
