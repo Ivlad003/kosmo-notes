@@ -79,7 +79,9 @@ let package = Package(
         ),
         .target(
             name: "SharingKit",
-            dependencies: [],
+            dependencies: [
+                "StorageKit",
+            ],
             path: "Sources/SharingKit"
         ),
         .target(
@@ -127,7 +129,10 @@ let package = Package(
         ),
         .testTarget(
             name: "SharingKitTests",
-            dependencies: ["SharingKit"],
+            dependencies: [
+                "SharingKit",
+                "StorageKit",
+            ],
             path: "Tests/SharingKitTests"
         ),
         .testTarget(
