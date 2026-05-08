@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>KosmoNotes — Voice‑first notes for macOS</title>
+  <meta name="description" content="A menu‑bar macOS app that records meetings, transcribes them with Whisper / Deepgram / WhisperKit, summarizes with Claude, and lets you chat with an autonomous agent — all on your Mac." />
+  <meta name="theme-color" content="#000000" />
+  <meta property="og:title" content="KosmoNotes — Voice‑first notes for macOS" />
+  <meta property="og:description" content="Record. Transcribe. Summarize. Chat. Run the agent — all from a tiny menu‑bar icon." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="assets/img/og.png" />
+  <link rel="icon" type="image/svg+xml" href="assets/img/favicon.svg" />
+  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png" />
+  <link rel="stylesheet" href="assets/css/styles.css" />
+</head>
+<body>
+
+<!-- Top nav: blurred, sticky, Apple‑style -->
+<header class="nav" role="navigation" aria-label="Primary">
+  <div class="nav__inner">
+    <a class="nav__brand" href="#top" aria-label="KosmoNotes">
+      <svg class="nav__logo" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="3.2" fill="currentColor"/>
+        <path d="M12 5v3M12 16v3M5 12h3M16 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+      </svg>
+      KosmoNotes
+    </a>
+    <nav class="nav__links">
+      <a href="#features">Features</a>
+      <a href="#agent">Agent</a>
+      <a href="#setup">Setup</a>
+      <a href="#requirements">Requirements</a>
+      <a href="#download" class="nav__cta">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- Hero -->
+<section class="hero">
+  <div class="hero__bg" aria-hidden="true"></div>
+  <div class="hero__content">
+    <p class="hero__eyebrow">v1.0 · macOS 14+</p>
+    <h1 class="hero__title">Voice. Transcribed.<br/>Summarized. Searchable.</h1>
+    <p class="hero__sub">A tiny menu‑bar Mac app that records your meetings and dictation, runs them through Whisper / Deepgram / on‑device WhisperKit, summarises with Claude, and lets you chat with — or hand the work off to — an autonomous agent.</p>
+    <div class="hero__ctas">
+      <a class="btn btn--primary" id="downloadLatest" href="https://github.com/Ivlad003/kosmo-notes/releases/latest" data-fallback="https://github.com/Ivlad003/kosmo-notes/releases/latest/download/KosmoNotes.zip">Download for macOS</a>
+      <a class="btn btn--ghost" href="https://github.com/Ivlad003/kosmo-notes" target="_blank" rel="noopener">View on GitHub →</a>
+    </div>
+    <p class="hero__meta" id="versionLine">Latest release · checking…</p>
+  </div>
+
+  <!-- Hero device frame: replace src with your own GIF/MP4 -->
+  <figure class="hero__device" aria-label="KosmoNotes recording session preview">
+    <div class="device device--mac">
+      <div class="device__bar">
+        <span></span><span></span><span></span>
+      </div>
+      <div class="device__screen">
+        <!-- Drop a screenshot/GIF/MP4 here. Recommended 2400×1500 16:10. -->
+        <img src="assets/img/hero.png" alt="KosmoNotes recording a meeting" onerror="this.style.display='none'" />
+        <div class="device__placeholder">
+          <p>Drop your hero screenshot at<br/><code>docs/assets/img/hero.png</code></p>
+        </div>
+      </div>
+    </div>
+  </figure>
+</section>
+
+<!-- Pull-quote band -->
+<section class="band band--quote">
+  <p class="band__lead">No mic indicator panic. No tab in your browser. Just <span>⌘⇧R</span> and your meeting is being captured locally.</p>
+</section>
+
+<!-- Feature grid -->
+<section id="features" class="features">
+  <header class="section-head">
+    <h2>Built for the way you work</h2>
+    <p>One small menu‑bar icon. Every feature one keystroke away.</p>
+  </header>
+
+  <div class="grid grid--3">
+
+    <article class="card">
+      <div class="card__icon">
+        <svg viewBox="0 0 24 24"><path d="M12 14a4 4 0 0 0 4-4V6a4 4 0 1 0-8 0v4a4 4 0 0 0 4 4Zm6-4v0a6 6 0 0 1-12 0M12 18v3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </div>
+      <h3>Meeting recordings</h3>
+      <p>Captures mic + system audio (and optionally screen) into rolling 5‑second segments. Crash‑safe — at most 5 seconds lost to a kernel panic, automatically recovered on next launch.</p>
+    </article>
+
+    <article class="card">
+      <div class="card__icon">
+        <svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h10M5 17h7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </div>
+      <h3>Voice notes</h3>
+      <p>Press <kbd>⌘⇧N</kbd>, talk, release. KosmoNotes transcribes via Whisper, picks the right template (freeform, task, journal, checklist) and saves a clean Markdown note.</p>
+    </article>
+
+    <article class="card">
+      <div class="card__icon">
+        <svg viewBox="0 0 24 24"><path d="M12 4v6l4 2M12 20a8 8 0 1 1 0-16 8 8 0 0 1 0 16Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </div>
+      <h3>Push‑to‑dictate</h3>
+      <p>Hold a hotkey, speak into any text field. Whisper streams a clean transcript, optionally cleaned by Claude, then pasted into the app you're already in. No swap‑windows tax.</p>
+    </article>
+
+    <article class="card">
+      <div class="card__icon">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m9 12 2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <h3>Hybrid transcription</h3>
+      <p>Pick your engine: Deepgram, OpenAI Whisper, Gemini Audio, OpenRouter, or fully local on‑device <a href="https://github.com/argmaxinc/WhisperKit" target="_blank" rel="noopener">WhisperKit</a>. Cloud by default; local stays in the app bundle when privacy matters.</p>
+    </article>
+
+    <article class="card">
+      <div class="card__icon">
+        <svg viewBox="0 0 24 24"><path d="M3 5h18M3 12h12M3 19h18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </div>
+      <h3>Library &amp; semantic search</h3>
+      <p>Every session lands in a SQLite‑backed Library with FTS5 + optional embeddings. Search by phrase or by meaning across months of recordings.</p>
+    </article>
+
+    <article class="card">
+      <div class="card__icon">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16v10H4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="m4 7 8 6 8-6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <h3>Share via S3</h3>
+      <p>Hand‑rolled AWS Sig V4 — works with AWS, R2, B2, MinIO. Upload a session bundle and get a presigned link. No hosted viewer, no telemetry.</p>
+    </article>
+
+  </div>
+</section>
+
+<!-- Big alternating feature blocks -->
+<section class="feature feature--dark">
+  <div class="feature__inner feature--reverse">
+    <div class="feature__copy">
+      <p class="eyebrow">Chat with your meetings</p>
+      <h2>Ask, and your transcripts answer back.</h2>
+      <p>Open Chat. The relevant past sessions are auto‑attached via FTS — or pin them yourself. Mention <em>"on minute 3"</em> and the screen frame at that timestamp gets fetched from your local recording. No clouds, no copying.</p>
+      <ul class="feature__list">
+        <li>Per‑message provider switching: Claude · GPT‑4o · OpenRouter · local Ollama</li>
+        <li>Live snapshots while a recording is in flight (last ~60&nbsp;s)</li>
+        <li>Auto‑sample N evenly‑spaced video frames as vision context</li>
+      </ul>
+    </div>
+    <figure class="feature__media">
+      <div class="device device--mac device--small">
+        <div class="device__bar"><span></span><span></span><span></span></div>
+        <div class="device__screen">
+          <img src="assets/img/chat.gif" alt="" onerror="this.style.display='none'" />
+          <div class="device__placeholder">
+            <p>Drop a chat demo GIF at<br/><code>docs/assets/img/chat.gif</code></p>
+          </div>
+        </div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section id="agent" class="feature">
+  <div class="feature__inner">
+    <div class="feature__copy">
+      <p class="eyebrow">Run the agent</p>
+      <h2>From "summarize this" to "go do it."</h2>
+      <p>Two ways to launch: hold <kbd>⌘⇧A</kbd> and speak — or click the <em>Run as agent</em> button right inside Chat. KosmoNotes hands the conversation, attached transcripts, and your goal to an autonomous Claude loop. Watch every tool call, every result, every reply in the live console — and inject a follow‑up mid‑run.</p>
+      <ul class="feature__list">
+        <li>Pick the model — Opus 4.7, Sonnet 4.6, Haiku 4.5 — per run</li>
+        <li>Strict workspace sandbox: <code>read_file</code>, <code>write_file</code>, <code>bash</code> (read‑only allowlist, no shell metacharacters)</li>
+        <li>Plug in <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>, Codex, or GitHub Copilot CLI as alternative backends</li>
+        <li>Cooperative stop, mid‑run injection, JSONL session log on disk</li>
+      </ul>
+    </div>
+    <figure class="feature__media">
+      <div class="device device--mac device--small">
+        <div class="device__bar"><span></span><span></span><span></span></div>
+        <div class="device__screen">
+          <img src="assets/img/agent.gif" alt="" onerror="this.style.display='none'" />
+          <div class="device__placeholder">
+            <p>Drop an agent‑console GIF at<br/><code>docs/assets/img/agent.gif</code></p>
+          </div>
+        </div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="feature feature--dark">
+  <div class="feature__inner feature--reverse">
+    <div class="feature__copy">
+      <p class="eyebrow">Privacy</p>
+      <h2>Your data lives where you put it.</h2>
+      <p>Sessions are flat files inside <code>~/Library/Application Support/KosmoNotes/recordings/&lt;sid&gt;/</code>. SQLite is just a rebuildable index. No analytics, no auto‑update, no sign‑in. Use cloud transcription when you want speed, or switch to WhisperKit for fully on‑device runs.</p>
+      <ul class="feature__list">
+        <li>Secrets in macOS Keychain — never on disk in plain text</li>
+        <li>Bundle ID‑pinned TCC grants — survive rebuilds</li>
+        <li>Open formats: <code>audio.m4a</code>, <code>transcript.jsonl</code>, <code>summary.md</code>, <code>actions.json</code></li>
+      </ul>
+    </div>
+    <figure class="feature__media">
+      <div class="device device--mac device--small">
+        <div class="device__bar"><span></span><span></span><span></span></div>
+        <div class="device__screen">
+          <img src="assets/img/library.gif" alt="" onerror="this.style.display='none'" />
+          <div class="device__placeholder">
+            <p>Drop a Library/Settings GIF at<br/><code>docs/assets/img/library.gif</code></p>
+          </div>
+        </div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- Setup -->
+<section id="setup" class="setup">
+  <header class="section-head">
+    <h2>Up and running in three minutes</h2>
+    <p>No installer, no background service, no signed package — just a regular .app you drag into Applications.</p>
+  </header>
+
+  <ol class="steps">
+
+    <li class="step">
+      <span class="step__num">1</span>
+      <div class="step__body">
+        <h3>Download &amp; move</h3>
+        <p>Grab <code>KosmoNotes.zip</code> from the <a href="https://github.com/Ivlad003/kosmo-notes/releases/latest">latest release</a>, double‑click to expand, drag <code>KosmoNotes.app</code> into <code>/Applications</code>.</p>
+        <pre><code>xattr -dr com.apple.quarantine /Applications/KosmoNotes.app</code></pre>
+        <p class="muted">First Gatekeeper warning is expected — KosmoNotes is unsigned. The xattr command tells macOS to trust it.</p>
+      </div>
+    </li>
+
+    <li class="step">
+      <span class="step__num">2</span>
+      <div class="step__body">
+        <h3>Grant permissions</h3>
+        <p>On first launch the onboarding panel walks you through Microphone, Screen Recording (optional), and Accessibility (for push‑to‑dictate paste). Each one opens the right pane in System Settings.</p>
+        <figure class="inline-media">
+          <img src="assets/img/onboarding.png" alt="Onboarding panel" onerror="this.style.display='none'" />
+        </figure>
+      </div>
+    </li>
+
+    <li class="step">
+      <span class="step__num">3</span>
+      <div class="step__body">
+        <h3>Wire up an AI provider</h3>
+        <p>Open the menu‑bar icon → <strong>Settings → AI Providers</strong>. Paste at least one API key (Anthropic for the agent and chat, OpenAI for Whisper, Deepgram for streaming transcription). Or pick <strong>WhisperKit</strong> in Transcription for a fully local pipeline.</p>
+        <figure class="inline-media">
+          <img src="assets/img/settings-providers.png" alt="Settings → AI Providers" onerror="this.style.display='none'" />
+        </figure>
+      </div>
+    </li>
+
+    <li class="step">
+      <span class="step__num">4</span>
+      <div class="step__body">
+        <h3>Customize hotkeys</h3>
+        <p>Defaults are <kbd>⌘⇧R</kbd> Meeting · <kbd>⌘⇧N</kbd> Voice Note · <kbd>⌘⇧L</kbd> Library · <kbd>⌘⇧A</kbd> Agent. Rebind any of them in <strong>Settings → Hotkeys</strong>.</p>
+      </div>
+    </li>
+
+  </ol>
+</section>
+
+<!-- Spec / requirements -->
+<section id="requirements" class="specs">
+  <header class="section-head">
+    <h2>System requirements</h2>
+  </header>
+  <dl class="specs__grid">
+    <div><dt>macOS</dt><dd>14.0 Sonoma or newer (Apple Silicon recommended)</dd></div>
+    <div><dt>Disk</dt><dd>~50 MB for the app · WhisperKit models 80 MB – 3 GB on demand</dd></div>
+    <div><dt>RAM</dt><dd>8 GB minimum · 16 GB recommended for local WhisperKit</dd></div>
+    <div><dt>Network</dt><dd>Required for cloud transcription &amp; AI providers · Optional with WhisperKit + local Ollama</dd></div>
+    <div><dt>Permissions</dt><dd>Microphone (required) · Screen Recording (optional) · Accessibility (push‑to‑dictate)</dd></div>
+    <div><dt>Privacy</dt><dd>No telemetry · No analytics · No auto‑update</dd></div>
+  </dl>
+</section>
+
+<!-- Download band -->
+<section id="download" class="download">
+  <h2>Get it.</h2>
+  <p>Free. Unsigned. Source available on GitHub.</p>
+  <div class="hero__ctas">
+    <a class="btn btn--primary" href="https://github.com/Ivlad003/kosmo-notes/releases/latest">Download latest .zip</a>
+    <a class="btn btn--ghost" href="https://github.com/Ivlad003/kosmo-notes" target="_blank" rel="noopener">Source on GitHub →</a>
+  </div>
+  <p class="muted small">After download: <code>xattr -dr com.apple.quarantine /Applications/KosmoNotes.app</code></p>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="footer__inner">
+    <p>© KosmoNotes · Built in Swift &amp; SwiftUI · macOS 14+</p>
+    <nav>
+      <a href="https://github.com/Ivlad003/kosmo-notes" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/Ivlad003/kosmo-notes/issues" target="_blank" rel="noopener">Issues</a>
+      <a href="https://github.com/Ivlad003/kosmo-notes/releases" target="_blank" rel="noopener">Releases</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="assets/js/main.js" defer></script>
+</body>
+</html>
