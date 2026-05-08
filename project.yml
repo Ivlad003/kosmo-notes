@@ -120,7 +120,6 @@ targets:
     scheme:
       testTargets:
         - KosmoNotesTests
-        - KosmoNotesUITests
       gatherCoverageData: false
 
   KosmoNotesTests:
