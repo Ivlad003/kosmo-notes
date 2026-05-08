@@ -113,8 +113,11 @@ public actor ExternalAgentRunner {
         let stdoutDrain = Task.detached {
             await Self.drain(handle: stdoutFD, kind: .assistantText, label: nil, emit: onEvent)
         }
+        // stderr → `.error` so the console badges stand out from happy-path
+        // assistant text. CLI warnings get the right colour and the user can
+        // tell at a glance whether the run is healthy.
         let stderrDrain = Task.detached {
-            await Self.drain(handle: stderrFD, kind: .assistantText, label: "[stderr] ", emit: onEvent)
+            await Self.drain(handle: stderrFD, kind: .error, label: "[stderr] ", emit: onEvent)
         }
 
         // Wait for the process to exit, then wait for both drains to finish so
@@ -149,6 +152,10 @@ public actor ExternalAgentRunner {
         do {
             try stdin.fileHandleForWriting.write(contentsOf: line)
         } catch {
+            // Common case: child closed stdin (EPIPE). Drop the pipe so the
+            // next inject reports "child not accepting stdin" instead of
+            // throwing the same error again.
+            stdinPipe = nil
             emit(.init(kind: .error, text: "stdin write failed: \(error.localizedDescription)"))
         }
     }
@@ -158,10 +165,12 @@ public actor ExternalAgentRunner {
         guard let proc = process, proc.isRunning else { return }
         externalAgentLog.info("ExternalAgentRunner: SIGTERM pid=\(proc.processIdentifier, privacy: .public)")
         proc.terminate()
-        // Escalate to SIGKILL after 2 s if still alive.
-        Task {
+        // Escalate to SIGKILL after 2 s if still alive. `[weak self]` so the
+        // detached Task doesn't pin the actor alive across the sleep when the
+        // parent already discarded us.
+        Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            await self.killIfStillRunning()
+            await self?.killIfStillRunning()
         }
     }
 
@@ -303,8 +312,13 @@ public actor ExternalAgentRunner {
                 return
             }
             if chunk.isEmpty {
-                if !carry.isEmpty, let s = String(data: carry, encoding: .utf8), !s.isEmpty {
-                    emit(AgentEvent(kind: kind, text: (label ?? "") + s))
+                if !carry.isEmpty {
+                    // String(decoding:as:) substitutes replacement chars
+                    // for invalid UTF-8 instead of returning nil — which
+                    // would silently drop a line that happened to land on
+                    // a multibyte boundary at the 4 KB chunk boundary.
+                    let s = String(decoding: carry, as: UTF8.self)
+                    if !s.isEmpty { emit(AgentEvent(kind: kind, text: (label ?? "") + s)) }
                 }
                 return
             }
@@ -312,9 +326,8 @@ public actor ExternalAgentRunner {
             while let nl = carry.firstIndex(of: 0x0A) {
                 let lineData = carry.subdata(in: 0..<nl)
                 carry.removeSubrange(0...nl)
-                if let s = String(data: lineData, encoding: .utf8), !s.isEmpty {
-                    emit(AgentEvent(kind: kind, text: (label ?? "") + s))
-                }
+                let s = String(decoding: lineData, as: UTF8.self)
+                if !s.isEmpty { emit(AgentEvent(kind: kind, text: (label ?? "") + s)) }
             }
         }
     }

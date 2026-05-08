@@ -48,7 +48,7 @@ final class ShareCoordinator {
         )
         let service = SharingService(
             s3: client,
-            keyPrefix: "jarvis-note/",
+            keyPrefix: "kosmonotes/",
             presignTTLSeconds: max(1, settings.s3PresignTTLHours) * 3600
         )
 
@@ -70,6 +70,7 @@ final class ShareCoordinator {
 
         var lines: [String] = []
         if let u = result.audioURL { lines.append("Audio: \(u.absoluteString)") }
+        if let u = result.videoURL { lines.append("Video: \(u.absoluteString)") }
         if let u = result.summaryURL { lines.append("Summary: \(u.absoluteString)") }
         if let u = result.transcriptURL { lines.append("Transcript: \(u.absoluteString)") }
 
@@ -77,7 +78,7 @@ final class ShareCoordinator {
             ? "No artifacts uploaded — the session folder was empty."
             : lines.joined(separator: "\n\n")
 
-        if let primary = result.audioURL ?? result.summaryURL ?? result.transcriptURL {
+        if let primary = result.videoURL ?? result.audioURL ?? result.summaryURL ?? result.transcriptURL {
             alert.addButton(withTitle: "Copy primary link")
             alert.addButton(withTitle: "Copy all")
             alert.addButton(withTitle: "Done")

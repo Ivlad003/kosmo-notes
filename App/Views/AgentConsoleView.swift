@@ -47,23 +47,25 @@ struct AgentConsoleView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     if session.events.isEmpty {
-                        Text("Hold ⌘⇧A and speak to launch the agent. Each event the agent emits — your message, its replies, tool calls, tool results — appears here in real time.")
+                        Text("Hold ⌘⇧A and speak — or use the Chat window's “Run as agent” button — to launch the agent. Each event the agent emits — your message, its replies, tool calls, tool results — appears here in real time.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding()
                     }
-                    ForEach(Array(session.events.enumerated()), id: \.offset) { idx, event in
+                    // Stable event.id keeps SwiftUI from recycling rows in
+                    // the wrong place when events arrive in bursts.
+                    ForEach(session.events) { event in
                         AgentEventRow(event: event)
-                            .id(idx)
+                            .id(event.id)
                     }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
             }
             .onChange(of: session.events.count) { _, newCount in
-                guard newCount > 0 else { return }
+                guard newCount > 0, let last = session.events.last else { return }
                 withAnimation(.easeOut(duration: 0.15)) {
-                    proxy.scrollTo(newCount - 1, anchor: .bottom)
+                    proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
         }

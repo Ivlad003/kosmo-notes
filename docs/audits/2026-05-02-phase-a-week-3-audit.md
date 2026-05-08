@@ -3,7 +3,7 @@
 **Date:** 2026-05-02
 **Auditor:** Claude Code (inline, in-session)
 **Branch at audit time:** `feature/dictation-and-polish` (HEAD `b40e0bf`)
-**Scope:** verify the five Phase A Week 3 acceptance criteria against the canonical spec (`.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` §5 Phase A Week 3, lines 246–252).
+**Scope:** verify the five Phase A Week 3 acceptance criteria against the canonical spec (`.omc/plans/2026-05-02-kosmonotes-v1-implementation.md` §5 Phase A Week 3, lines 246–252).
 
 ## Executive verdict
 
@@ -97,4 +97,4 @@ Ordered by blast radius, smallest first:
 - `App/KosmoNotesApp.swift` (480 lines)
 - `Sources/CaptureKit/CaptureSession.swift` (203 lines)
 - `Package.swift` (only DictationKit target + KeyboardShortcuts dep section)
-- `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md` §5 Phase A Week 3
+- `.omc/plans/2026-05-02-kosmonotes-v1-implementation.md` §5 Phase A Week 3

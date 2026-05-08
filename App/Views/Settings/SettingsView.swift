@@ -933,7 +933,7 @@ private struct SharingTab: View {
                 HStack {
                     Text("Bucket")
                     Spacer()
-                    TextField("jarvis-recordings", text: $settings.s3Bucket)
+                    TextField("kosmonotes", text: $settings.s3Bucket)
                         .frame(width: 200)
                         .textFieldStyle(.roundedBorder)
                 }
@@ -1450,7 +1450,13 @@ private struct AgentTab: View {
 
                 switch settings.agentBackend {
                 case .builtin:
-                    Text("In-process Anthropic Messages API loop with bash / read_file / write_file tools sandboxed to the workspace folder. Uses your Anthropic API key.")
+                    Picker("Model", selection: $settings.agentBuiltinModel) {
+                        ForEach(AppSettings.AgentBuiltinModel.allCases) { choice in
+                            Text(choice.displayName).tag(choice)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    Text("In-process Anthropic Messages API loop with bash / read_file / write_file tools sandboxed to the workspace folder. Uses your Anthropic API key. Sonnet 4.6 is the recommended default; Opus 4.7 is slower/more expensive but tackles harder reasoning; Haiku 4.5 is the cheapest for exploratory runs.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 case .claudeCode:

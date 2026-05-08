@@ -13,6 +13,14 @@ private let agentSessionLog = Logger(subsystem: "dev.kosmonotes.studio", categor
 ///
 /// Mid-session injection: the console window's text field calls
 /// `inject(_:)`. Stop button calls `requestStop()`.
+///
+/// Concurrency contract:
+///   - `start(...)` is serialized via `activeRunTask`. A second concurrent
+///     call cooperatively stops the previous run and *awaits* it before
+///     spinning up a new one — so events from a prior run can't bleed into
+///     the new session's `events` array or JSONL.
+///   - `inject(...)` and `requestStop(...)` are no-ops outside `.running`,
+///     but emit a clear error event so the UI doesn't silently drop them.
 @available(macOS 14.0, *)
 @Observable
 @MainActor
@@ -40,7 +48,16 @@ final class AgentSessionState {
     /// helpers below to avoid an extra protocol layer.
     private var builtinRunner: AgentRunner?
     private var externalRunner: ExternalAgentRunner?
+    /// Tracks the currently-running backend loop so a second `start` can
+    /// `await` the previous one to fully unwind before launching a new run.
+    /// Without this, `requestStop()` (cooperative) returns immediately while
+    /// the old loop is still emitting events into our shared `events` array.
+    private var activeRunTask: Task<Void, Never>?
     private var sessionLogURL: URL?
+    /// Long-lived file handle for the JSONL log. Re-opened per session so
+    /// we don't pay open/seek/close on every event (chatty runs are 50–100
+    /// events/min). Closed on session end.
+    private var logHandle: FileHandle?
     private var jsonEncoder: JSONEncoder = {
         let e = JSONEncoder()
         e.dateEncodingStrategy = .iso8601
@@ -55,12 +72,16 @@ final class AgentSessionState {
     // MARK: - Public API
 
     /// Kick off a new agent session with the given initial instruction.
-    /// Cancels any in-flight session first. Returns once the loop ends.
+    /// If a previous run is in flight, requests its cooperative stop and
+    /// **awaits its full unwind** before starting the new one. Returns once
+    /// the new run's loop ends.
     func start(initialInstruction: String) async {
-        // If something is already running, stop it cleanly first.
-        if case .running = status {
+        // Drain any in-flight run cleanly first so its onEvent callbacks
+        // don't bleed into the next session's `events` / JSONL.
+        if let prev = activeRunTask {
             await builtinRunner?.requestStop()
             await externalRunner?.requestStop()
+            _ = await prev.value
         }
 
         let workspace = resolveWorkspace()
@@ -73,30 +94,42 @@ final class AgentSessionState {
 
         let sessionID = UUID().uuidString
         events = []
+        closeLogFile()
         sessionLogURL = openLogFile(sessionID: sessionID)
         status = .running(sessionID: sessionID)
 
         agentSessionLog.info("AgentSession.start: id=\(sessionID, privacy: .public) backend=\(self.settings.agentBackend.rawValue, privacy: .public) workspace=\(workspace.path, privacy: .public)")
 
+        // Per-run epoch: the onEvent closure captures this sessionID and only
+        // delivers events whose run matches the *current* status. Defends
+        // against the (rare) corner case where requestStop above fired and
+        // returned but the runner still drains a final pipe write.
         let onEvent: AgentRunner.EventHandler = { [weak self] event in
             Task { @MainActor [weak self] in
-                self?.handleEvent(event)
+                guard let self else { return }
+                guard case .running(let active) = self.status, active == sessionID else { return }
+                self.handleEvent(event)
             }
         }
 
-        switch settings.agentBackend {
-        case .builtin:
-            await runBuiltin(workspace: workspace, instruction: initialInstruction, onEvent: onEvent)
-        case .claudeCode:
-            await runExternal(backend: .claudeCode(binPath: settings.agentClaudeCodeBin),
-                              workspace: workspace, instruction: initialInstruction, onEvent: onEvent)
-        case .codex:
-            await runExternal(backend: .codex(binPath: settings.agentCodexBin),
-                              workspace: workspace, instruction: initialInstruction, onEvent: onEvent)
-        case .copilot:
-            await runExternal(backend: .copilot(binPath: settings.agentCopilotBin),
-                              workspace: workspace, instruction: initialInstruction, onEvent: onEvent)
+        let task = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            switch self.settings.agentBackend {
+            case .builtin:
+                await self.runBuiltin(workspace: workspace, instruction: initialInstruction, onEvent: onEvent)
+            case .claudeCode:
+                await self.runExternal(backend: .claudeCode(binPath: self.settings.agentClaudeCodeBin),
+                                       workspace: workspace, instruction: initialInstruction, onEvent: onEvent)
+            case .codex:
+                await self.runExternal(backend: .codex(binPath: self.settings.agentCodexBin),
+                                       workspace: workspace, instruction: initialInstruction, onEvent: onEvent)
+            case .copilot:
+                await self.runExternal(backend: .copilot(binPath: self.settings.agentCopilotBin),
+                                       workspace: workspace, instruction: initialInstruction, onEvent: onEvent)
+            }
         }
+        activeRunTask = task
+        await task.value
 
         // Loop returned — flip status to finished. Failed events were already
         // surfaced via handleEvent.
@@ -105,16 +138,24 @@ final class AgentSessionState {
         }
         builtinRunner = nil
         externalRunner = nil
+        activeRunTask = nil
+        closeLogFile()
     }
 
-    /// Append a new user message to the running session. No-op if idle.
+    /// Append a new user message to the running session. Surfaces an error
+    /// event when called outside `.running` (TOCTOU between UI guard and
+    /// agent finish) so the user knows their text wasn't silently dropped.
     func inject(_ message: String) async {
-        guard case .running = status else { return }
+        guard case .running = status else {
+            events.append(AgentEvent(kind: .error, text: "Cannot inject — agent session is not running. Start a new run first."))
+            return
+        }
         if let r = builtinRunner { await r.inject(message); return }
         if let r = externalRunner { await r.inject(message) }
     }
 
     /// Cooperative stop. Loop wraps up the current iteration then exits.
+    /// Idempotent — safe to call when not running.
     func requestStop() async {
         guard case .running = status else { return }
         if let r = builtinRunner { await r.requestStop(); return }
@@ -146,7 +187,7 @@ final class AgentSessionState {
 
         let runner = AgentRunner(
             apiKey: key,
-            model: "claude-sonnet-4-6",
+            model: settings.agentBuiltinModel.rawValue,
             systemPrompt: contextualSystem,
             maxIterations: settings.agentMaxIterations,
             tools: tools,
@@ -196,18 +237,30 @@ final class AgentSessionState {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("\(sessionID).jsonl")
         FileManager.default.createFile(atPath: url.path, contents: nil)
+        do {
+            self.logHandle = try FileHandle(forWritingTo: url)
+        } catch {
+            agentSessionLog.error("openLogFile: \(error.localizedDescription, privacy: .private)")
+            self.logHandle = nil
+        }
         return url
     }
 
     private func appendToLogFile(_ event: AgentEvent) {
-        guard let url = sessionLogURL else { return }
+        guard let handle = logHandle else { return }
         guard let data = try? jsonEncoder.encode(event) else { return }
         var line = data
         line.append(0x0A)  // newline
-        if let handle = try? FileHandle(forWritingTo: url) {
-            try? handle.seekToEnd()
-            try? handle.write(contentsOf: line)
-            try? handle.close()
+        do {
+            try handle.write(contentsOf: line)
+        } catch {
+            agentSessionLog.error("appendToLogFile: \(error.localizedDescription, privacy: .private)")
         }
+    }
+
+    private func closeLogFile() {
+        guard let handle = logHandle else { return }
+        try? handle.close()
+        logHandle = nil
     }
 }

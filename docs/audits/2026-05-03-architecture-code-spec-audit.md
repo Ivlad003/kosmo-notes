@@ -2,7 +2,7 @@
 # KosmoNotes audit: architecture, code review, and spec conformance
 
 **Date:** 2026-05-03  
-**Scope:** repository-wide audit against the current code, `docs/plans/2026-05-02-jarvis-note-design.md`, `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md`, `CLAUDE.md`, `README.md`, and `docs/release/v1.0-checklist.md`
+**Scope:** repository-wide audit against the current code, `docs/plans/2026-05-02-kosmonotes-design.md`, `.omc/plans/2026-05-02-kosmonotes-v1-implementation.md`, `CLAUDE.md`, `README.md`, and `docs/release/v1.0-checklist.md`
 
 ## Executive verdict
 
@@ -20,15 +20,15 @@ The most important conclusion is this:
 
 ### Recommended source order
 
-1. **Architecture decisions:** `docs/plans/2026-05-02-jarvis-note-design.md`
-2. **Original v1.0 scope cut:** `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md:14-23`
+1. **Architecture decisions:** `docs/plans/2026-05-02-kosmonotes-design.md`
+2. **Original v1.0 scope cut:** `.omc/plans/2026-05-02-kosmonotes-v1-implementation.md:14-23`
 3. **Current repo reality:** `CLAUDE.md:7-20`
 4. **User-facing overview only:** `README.md`
 5. **Release proof, not product truth:** `docs/release/v1.0-checklist.md`
 
 ### Why this matters
 
-The implementation plan explicitly says the scope was cut: per-process Core Audio Tap, Voice Note Mode, Sharing, and embeddings were deferred to v1.1 in that document (`.omc/plans/2026-05-02-jarvis-note-v1-implementation.md:14-23`, `40-45`).  
+The implementation plan explicitly says the scope was cut: per-process Core Audio Tap, Voice Note Mode, Sharing, and embeddings were deferred to v1.1 in that document (`.omc/plans/2026-05-02-kosmonotes-v1-implementation.md:14-23`, `40-45`).  
 
 But `CLAUDE.md` says those features were added on 2026-05-03 and describes them as present in code (`CLAUDE.md:9-20`). The code confirms that `CLAUDE.md` is closer to present reality than the old implementation plan.
 
@@ -62,12 +62,12 @@ The repo follows a sensible four-layer shape:
 ### Architectural deviations from the design
 
 1. **App shell implementation diverged from the design diagram.**  
-   The design doc shows a `MenuBarExtra` popover shell (`docs/plans/2026-05-02-jarvis-note-design.md:92-100`), but the real app uses `NSStatusItem` + `NSMenu` in `AppDelegate` (`App/KosmoNotesApp.swift:185-199`, `216-256`).  
+   The design doc shows a `MenuBarExtra` popover shell (`docs/plans/2026-05-02-kosmonotes-design.md:92-100`), but the real app uses `NSStatusItem` + `NSMenu` in `AppDelegate` (`App/KosmoNotesApp.swift:185-199`, `216-256`).  
    This is not necessarily bad; it is a concrete implementation choice for LSUIElement reliability. It does mean the architecture doc is no longer literally accurate at the shell layer.
 
 2. **The repo has grown beyond the original product envelope.**  
    Settings now expose tabs for **Sharing**, **Markdown**, and **Agent** in addition to the core product tabs (`App/Views/Settings/SettingsView.swift:18-45`). `AppSettings` also contains full agent-related configuration (`App/State/AppSettings.swift:223-244`, `360-397`).  
-   These are real features, but they are outside the original narrow Jarvis Note v1.0 story and add architectural weight.
+   These are real features, but they are outside the original narrow KosmoNotes v1.0 story and add architectural weight.
 
 ## Code review: what is implemented well
 
@@ -157,7 +157,7 @@ This has two concrete consequences:
 
 #### 2. The production recording path is batch transcription, not the planned live Deepgram streaming path
 
-The old plan expects Deepgram streaming in the Meeting path (`.omc/plans/2026-05-02-jarvis-note-v1-implementation.md:237-242`), and the repository does contain a live `DeepgramProvider` and resilient reconnect layer (`Sources/TranscriptionKit/DeepgramProvider.swift:5-71`).
+The old plan expects Deepgram streaming in the Meeting path (`.omc/plans/2026-05-02-kosmonotes-v1-implementation.md:237-242`), and the repository does contain a live `DeepgramProvider` and resilient reconnect layer (`Sources/TranscriptionKit/DeepgramProvider.swift:5-71`).
 
 But `RecorderState.stop()` clearly uses a **batch** provider selection at the end of recording (`App/State/RecorderState.swift:342-373`), and its own comment says Deepgram streaming is not exposed on the current capture API (`App/State/RecorderState.swift:343-345`).
 
@@ -171,7 +171,7 @@ This is the most important runtime deviation from the spec.
 
 #### 3. AC-13 is not met literally by the Markdown exporter
 
-The implementation plan says Markdown export should contain YAML frontmatter, summary, and transcript with `[mm:ss]` timestamps (`.omc/plans/2026-05-02-jarvis-note-v1-implementation.md:68`).
+The implementation plan says Markdown export should contain YAML frontmatter, summary, and transcript with `[mm:ss]` timestamps (`.omc/plans/2026-05-02-kosmonotes-v1-implementation.md:68`).
 
 The current exporter does write YAML frontmatter and optionally includes summary text, but for transcript it simply copies `transcript.txt` into a `## Transcript` section (`App/Views/Library/SessionExporter.swift:96-121`).
 
@@ -185,7 +185,7 @@ So the current status is:
 
 #### 4. The app shell does not match the architecture diagram literally
 
-The design document shows a popover-style `MenuBarExtra` shell (`docs/plans/2026-05-02-jarvis-note-design.md:92-100`), but the repo uses `NSStatusItem` + `NSMenu` (`App/KosmoNotesApp.swift:185-256`).  
+The design document shows a popover-style `MenuBarExtra` shell (`docs/plans/2026-05-02-kosmonotes-design.md:92-100`), but the repo uses `NSStatusItem` + `NSMenu` (`App/KosmoNotesApp.swift:185-256`).  
 
 This is a design-doc drift issue, not a product bug.
 

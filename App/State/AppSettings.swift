@@ -104,6 +104,9 @@ final class AppSettings {
         // Backend selector — built-in Anthropic-API loop, or spawn an
         // external CLI (Claude Code, Codex, GitHub Copilot).
         static let agentBackend = "agentBackend"
+        // Claude model used by the *built-in* backend (Opus 4.7 / Sonnet 4.6
+        // / Haiku 4.5). External CLI backends pick their own model.
+        static let agentBuiltinModel = "agentBuiltinModel"
         static let agentClaudeCodeBin = "agentClaudeCodeBin"
         static let agentCodexBin = "agentCodexBin"
         static let agentCopilotBin = "agentCopilotBin"
@@ -128,6 +131,7 @@ final class AppSettings {
         static let audioSampleRate = "audioSampleRate"
         static let videoUseHEVC = "videoUseHEVC"
         static let videoBitrate = "videoBitrate"
+        static let screenCaptureDisplayID = "screenCaptureDisplayID"
     }
 
     // MARK: Observable state — secrets read on demand from Keychain
@@ -261,6 +265,12 @@ final class AppSettings {
     /// AgentRunner; the other three spawn an external CLI as a subprocess.
     var agentBackend: AgentBackendChoice {
         didSet { UserDefaults.standard.set(agentBackend.rawValue, forKey: Defaults.agentBackend) }
+    }
+
+    /// Claude model variant used by the *built-in* agent backend. External
+    /// CLI backends ignore this — they have their own model selection.
+    var agentBuiltinModel: AgentBuiltinModel {
+        didSet { UserDefaults.standard.set(agentBuiltinModel.rawValue, forKey: Defaults.agentBuiltinModel) }
     }
     /// Absolute path to the `claude` binary (Claude Code CLI). Empty = use $PATH lookup.
     var agentClaudeCodeBin: String {
@@ -489,6 +499,12 @@ final class AppSettings {
     var videoBitrate: Int {
         didSet { UserDefaults.standard.set(videoBitrate, forKey: Defaults.videoBitrate) }
     }
+    /// CGDirectDisplayID of the display to record in Audio + Screen mode.
+    /// 0 = auto (primary display, picked at start time). Stored as UInt32 because
+    /// CGDirectDisplayID is a UInt32 alias; UserDefaults stores it as Int.
+    var screenCaptureDisplayID: UInt32 {
+        didSet { UserDefaults.standard.set(Int(screenCaptureDisplayID), forKey: Defaults.screenCaptureDisplayID) }
+    }
 
     /// Rewrite codec fields to match the active StorageProfile.
     private func applyStorageProfile() {
@@ -572,6 +588,8 @@ final class AppSettings {
         self.agentWorkspaceFolder = UserDefaults.standard.string(forKey: Defaults.agentWorkspaceFolder) ?? ""
         let backendRaw = UserDefaults.standard.string(forKey: Defaults.agentBackend) ?? AgentBackendChoice.builtin.rawValue
         self.agentBackend = AgentBackendChoice(rawValue: backendRaw) ?? .builtin
+        let modelRaw = UserDefaults.standard.string(forKey: Defaults.agentBuiltinModel) ?? AgentBuiltinModel.sonnet46.rawValue
+        self.agentBuiltinModel = AgentBuiltinModel(rawValue: modelRaw) ?? .sonnet46
         self.agentClaudeCodeBin = UserDefaults.standard.string(forKey: Defaults.agentClaudeCodeBin) ?? ""
         self.agentCodexBin = UserDefaults.standard.string(forKey: Defaults.agentCodexBin) ?? ""
         self.agentCopilotBin = UserDefaults.standard.string(forKey: Defaults.agentCopilotBin) ?? ""
@@ -677,6 +695,9 @@ final class AppSettings {
         self.videoUseHEVC = (UserDefaults.standard.object(forKey: Defaults.videoUseHEVC) as? Bool) ?? true
         let vbr = UserDefaults.standard.integer(forKey: Defaults.videoBitrate)
         self.videoBitrate = vbr > 0 ? vbr : 2_000_000
+
+        let storedDisplayID = UserDefaults.standard.integer(forKey: Defaults.screenCaptureDisplayID)
+        self.screenCaptureDisplayID = storedDisplayID > 0 ? UInt32(truncatingIfNeeded: storedDisplayID) : 0
 
         loadKeysFromKeychain()
     }
@@ -789,7 +810,7 @@ final class AppSettings {
             "summaryLanguage=\(summaryLanguage)",
             "markdownExportEnabled=\(markdownExportEnabled)",
             "pushToMarkdownEnabled=\(pushToMarkdownEnabled)",
-            "agentEnabled=\(agentEnabled) agentBackend=\(agentBackend.rawValue)",
+            "agentEnabled=\(agentEnabled) agentBackend=\(agentBackend.rawValue) agentBuiltinModel=\(agentBuiltinModel.rawValue)",
             "cameraBubbleEnabled=\(cameraBubbleEnabled)",
             "s3Configured=\(!s3Endpoint.isEmpty && !s3Bucket.isEmpty && !s3AccessKey.isEmpty)",
             "openaiKeySet=\(!openaiApiKey.isEmpty)",

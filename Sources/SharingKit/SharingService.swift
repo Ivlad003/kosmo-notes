@@ -10,10 +10,10 @@ import Foundation
 public struct SharingService: Sendable {
 
     public let s3: S3Client
-    public let keyPrefix: String   // e.g. "jarvis-note/" — namespaces bucket use across users
+    public let keyPrefix: String   // e.g. "kosmonotes/" — namespaces bucket use across users
     public let presignTTLSeconds: Int
 
-    public init(s3: S3Client, keyPrefix: String = "jarvis-note/", presignTTLSeconds: Int = 7 * 24 * 3600) {
+    public init(s3: S3Client, keyPrefix: String = "kosmonotes/", presignTTLSeconds: Int = 7 * 24 * 3600) {
         self.s3 = s3
         // Normalize: ensure prefix ends with `/` so concatenation produces clean keys.
         var normalized = keyPrefix
@@ -27,11 +27,12 @@ public struct SharingService: Sendable {
     /// Result of a session share: presigned URLs for each artifact that was uploaded.
     public struct ShareResult: Sendable, Equatable {
         public let audioURL: URL?
+        public let videoURL: URL?
         public let summaryURL: URL?
         public let transcriptURL: URL?
 
         public var allLinks: [URL] {
-            [audioURL, summaryURL, transcriptURL].compactMap { $0 }
+            [audioURL, videoURL, summaryURL, transcriptURL].compactMap { $0 }
         }
     }
 
@@ -43,10 +44,12 @@ public struct SharingService: Sendable {
         let now = Date()
 
         let audioFile = sessionDir.appendingPathComponent("audio.m4a")
+        let videoFile = sessionDir.appendingPathComponent("screen.mp4")
         let summaryFile = sessionDir.appendingPathComponent("summary.md")
         let transcriptFile = sessionDir.appendingPathComponent("transcript.txt")
 
         var audioURL: URL?
+        var videoURL: URL?
         var summaryURL: URL?
         var transcriptURL: URL?
 
@@ -55,6 +58,13 @@ public struct SharingService: Sendable {
             let data = try Data(contentsOf: audioFile)
             try await s3.putObject(key: key, data: data, contentType: "audio/mp4", now: now)
             audioURL = try s3.presignedGetURL(key: key, expirySeconds: presignTTLSeconds, now: now)
+        }
+
+        if FileManager.default.fileExists(atPath: videoFile.path) {
+            let key = "\(keyPrefix)\(sessionId)/screen.mp4"
+            let data = try Data(contentsOf: videoFile)
+            try await s3.putObject(key: key, data: data, contentType: "video/mp4", now: now)
+            videoURL = try s3.presignedGetURL(key: key, expirySeconds: presignTTLSeconds, now: now)
         }
 
         if FileManager.default.fileExists(atPath: summaryFile.path) {
@@ -73,6 +83,7 @@ public struct SharingService: Sendable {
 
         return ShareResult(
             audioURL: audioURL,
+            videoURL: videoURL,
             summaryURL: summaryURL,
             transcriptURL: transcriptURL
         )

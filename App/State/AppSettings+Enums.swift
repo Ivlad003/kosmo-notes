@@ -123,6 +123,33 @@ extension AppSettings {
         }
     }
 
+    /// Anthropic Claude model the *built-in* backend uses for the agent loop.
+    /// External CLI backends pick their own model out-of-band (`claude` /
+    /// `codex` / `gh copilot` honour their own config), so this only applies
+    /// when `agentBackend == .builtin`.
+    ///
+    /// Defaults to Sonnet 4.6 — the current speed/cost/quality sweet spot for
+    /// tool-using loops. Bump to Opus 4.7 for hard tasks; drop to Haiku 4.5
+    /// for cheap exploratory runs.
+    enum AgentBuiltinModel: String, CaseIterable, Identifiable {
+        case opus47   = "claude-opus-4-7"
+        case opus46   = "claude-opus-4-6"
+        case sonnet46 = "claude-sonnet-4-6"
+        case sonnet45 = "claude-sonnet-4-5"
+        case haiku45  = "claude-haiku-4-5"
+
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .opus47:   return "Claude Opus 4.7 (highest quality, slowest, most expensive)"
+            case .opus46:   return "Claude Opus 4.6 (previous opus — supports faster Fast Mode)"
+            case .sonnet46: return "Claude Sonnet 4.6 (balanced — default)"
+            case .sonnet45: return "Claude Sonnet 4.5 (previous sonnet — cheaper alternative)"
+            case .haiku45:  return "Claude Haiku 4.5 (fastest, cheapest, smaller context)"
+            }
+        }
+    }
+
     enum RecordingMode: String, CaseIterable, Identifiable {
         case audioOnly
         case audioAndScreen

@@ -69,7 +69,7 @@ public actor CoreAudioTap {
         let aggregateUID = "dev.kosmonotes.processtap.\(UUID().uuidString)"
         let aggregateDescription: [String: Any] = [
             kAudioAggregateDeviceUIDKey as String: aggregateUID,
-            kAudioAggregateDeviceNameKey as String: "Jarvis Note Process Tap",
+            kAudioAggregateDeviceNameKey as String: "KosmoNotes Process Tap",
             kAudioAggregateDeviceIsPrivateKey as String: true,
             kAudioAggregateDeviceIsStackedKey as String: false,
             kAudioAggregateDeviceTapAutoStartKey as String: true,

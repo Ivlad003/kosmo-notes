@@ -16,7 +16,7 @@ The spec target is **median ≤ 1.5 s** across 5 trials of a 10-second utterance
 - Uplink ≥ 50 Mbps. Verify with fast.com or Speedtest **immediately** before recording the trials, not yesterday.
 - Anthropic and OpenAI API keys configured in Settings → AI Providers (test connection green for both)
 - `dictationLLMCleanup` enabled in Settings → Dictation
-- Accessibility permission granted to Jarvis Note in System Settings → Privacy & Security → Accessibility. **Relaunch Jarvis Note after granting** — AX trust does not take effect until the process is restarted.
+- Accessibility permission granted to KosmoNotes in System Settings → Privacy & Security → Accessibility. **Relaunch KosmoNotes after granting** — AX trust does not take effect until the process is restarted.
 - Focused text field in TextEdit (or any plain-text editor). **Do not measure into a sandboxed app** like the App Store version of Slack or Discord — those force the clipboard fallback in `AccessibilityPaster` and the resulting timing reflects clipboard paste, not the AX path. The "default" path is what we ship a latency claim against.
 
 ## 3. The procedure (5 trials)

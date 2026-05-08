@@ -8,7 +8,7 @@ private let agentLog = Logger(subsystem: "dev.kosmonotes.studio", category: "Age
 /// One entry in the structured session log. Streamed back to the UI as the
 /// agent loop progresses; also written one-per-line to the JSONL file for
 /// post-hoc browsing in Settings → Agent Sessions.
-public struct AgentEvent: Codable, Sendable {
+public struct AgentEvent: Codable, Sendable, Identifiable {
     public enum Kind: String, Codable, Sendable {
         case userMessage      // user instruction (initial or injected)
         case assistantText    // free-form Claude reply
@@ -17,12 +17,16 @@ public struct AgentEvent: Codable, Sendable {
         case error            // anything that broke (tool throw, API error, cap hit)
         case stop             // loop ended cleanly
     }
+    /// Stable identity for SwiftUI ForEach. UUID per event so prepend / mid-list
+    /// inserts don't cause SwiftUI to recycle rows in the wrong place.
+    public let id: UUID
     public let timestamp: Date
     public let kind: Kind
     public let text: String
     public let toolName: String?
 
     public init(kind: Kind, text: String, toolName: String? = nil) {
+        self.id = UUID()
         self.timestamp = Date()
         self.kind = kind
         self.text = text
@@ -62,10 +66,18 @@ public actor AgentRunner {
 
     public typealias EventHandler = @Sendable (AgentEvent) -> Void
 
+    /// Soft byte budget on the running transcript JSON. Beyond this we stop
+    /// the loop and surface an error rather than racking up the bill on a
+    /// runaway context. 200 KB is roughly 50 K tokens of text — well past the
+    /// point where the loop is producing diminishing returns. Settable from
+    /// settings down the road; for now a sane constant.
+    public static let defaultMaxTranscriptBytes = 200_000
+
     private let apiKey: String
     private let model: String
     private let systemPrompt: String
     private let maxIterations: Int
+    private let maxTranscriptBytes: Int
     private let tools: [AgentTool]
     private let onEvent: EventHandler
     private let session: URLSession
@@ -83,6 +95,7 @@ public actor AgentRunner {
         model: String = "claude-sonnet-4-6",
         systemPrompt: String,
         maxIterations: Int = 12,
+        maxTranscriptBytes: Int = AgentRunner.defaultMaxTranscriptBytes,
         tools: [AgentTool],
         onEvent: @escaping EventHandler,
         session: URLSession = .shared
@@ -91,6 +104,7 @@ public actor AgentRunner {
         self.model = model
         self.systemPrompt = systemPrompt
         self.maxIterations = max(1, maxIterations)
+        self.maxTranscriptBytes = max(10_000, maxTranscriptBytes)
         self.tools = tools
         self.onEvent = onEvent
         self.session = session
@@ -116,8 +130,25 @@ public actor AgentRunner {
                 emit(.init(kind: .userMessage, text: "[injected] " + msg))
             }
 
+            // Byte budget guard. Cheap to compute (one JSONSerialization on
+            // the running transcript) and stops runaway long sessions before
+            // the next billable API call.
+            if transcriptByteSize() > maxTranscriptBytes {
+                emit(.init(kind: .error, text: "Transcript exceeded \(maxTranscriptBytes) bytes — stopping to control cost."))
+                return
+            }
+
             do {
                 let response = try await callMessages()
+                // Stop honor-window: if the user clicked Stop while we were
+                // awaiting the API response, drop the result on the floor and
+                // exit. Otherwise we'd execute every tool_use in the response
+                // including potentially destructive ones.
+                if stopRequested {
+                    emit(.init(kind: .stop, text: "Agent stopped by user (after API call, before tool execution)."))
+                    return
+                }
+
                 let stopReason = response.stopReason
                 let blocks = response.contentBlocks
 
@@ -145,6 +176,16 @@ public actor AgentRunner {
 
                 var resultBlocks: [[String: Any]] = []
                 for toolUse in toolUseBlocks {
+                    // Per-tool stop check: if the user clicked Stop mid-batch,
+                    // skip remaining tools but still send back the results we
+                    // collected so the model's transcript stays coherent.
+                    if stopRequested {
+                        emit(.init(kind: .stop, text: "Agent stopped by user (mid tool batch)."))
+                        if !resultBlocks.isEmpty {
+                            transcript.append(["role": "user", "content": resultBlocks])
+                        }
+                        return
+                    }
                     guard let id = toolUse["id"] as? String,
                           let name = toolUse["name"] as? String else { continue }
                     let input = toolUse["input"] as? [String: Any] ?? [:]
@@ -175,7 +216,7 @@ public actor AgentRunner {
                 transcript.append(["role": "user", "content": resultBlocks])
             } catch {
                 emit(.init(kind: .error, text: error.localizedDescription))
-                agentLog.error("AgentRunner: iteration failed — \(error.localizedDescription, privacy: .public)")
+                agentLog.error("AgentRunner: iteration failed — \(error.localizedDescription, privacy: .private)")
                 return
             }
         }
@@ -183,6 +224,16 @@ public actor AgentRunner {
         if iterationCount >= maxIterations && !stopRequested {
             emit(.init(kind: .error, text: AgentError.capReached(iterations: maxIterations).localizedDescription))
         }
+    }
+
+    /// Cost-budget helper. JSON-serializes the current transcript and returns
+    /// its byte size. We do this between iterations only, so the per-call
+    /// cost is bounded by `maxIterations`.
+    private func transcriptByteSize() -> Int {
+        guard let data = try? JSONSerialization.data(withJSONObject: transcript, options: []) else {
+            return 0
+        }
+        return data.count
     }
 
     /// Push a new user message onto the queue; picked up at the start of the

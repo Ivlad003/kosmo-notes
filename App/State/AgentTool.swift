@@ -9,11 +9,6 @@ private let agentToolLog = Logger(subsystem: "dev.kosmonotes.studio", category: 
 /// a JSON-schema description (so Claude knows when + how to use it) and an
 /// `execute(input:)` async function that does the real work and returns
 /// human-readable output (becomes the `tool_result` sent back to Claude).
-///
-/// Tools are intentionally simple-typed (`[String: Any]` in / `String` out).
-/// Agent loops are short enough that the schema rigour of full Codable types
-/// isn't worth the boilerplate; safety is enforced inside each tool body
-/// (path allowlists, command sanitization).
 public protocol AgentTool: Sendable {
     var name: String { get }
     var description: String { get }
@@ -33,13 +28,13 @@ public protocol AgentTool: Sendable {
 /// by default if no workspace is set.
 public struct ReadFileTool: AgentTool {
     public let name = "read_file"
-    public let description = "Read the contents of a UTF-8 text file at the given absolute path. Returns the file contents as a string."
+    public let description = "Read the contents of a UTF-8 text file at the given absolute path inside the agent workspace. Returns the file contents as a string."
     public let inputSchema: [String: Any] = [
         "type": "object",
         "properties": [
             "path": [
                 "type": "string",
-                "description": "Absolute filesystem path to read.",
+                "description": "Absolute filesystem path to read. Must resolve inside the agent workspace.",
             ],
         ],
         "required": ["path"],
@@ -68,14 +63,17 @@ public struct ReadFileTool: AgentTool {
 }
 
 /// Atomically write a UTF-8 text file. Same workspace allowlist as read_file.
+/// Capped at WriteFileTool.maxBytes so an LLM mistake can't fill the disk.
 public struct WriteFileTool: AgentTool {
+    public static let maxBytes = 1_048_576  // 1 MiB
+
     public let name = "write_file"
-    public let description = "Write a UTF-8 text file. Overwrites if it exists, creates parent directories if missing. Use absolute paths inside your workspace."
+    public let description = "Write a UTF-8 text file. Overwrites if it exists, creates parent directories if missing. Use absolute paths inside your workspace. Capped at 1 MiB."
     public let inputSchema: [String: Any] = [
         "type": "object",
         "properties": [
-            "path": ["type": "string", "description": "Absolute filesystem path to write."],
-            "content": ["type": "string", "description": "Text to write."],
+            "path": ["type": "string", "description": "Absolute filesystem path to write. Must resolve inside the agent workspace."],
+            "content": ["type": "string", "description": "Text to write. Must be ≤ 1 MiB UTF-8."],
         ],
         "required": ["path", "content"],
     ]
@@ -87,35 +85,64 @@ public struct WriteFileTool: AgentTool {
     public func execute(input: [String: Any]) async throws -> String {
         guard let path = input["path"] as? String else { throw AgentToolError.badInput("write_file: missing 'path'") }
         guard let content = input["content"] as? String else { throw AgentToolError.badInput("write_file: missing 'content'") }
+        let bytes = Data(content.utf8)
+        guard bytes.count <= Self.maxBytes else {
+            throw AgentToolError.notAllowed("write_file: content is \(bytes.count) bytes; cap is \(Self.maxBytes) bytes")
+        }
         let url = URL(fileURLWithPath: path)
         try AgentToolGuard.requireInsideWorkspace(url, workspace: workspace, tool: "write_file")
+        try AgentToolGuard.requireInsideWorkspace(url.deletingLastPathComponent(), workspace: workspace, tool: "write_file (parent dir)")
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data(content.utf8).write(to: url, options: [.atomic])
+        try bytes.write(to: url, options: [.atomic])
         return "Wrote \(content.count) chars to \(url.path)"
     }
 }
 
-/// Run a shell command. Allowlist-gated by `BashTool.allowedCommands` —
-/// agent must call `which/ls/cat/echo/grep/find/head/tail/wc/file/git status`
-/// etc. Anything else is refused. Output is captured and trimmed for context.
+/// Run a strictly-allowlisted, read-only inspection command directly via
+/// `Process` — never via a shell. The model passes a single command string;
+/// we tokenize (whitespace + quoted strings), reject any shell metacharacters
+/// (`; | & $ \` < > ( ) \\ \n \r`), validate the first token against a
+/// read-only allowlist, and require any absolute-path argument to resolve
+/// inside the agent workspace.
+///
+/// Threat model: an LLM (potentially driven by prompt-injected transcript
+/// content from arbitrary recordings) could otherwise exfiltrate
+/// `~/.ssh/id_rsa` via `cat ~/.ssh/id_rsa | curl …`, run `sed -i` mutations
+/// outside the workspace, or shell-out to `python -c '…'`. Argv-only
+/// invocation + path-arg sandbox + read-only allowlist closes those vectors.
 public struct BashTool: AgentTool {
+
+    /// Read-only inspection commands. Anything mutating (`sed`, `awk`,
+    /// `git commit/push`, `swift build`, `npm install`, `python -c`, …)
+    /// is intentionally absent. If you need to build/install, use the
+    /// external CLI agent backends (Claude Code / Codex) which run in
+    /// their own sandbox.
+    public static let allowedCommands: Set<String> = [
+        "ls", "cat", "echo", "pwd", "head", "tail", "wc", "file",
+        "find", "grep", "rg", "date", "uname", "env", "which",
+        "hostname", "stat", "tree", "diff", "basename", "dirname",
+    ]
+
+    /// Shell metacharacters that allow command chaining, substitution, or
+    /// redirection. Forbidden because BashTool runs argv-direct via Process,
+    /// not through a shell — these characters become literals if we let them
+    /// through, but rejecting them prevents LLM confusion (the model thinks
+    /// it's writing shell, gets surprised when literal `;` lands in argv).
+    private static let forbiddenChars: Set<Character> = [
+        ";", "|", "&", "$", "`", ">", "<", "\n", "\r", "\\",
+    ]
+
     public let name = "bash"
-    public let description = "Run a shell command and return stdout+stderr. Strict allowlist of safe read-only commands; mutations require explicit user approval at the KosmoNotes level."
+    public let description = "Run a strictly read-only inspection command (ls, cat, find, grep, head/tail, etc.). NO shell metacharacters allowed (no pipes, redirects, substitution, chaining). NO mutating commands. Absolute path arguments must resolve inside the agent workspace."
     public let inputSchema: [String: Any] = [
         "type": "object",
         "properties": [
             "command": [
                 "type": "string",
-                "description": "Single shell command to run. Pipes / redirects supported. Must start with one of: ls, cat, echo, pwd, which, head, tail, wc, file, find, grep, rg, sed, awk, date, uname, env, git, swift, xcodebuild.",
+                "description": "Single read-only inspection command. Tokens are split on whitespace; quoted strings (\"foo bar\" or 'foo bar') are kept as one arg. Forbidden: ; | & $ ` > < \\ and newlines. First token must be one of: \(BashTool.allowedCommands.sorted().joined(separator: ", ")).",
             ],
         ],
         "required": ["command"],
-    ]
-
-    private static let allowedFirstWords: Set<String> = [
-        "ls", "cat", "echo", "pwd", "which", "head", "tail", "wc", "file",
-        "find", "grep", "rg", "sed", "awk", "date", "uname", "env",
-        "git", "swift", "xcodebuild", "make", "npm", "node", "python", "python3",
     ]
 
     private let workspace: URL
@@ -123,35 +150,209 @@ public struct BashTool: AgentTool {
     public init(workspace: URL) { self.workspace = workspace }
 
     public func execute(input: [String: Any]) async throws -> String {
-        guard let command = input["command"] as? String else {
+        guard let raw = input["command"] as? String else {
             throw AgentToolError.badInput("bash: missing 'command'")
         }
-        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw AgentToolError.badInput("bash: empty command") }
-        let firstWord = trimmed.split(separator: " ").first.map(String.init) ?? ""
-        guard Self.allowedFirstWords.contains(firstWord) else {
-            throw AgentToolError.notAllowed("bash: '\(firstWord)' not in agent allowlist")
+
+        if let bad = trimmed.first(where: { Self.forbiddenChars.contains($0) }) {
+            throw AgentToolError.notAllowed("bash: forbidden character '\(bad)' — pipes, redirects, substitution, and chaining are disabled")
         }
 
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        task.arguments = ["-c", trimmed]
-        task.currentDirectoryURL = workspace
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = pipe
+        let tokens = try Self.tokenize(trimmed)
+        guard let head = tokens.first, !head.isEmpty else {
+            throw AgentToolError.badInput("bash: no command after tokenization")
+        }
+        guard Self.allowedCommands.contains(head) else {
+            throw AgentToolError.notAllowed("bash: '\(head)' not in read-only allowlist (\(Self.allowedCommands.sorted().joined(separator: ", ")))")
+        }
+        let args = Array(tokens.dropFirst())
+
+        // Validate path-looking args against the workspace.
+        for arg in args {
+            try Self.validateArg(arg, workspace: workspace)
+        }
+
+        // Resolve the binary up-front via /usr/bin/env-style PATH probe so
+        // we never rely on shell PATH expansion.
+        let executable = try Self.resolveBinary(head)
+
+        return try await Self.spawn(executable: executable, args: args, command: trimmed, cwd: workspace)
+    }
+
+    // MARK: - Tokenizer
+
+    /// Whitespace-splits `s`, preserving "..."/'...' quoted runs as a single
+    /// token. No backslash escapes (those are forbidden anyway). Throws on an
+    /// unclosed quote.
+    static func tokenize(_ s: String) throws -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var inDouble = false
+        var inSingle = false
+
+        for ch in s {
+            if inDouble {
+                if ch == "\"" { inDouble = false } else { current.append(ch) }
+                continue
+            }
+            if inSingle {
+                if ch == "'" { inSingle = false } else { current.append(ch) }
+                continue
+            }
+            switch ch {
+            case "\"": inDouble = true
+            case "'":  inSingle = true
+            case " ", "\t":
+                if !current.isEmpty { tokens.append(current); current = "" }
+            default:
+                current.append(ch)
+            }
+        }
+        if inDouble || inSingle {
+            throw AgentToolError.badInput("bash: unterminated quote in command")
+        }
+        if !current.isEmpty { tokens.append(current) }
+        return tokens
+    }
+
+    // MARK: - Argument validation
+
+    /// Reject `~`-prefixed args (no shell expansion happens, but the LLM might
+    /// assume one). Require any absolute-path arg to resolve inside the
+    /// workspace. Relative args are fine — they resolve against `cwd`, which
+    /// `Process` sets to the workspace.
+    static func validateArg(_ arg: String, workspace: URL) throws {
+        guard !arg.isEmpty else { return }
+        if arg.hasPrefix("~") {
+            throw AgentToolError.notAllowed("bash: '~' expansion not supported (no shell). Use absolute or workspace-relative paths.")
+        }
+        if arg.hasPrefix("/") {
+            let url = URL(fileURLWithPath: arg)
+            try AgentToolGuard.requireInsideWorkspace(url, workspace: workspace, tool: "bash")
+        }
+    }
+
+    // MARK: - Binary resolution
+
+    /// Probe a small allowlist of locations for the given command name. We
+    /// never inherit the user's interactive PATH (GUI apps don't get one).
+    static func resolveBinary(_ name: String) throws -> String {
+        // Defensive: name should have already passed `allowedCommands`, but
+        // refuse anything non-alphanumeric to be safe.
+        guard !name.isEmpty,
+              name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }) else {
+            throw AgentToolError.notAllowed("bash: bad command name")
+        }
+        let candidates = [
+            "/usr/bin/\(name)",
+            "/bin/\(name)",
+            "/usr/local/bin/\(name)",
+            "/opt/homebrew/bin/\(name)",
+            "/usr/sbin/\(name)",
+            "/sbin/\(name)",
+        ]
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            return path
+        }
+        throw AgentToolError.runtime("bash: '\(name)' not found in /usr/bin, /bin, /usr/local/bin, /opt/homebrew/bin")
+    }
+
+    // MARK: - Process spawn (async, deadlock-free)
+
+    /// Launch `executable` with `args` inside `cwd`, drain stdout+stderr
+    /// concurrently into a memory buffer (avoids the classic
+    /// readToEnd-after-waitUntilExit deadlock when output > pipe buffer),
+    /// cap at 32_000 chars, and return on exit. Uses a 60-s wall-clock cap
+    /// so a stuck `find /` can't hang the agent forever.
+    private static func spawn(executable: String, args: [String], command: String, cwd: URL) async throws -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: executable)
+        proc.arguments = args
+        proc.currentDirectoryURL = cwd
+        proc.environment = Self.minimalEnvironment(cwd: cwd)
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        proc.standardOutput = stdoutPipe
+        proc.standardError = stderrPipe
+        proc.standardInput = FileHandle.nullDevice  // no stdin
+
+        let exit = AgentProcessSignal()
+        proc.terminationHandler = { _ in exit.fire() }
 
         do {
-            try task.run()
+            try proc.run()
         } catch {
             throw AgentToolError.runtime("bash launch failed: \(error.localizedDescription)")
         }
-        task.waitUntilExit()
-        let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
-        let output = String(data: data, encoding: .utf8) ?? "<non-utf8 output>"
-        let truncated = output.count > 32_000 ? String(output.prefix(32_000)) + "\n... [truncated]" : output
-        let exitInfo = task.terminationStatus == 0 ? "" : " (exit \(task.terminationStatus))"
-        return "$ \(trimmed)\(exitInfo)\n\(truncated)"
+
+        let stdoutFD = stdoutPipe.fileHandleForReading
+        let stderrFD = stderrPipe.fileHandleForReading
+        let stdoutTask = Task.detached { Self.readAll(stdoutFD, capBytes: 32_000) }
+        let stderrTask = Task.detached { Self.readAll(stderrFD, capBytes: 16_000) }
+
+        // 60-second wall clock; SIGTERM then SIGKILL the child if it hangs.
+        let timeoutTask = Task.detached {
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            if proc.isRunning {
+                proc.terminate()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if proc.isRunning {
+                    kill(proc.processIdentifier, SIGKILL)
+                }
+            }
+        }
+
+        await exit.wait()
+        timeoutTask.cancel()
+        let stdoutText = await stdoutTask.value
+        let stderrText = await stderrTask.value
+
+        let combined = stdoutText + (stderrText.isEmpty ? "" : "\n[stderr]\n" + stderrText)
+        let truncated = combined.count > 32_000 ? String(combined.prefix(32_000)) + "\n... [truncated]" : combined
+        let exitInfo = proc.terminationStatus == 0 ? "" : " (exit \(proc.terminationStatus))"
+        return "$ \(command)\(exitInfo)\n\(truncated)"
+    }
+
+    /// Drain a pipe synchronously into a String, capped at `capBytes`.
+    /// Runs on a detached Task — never on the actor that owns the spawn.
+    private static func readAll(_ handle: FileHandle, capBytes: Int) -> String {
+        var buf = Data()
+        while true {
+            let chunk: Data
+            do {
+                chunk = try handle.read(upToCount: 4096) ?? Data()
+            } catch {
+                return String(decoding: buf, as: UTF8.self)
+            }
+            if chunk.isEmpty { break }
+            if buf.count + chunk.count > capBytes {
+                let remaining = max(0, capBytes - buf.count)
+                buf.append(chunk.prefix(remaining))
+                // Drain the rest into the void so the child doesn't block on a full pipe.
+                while let extra = try? handle.read(upToCount: 65_536), !extra.isEmpty { _ = extra }
+                break
+            }
+            buf.append(chunk)
+        }
+        // Use String(decoding:as:) so a partial multibyte run at the cap
+        // boundary becomes a replacement char instead of dropping the whole
+        // string (which `String(data:encoding:.utf8)` would do).
+        return String(decoding: buf, as: UTF8.self)
+    }
+
+    /// Minimal env: PATH covering the standard system bins + workspace as
+    /// HOME/PWD analogues. Nothing inherited from the parent so the child
+    /// can't see KOSMONOTES_API_KEY-style secrets the host might have set.
+    private static func minimalEnvironment(cwd: URL) -> [String: String] {
+        return [
+            "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:/usr/sbin:/sbin",
+            "HOME": cwd.path,
+            "PWD": cwd.path,
+            "LANG": "en_US.UTF-8",
+            "TERM": "dumb",
+        ]
     }
 }
 
@@ -173,15 +374,54 @@ public enum AgentToolError: Error, LocalizedError {
 enum AgentToolGuard {
     /// Reject any path that resolves outside `workspace`. Resolves
     /// `..`/symlinks via standardizedFileURL so the agent can't escape via
-    /// `/foo/../etc/passwd`.
+    /// `/foo/../etc/passwd` or symlink farms inside the workspace.
+    ///
+    /// Note: this is a TOCTOU-best-effort check — between this and the
+    /// caller's actual `Data(contentsOf:)` / `Data.write(to:)` the symlink
+    /// could be retargeted by a local attacker. Acceptable for a single-user
+    /// menu-bar app where the only attacker model is an untrusted prompt.
     static func requireInsideWorkspace(_ url: URL, workspace: URL, tool: String) throws {
         let resolvedURL = url.standardizedFileURL.resolvingSymlinksInPath()
         let resolvedWS = workspace.standardizedFileURL.resolvingSymlinksInPath()
         let urlPath = resolvedURL.path
         let wsPath = resolvedWS.path
         if urlPath != wsPath && !urlPath.hasPrefix(wsPath + "/") {
-            agentToolLog.error("\(tool, privacy: .public): path \(urlPath, privacy: .public) is outside workspace \(wsPath, privacy: .public)")
+            agentToolLog.error("\(tool, privacy: .public): path \(urlPath, privacy: .private) is outside workspace \(wsPath, privacy: .private)")
             throw AgentToolError.notAllowed("\(tool): path outside workspace (\(wsPath))")
+        }
+    }
+}
+
+// MARK: - Process termination signal
+
+/// One-shot Sendable bridge from `Process.terminationHandler` (called from a
+/// libdispatch queue) to async/await. Same shape as `ExternalAgentRunner`'s
+/// `AsyncSignal` but kept private to AgentTool so the two files stay
+/// independently testable.
+final class AgentProcessSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func fire() {
+        lock.lock()
+        defer { lock.unlock() }
+        if fired { return }
+        fired = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func wait() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if fired {
+                lock.unlock()
+                cont.resume()
+                return
+            }
+            continuation = cont
+            lock.unlock()
         }
     }
 }

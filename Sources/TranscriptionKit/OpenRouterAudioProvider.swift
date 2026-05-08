@@ -47,7 +47,7 @@ public final class OpenRouterAudioProvider: BatchTranscriptionProvider, Sendable
         model: String = "google/gemini-2.5-flash",
         endpoint: URL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!,
         referer: String = "https://kosmonotes.dev",
-        title: String = "Jarvis Note",
+        title: String = "KosmoNotes",
         httpClient: @escaping HTTPClient = OpenRouterAudioProvider.defaultHTTPClient
     ) {
         self.apiKey = apiKey

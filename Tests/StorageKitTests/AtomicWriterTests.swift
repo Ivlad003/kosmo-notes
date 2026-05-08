@@ -56,7 +56,7 @@ struct AtomicWriterTests {
             let name: String
             let count: Int
         }
-        let original = Payload(name: "jarvis", count: 42)
+        let original = Payload(name: "kosmo", count: 42)
         try AtomicWriter.writeJSON(original, to: url)
         let data = try Data(contentsOf: url)
         let decoded = try JSONDecoder().decode(Payload.self, from: data)

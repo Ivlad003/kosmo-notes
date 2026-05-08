@@ -58,6 +58,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // Ignore SIGPIPE so that writing to a closed child-process stdin
+        // (ExternalAgentRunner, BashTool) raises EPIPE in the throwing
+        // FileHandle API instead of killing our host process. Default macOS
+        // behaviour for SIGPIPE is to terminate.
+        signal(SIGPIPE, SIG_IGN)
+
         // One-shot rename migration: copy `JarvisNote` AppSupport dir +
         // Keychain entries to `KosmoNotes` ones so existing users keep their
         // recordings, sessions, and API keys after the bundle-ID rename.
@@ -693,7 +699,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settings: settings,
             database: database,
             sessionStore: sessionStore,
-            recorder: recorder
+            recorder: recorder,
+            agentSession: agentSessionHolder as? AgentSessionState,
+            onOpenAgentConsole: { [weak self] in
+                self?.openAgentConsole()
+            }
         )
         self.chatHolder = chatState
 

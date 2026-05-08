@@ -19,7 +19,7 @@
 
 **Статус:** єдине **літерально невиконане** acceptance criterion з оригінального плану.
 
-**Проблема.** `App/Views/Library/SessionExporter.swift:96-121` копіює `transcript.txt` як plain text у `## Transcript` секцію. `Sources/TranscriptionKit/TranscriptStore.swift:45-74` пише `transcript.txt` без timestamps. Спека (`.omc/plans/2026-05-02-jarvis-note-v1-implementation.md:68`) каже, що транскрипт у markdown має бути з `[mm:ss]` мітками.
+**Проблема.** `App/Views/Library/SessionExporter.swift:96-121` копіює `transcript.txt` як plain text у `## Transcript` секцію. `Sources/TranscriptionKit/TranscriptStore.swift:45-74` пише `transcript.txt` без timestamps. Спека (`.omc/plans/2026-05-02-kosmonotes-v1-implementation.md:68`) каже, що транскрипт у markdown має бути з `[mm:ss]` мітками.
 
 **Варіанти фіксу:**
 - **(а) Швидко:** змінити `TranscriptStore` щоб писати `transcript.txt` у форматі `[mm:ss] text\n`. Найменше коду, але псує `transcript.txt` як просто-читабельний sidecar (його зараз можна вантажити в інші інструменти як plain text).
@@ -59,7 +59,7 @@
 **Статус:** найважливіше runtime відхилення від оригінальної спеки. Не баг — продуктовий вибір, що ще не зроблений формально.
 
 **Проблема.**
-- Оригінальний план (`.omc/plans/2026-05-02-jarvis-note-v1-implementation.md:237-242`) очікує live Deepgram streaming у Meeting режимі.
+- Оригінальний план (`.omc/plans/2026-05-02-kosmonotes-v1-implementation.md:237-242`) очікує live Deepgram streaming у Meeting режимі.
 - `Sources/TranscriptionKit/DeepgramProvider.swift:5-71` і `ReconnectingSession.swift` — повна streaming-інфраструктура, протестована.
 - АЛЕ `RecorderState.stop()` (`App/State/RecorderState.swift:342-373`) використовує **batch** провайдера. Власний коментар коду (`343-345`) каже, що streaming не виставлений на поточному capture API.
 
@@ -75,7 +75,7 @@
 
 ### 3.1. Імплементаційний план застарілий
 
-**Проблема.** `.omc/plans/2026-05-02-jarvis-note-v1-implementation.md:14-23,40-45` каже, що Voice Note / per-process Core Audio Tap / S3 sharing / embeddings deferred у v1.1. Все це вже в коді (див. таблицю в аудиті §"Features implemented…"). Цей документ зараз — головне джерело плутанини: рев'юєр відкриє його і подумає, що половина продукту не існує.
+**Проблема.** `.omc/plans/2026-05-02-kosmonotes-v1-implementation.md:14-23,40-45` каже, що Voice Note / per-process Core Audio Tap / S3 sharing / embeddings deferred у v1.1. Все це вже в коді (див. таблицю в аудиті §"Features implemented…"). Цей документ зараз — головне джерело плутанини: рев'юєр відкриє його і подумає, що половина продукту не існує.
 
 **Варіанти:**
 - **(а) Дешево:** додати на початку файлу банер `> SUPERSEDED 2026-05-03 — see CLAUDE.md for current state. This document reflects the original v1.0 scope cut, not what shipped.` Жодних інших змін.
