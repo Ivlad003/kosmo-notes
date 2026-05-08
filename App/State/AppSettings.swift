@@ -131,7 +131,6 @@ final class AppSettings {
         static let audioSampleRate = "audioSampleRate"
         static let videoUseHEVC = "videoUseHEVC"
         static let videoBitrate = "videoBitrate"
-        static let screenCaptureDisplayID = "screenCaptureDisplayID"
     }
 
     // MARK: Observable state — secrets read on demand from Keychain
@@ -499,13 +498,6 @@ final class AppSettings {
     var videoBitrate: Int {
         didSet { UserDefaults.standard.set(videoBitrate, forKey: Defaults.videoBitrate) }
     }
-    /// CGDirectDisplayID of the display to record in Audio + Screen mode.
-    /// 0 = auto (primary display, picked at start time). Stored as UInt32 because
-    /// CGDirectDisplayID is a UInt32 alias; UserDefaults stores it as Int.
-    var screenCaptureDisplayID: UInt32 {
-        didSet { UserDefaults.standard.set(Int(screenCaptureDisplayID), forKey: Defaults.screenCaptureDisplayID) }
-    }
-
     /// Rewrite codec fields to match the active StorageProfile.
     private func applyStorageProfile() {
         switch storageProfile {
@@ -695,9 +687,6 @@ final class AppSettings {
         self.videoUseHEVC = (UserDefaults.standard.object(forKey: Defaults.videoUseHEVC) as? Bool) ?? true
         let vbr = UserDefaults.standard.integer(forKey: Defaults.videoBitrate)
         self.videoBitrate = vbr > 0 ? vbr : 2_000_000
-
-        let storedDisplayID = UserDefaults.standard.integer(forKey: Defaults.screenCaptureDisplayID)
-        self.screenCaptureDisplayID = storedDisplayID > 0 ? UInt32(truncatingIfNeeded: storedDisplayID) : 0
 
         loadKeysFromKeychain()
     }
