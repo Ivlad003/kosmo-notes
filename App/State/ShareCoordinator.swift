@@ -52,10 +52,29 @@ final class ShareCoordinator {
             presignTTLSeconds: max(1, settings.s3PresignTTLHours) * 3600
         )
 
-        let dir = await sessionStore.sessionDir(for: sessionId)
         do {
-            let result = try await service.shareSession(sessionDir: dir, sessionId: sessionId)
+            let available = await sessionStore.availableShareArtifacts(for: sessionId)
+            guard !available.isEmpty else {
+                alert("No shareable artifacts were found for this session.")
+                return
+            }
+
+            guard let selected = selectArtifacts(from: available) else {
+                return
+            }
+
+            let artifacts = try SessionSharePlanning.validatedSelection(selected)
+            let dir = await sessionStore.sessionDir(for: sessionId)
+            let result = try await service.shareSession(
+                sessionDir: dir,
+                sessionId: sessionId,
+                artifacts: artifacts
+            )
+            let snapshot = SessionSharePlanning.snapshot(from: result, sharedAt: Date())
+            try await sessionStore.saveSharedLinksSnapshot(snapshot, for: sessionId)
             presentResult(result)
+        } catch SessionSharePlanning.SelectionError.emptySelection {
+            alert("Select at least one file to share.")
         } catch {
             alert("Upload failed: \(error.localizedDescription)")
         }
@@ -70,6 +89,7 @@ final class ShareCoordinator {
 
         var lines: [String] = []
         if let u = result.audioURL { lines.append("Audio: \(u.absoluteString)") }
+        if let u = result.videoURL { lines.append("Video: \(u.absoluteString)") }
         if let u = result.summaryURL { lines.append("Summary: \(u.absoluteString)") }
         if let u = result.transcriptURL { lines.append("Transcript: \(u.absoluteString)") }
 
@@ -77,7 +97,7 @@ final class ShareCoordinator {
             ? "No artifacts uploaded — the session folder was empty."
             : lines.joined(separator: "\n\n")
 
-        if let primary = result.audioURL ?? result.summaryURL ?? result.transcriptURL {
+        if let primary = result.videoURL ?? result.audioURL ?? result.summaryURL ?? result.transcriptURL {
             alert.addButton(withTitle: "Copy primary link")
             alert.addButton(withTitle: "Copy all")
             alert.addButton(withTitle: "Done")
@@ -100,6 +120,35 @@ final class ShareCoordinator {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+    }
+
+    private func selectArtifacts(from available: [SharedArtifactKind]) -> [SharedArtifactKind]? {
+        let alert = NSAlert()
+        alert.messageText = "Choose files to share"
+        alert.informativeText = "Only the selected files will be uploaded to S3."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Share")
+        alert.addButton(withTitle: "Cancel")
+
+        let buttons = available.map { kind in
+            let button = NSButton(checkboxWithTitle: kind.displayName, target: nil, action: nil)
+            button.state = .on
+            return button
+        }
+
+        let stack = NSStackView(views: buttons)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        alert.accessoryView = stack
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return nil
+        }
+
+        return zip(available, buttons).compactMap { kind, button in
+            button.state == .on ? kind : nil
+        }
     }
 
     private func alert(_ message: String) {

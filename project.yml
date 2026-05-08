@@ -122,6 +122,32 @@ targets:
           STAMP=$(date +%Y%m%d.%H%M)
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${STAMP}" "${PROJECT_DIR}/App/Info.plist"
           echo "Stamped App/Info.plist CFBundleVersion = ${STAMP}"
+    scheme:
+      testTargets:
+        - KosmoNotesTests
+        - KosmoNotesUITests
+      gatherCoverageData: false
+
+  KosmoNotesTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - AppTests
+    dependencies:
+      - target: KosmoNotes
+    settings:
+      base:
+        SWIFT_VERSION: "5.10"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        DEVELOPMENT_TEAM: "7CP69K73N6"
+        CODE_SIGN_STYLE: "Automatic"
+        GENERATE_INFOPLIST_FILE: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kosmonotes.studio.tests
+    scheme:
+      testTargets:
+        - KosmoNotesTests
+      gatherCoverageData: false
 
   KosmoNotesUITests:
     type: bundle.ui-testing
