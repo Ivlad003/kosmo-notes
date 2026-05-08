@@ -41,9 +41,9 @@ Cargo.lock
 node_modules/
 *.log
 
-# Agent harness transient state — never commit
-.claude/
-.worktrees/
+# Agent harness transient state — never commit (but project-shared settings ARE checked in)
+.claude/*
+!.claude/settings.json
 .omc/state/
 .omc/project-memory.json
 .omc/sessions/
@@ -51,3 +51,6 @@ node_modules/
 
 # Production release artifacts (built locally; not versioned)
 dist/
+
+# Local git worktrees
+.worktrees/
