@@ -90,7 +90,31 @@ public actor SessionStore {
         rootDir
     }
 
+    public func availableShareArtifacts(for id: String) -> [SharedArtifactKind] {
+        let dir = sessionDir(for: id)
+        return SharedArtifactKind.allCases.filter { kind in
+            FileManager.default.fileExists(atPath: dir.appendingPathComponent(kind.fileName).path)
+        }
+    }
+
+    public func saveSharedLinksSnapshot(_ snapshot: SharedLinksSnapshot, for id: String) throws {
+        try AtomicWriter.writeJSON(snapshot, to: sharedLinksURL(for: id))
+    }
+
+    public func loadSharedLinksSnapshot(for id: String) throws -> SharedLinksSnapshot? {
+        let url = sharedLinksURL(for: id)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode(SharedLinksSnapshot.self, from: data)
+    }
+
     // MARK: - Private helpers
+
+    private func sharedLinksURL(for id: String) -> URL {
+        sessionDir(for: id).appendingPathComponent("shared-links.json")
+    }
 
     private func writeSessionJSON(_ record: SessionRecord, to dir: URL) throws {
         let url = dir.appendingPathComponent("session.json")
