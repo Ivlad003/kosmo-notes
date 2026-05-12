@@ -1,5 +1,4 @@
 import Foundation
-import StorageKit
 
 // MARK: - SharingService
 
@@ -11,10 +10,10 @@ import StorageKit
 public struct SharingService: Sendable {
 
     public let s3: S3Client
-    public let keyPrefix: String   // e.g. "kosmonotes/" — namespaces bucket use across users
+    public let keyPrefix: String   // e.g. "jarvis-note/" — namespaces bucket use across users
     public let presignTTLSeconds: Int
 
-    public init(s3: S3Client, keyPrefix: String = "kosmonotes/", presignTTLSeconds: Int = 7 * 24 * 3600) {
+    public init(s3: S3Client, keyPrefix: String = "jarvis-note/", presignTTLSeconds: Int = 7 * 24 * 3600) {
         self.s3 = s3
         // Normalize: ensure prefix ends with `/` so concatenation produces clean keys.
         var normalized = keyPrefix
@@ -32,36 +31,17 @@ public struct SharingService: Sendable {
         public let summaryURL: URL?
         public let transcriptURL: URL?
 
-        public init(audioURL: URL?, videoURL: URL?, summaryURL: URL?, transcriptURL: URL?) {
-            self.audioURL = audioURL
-            self.videoURL = videoURL
-            self.summaryURL = summaryURL
-            self.transcriptURL = transcriptURL
-        }
-
         public var allLinks: [URL] {
             [audioURL, videoURL, summaryURL, transcriptURL].compactMap { $0 }
         }
     }
 
-    /// Upload audio + (optional) summary + (optional) transcript for a session,
-    /// then build presigned GET URLs for each.
-    /// - Parameter sessionDir: filesystem dir containing audio.m4a, summary.md, transcript.txt
+    /// Upload audio + (optional) video + (optional) summary + (optional) transcript
+    /// for a session, then build presigned GET URLs for each.
+    /// - Parameter sessionDir: filesystem dir containing audio.m4a, screen.mp4, summary.md, transcript.txt
     /// - Parameter sessionId: stable identifier; used as the S3 key suffix
     public func shareSession(sessionDir: URL, sessionId: String) async throws -> ShareResult {
-        let available = SharedArtifactKind.allCases.filter { kind in
-            FileManager.default.fileExists(atPath: sessionDir.appendingPathComponent(kind.fileName).path)
-        }
-        return try await shareSession(sessionDir: sessionDir, sessionId: sessionId, artifacts: available)
-    }
-
-    public func shareSession(
-        sessionDir: URL,
-        sessionId: String,
-        artifacts: [SharedArtifactKind]
-    ) async throws -> ShareResult {
         let now = Date()
-        let selected = Set(artifacts)
 
         let audioFile = sessionDir.appendingPathComponent("audio.m4a")
         let videoFile = sessionDir.appendingPathComponent("screen.mp4")
@@ -73,28 +53,28 @@ public struct SharingService: Sendable {
         var summaryURL: URL?
         var transcriptURL: URL?
 
-        if selected.contains(.audio), FileManager.default.fileExists(atPath: audioFile.path) {
+        if FileManager.default.fileExists(atPath: audioFile.path) {
             let key = "\(keyPrefix)\(sessionId)/audio.m4a"
             let data = try Data(contentsOf: audioFile)
             try await s3.putObject(key: key, data: data, contentType: "audio/mp4", now: now)
             audioURL = try s3.presignedGetURL(key: key, expirySeconds: presignTTLSeconds, now: now)
         }
 
-        if selected.contains(.video), FileManager.default.fileExists(atPath: videoFile.path) {
+        if FileManager.default.fileExists(atPath: videoFile.path) {
             let key = "\(keyPrefix)\(sessionId)/screen.mp4"
             let data = try Data(contentsOf: videoFile)
             try await s3.putObject(key: key, data: data, contentType: "video/mp4", now: now)
             videoURL = try s3.presignedGetURL(key: key, expirySeconds: presignTTLSeconds, now: now)
         }
 
-        if selected.contains(.summary), FileManager.default.fileExists(atPath: summaryFile.path) {
+        if FileManager.default.fileExists(atPath: summaryFile.path) {
             let key = "\(keyPrefix)\(sessionId)/summary.md"
             let data = try Data(contentsOf: summaryFile)
             try await s3.putObject(key: key, data: data, contentType: "text/markdown; charset=utf-8", now: now)
             summaryURL = try s3.presignedGetURL(key: key, expirySeconds: presignTTLSeconds, now: now)
         }
 
-        if selected.contains(.transcript), FileManager.default.fileExists(atPath: transcriptFile.path) {
+        if FileManager.default.fileExists(atPath: transcriptFile.path) {
             let key = "\(keyPrefix)\(sessionId)/transcript.txt"
             let data = try Data(contentsOf: transcriptFile)
             try await s3.putObject(key: key, data: data, contentType: "text/plain; charset=utf-8", now: now)
