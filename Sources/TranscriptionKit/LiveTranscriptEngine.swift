@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import os
 
@@ -193,23 +194,52 @@ public actor LiveTranscriptEngine {
     
     /// Force a final transcription flush, ignoring cadence.
     ///
-    /// Used at session end to capture the last few seconds of audio.
+    /// Two paths:
+    /// - **Recorder (with ticks)**: `ingest()` has been driving `latestSampleTime`,
+    ///   so this transcribes the trailing `windowDuration` seconds and merges
+    ///   into already-populated state.
+    /// - **Hold-to-talk (no ticks)**: `latestSampleTime == 0` because nothing
+    ///   ingested. Read the closed file's actual duration and transcribe the
+    ///   whole clip (single window 0…duration) so dictation/push-to-markdown/
+    ///   agent-hotkey produce a complete transcript instead of silently
+    ///   returning empty.
     public func finish(now: TimeInterval, config: TranscriptionConfig) async throws {
         guard let audioFile else {
             throw EngineError.noAudioFileAttached
         }
-        
-        // Compute final window bounds
-        let windowEnd = min(now, latestSampleTime)
-        let windowStart = max(0, windowEnd - windowDuration)
-        
+
+        let windowStart: TimeInterval
+        let windowEnd: TimeInterval
+        if latestSampleTime > 0 {
+            windowEnd = min(now, latestSampleTime)
+            windowStart = max(0, windowEnd - windowDuration)
+        } else {
+            // Hold-to-talk: nobody called ingest(). Use the file's real duration.
+            engineLog.info("LiveTranscriptEngine.finish: hold-to-talk path — reading file duration")
+            let asset = AVURLAsset(url: audioFile)
+            let duration: TimeInterval
+            do {
+                let cmTime = try await asset.load(.duration)
+                duration = CMTimeGetSeconds(cmTime)
+                engineLog.info("LiveTranscriptEngine.finish: hold-to-talk file duration = \(duration, privacy: .public)s")
+            } catch {
+                engineLog.error("LiveTranscriptEngine.finish: could not read audio duration — \(error.localizedDescription, privacy: .public)")
+                throw EngineError.exportFailed(underlying: "could not read audio duration: \(error.localizedDescription)")
+            }
+            guard duration > 0, duration.isFinite else {
+                engineLog.info("LiveTranscriptEngine.finish: hold-to-talk file has zero duration — skipping")
+                return
+            }
+            windowStart = 0
+            windowEnd = duration
+        }
+
         guard windowEnd > windowStart else {
-            // No audio to transcribe
             return
         }
-        
+
         engineLog.info("LiveTranscriptEngine.finish: windowStart=\(windowStart, privacy: .public)s windowEnd=\(windowEnd, privacy: .public)s")
-        
+
         // Export window
         let windowFile: URL
         do {
@@ -224,7 +254,7 @@ public actor LiveTranscriptEngine {
         } catch {
             throw EngineError.exportFailed(underlying: error.localizedDescription)
         }
-        
+
         // Transcribe
         let result: LiveTranscriptWindowResult
         do {
@@ -240,10 +270,10 @@ public actor LiveTranscriptEngine {
             state.status = .failed(lastError: error.localizedDescription)
             throw EngineError.transcriptionFailed(underlying: error.localizedDescription)
         }
-        
+
         // Merge result
         state = state.merging(result, mutableHorizon: mutableHorizon)
-        
+
         // Final flush always returns to healthy (or keeps failed if merge failed)
         if state.status == .delayed {
             state.status = .healthy

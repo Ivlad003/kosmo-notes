@@ -169,6 +169,23 @@ final class DictationState {
             await p.stopCapture()    // closes CAF; stores PCM/sampleRate/duration for persistence
             uiStatus = .processing
             await adapter.stopAndFlush()  // → handleLiveFinalTranscript (sets uiStatus, pastes, persists)
+            // If the adapter didn't call sink (didFlush == false), the
+            // transcript is empty or an error occurred — surface it rather
+            // than leaving uiStatus stuck at .processing.
+            if !adapter.didFlush {
+                let reason: String
+                if let err = adapter.lastFlushError {
+                    reason = err.localizedDescription
+                } else if case .failed(let msg) = adapter.health {
+                    reason = msg
+                } else {
+                    reason = "No audio captured or transcription produced empty result"
+                }
+                dictationLog.error("Dictation.handleRelease: live adapter produced no text — \(reason, privacy: .public)")
+                uiStatus = .failed(reason)
+                // Still try to persist the audio-only session.
+                await persistIfPossible(pipeline: p, status: .failed)
+            }
             return
         }
 

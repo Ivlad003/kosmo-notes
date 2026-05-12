@@ -87,9 +87,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Checks and requests system permissions on every launch.
     /// - Mic / Accessibility: request only when not yet determined (system shows dialog).
-    /// - Screen recording: show alert only when CGPreflightScreenCaptureAccess() returns
-    ///   false (permission genuinely not granted). The SCShareableContent async probe was
-    ///   removed — it throws -3801 on macOS 15+/26 even when TCC IS granted (false positive).
+    /// - Screen recording: NO preflight here. `CGPreflightScreenCaptureAccess()` and
+    ///   `SCShareableContent` both return false-negatives on macOS 15+/26 with
+    ///   Apple Development signing even when TCC is granted, producing a popup loop
+    ///   on every launch. The actual recording path in `CaptureSession.start` is
+    ///   non-fatal: if SCStream throws, audio capture continues and the warning
+    ///   surfaces inline via `RecorderState.screenRecordingWarning`.
     private func checkPermissionsOnStartup() {
         // Microphone — request if not yet determined; silent otherwise.
         if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
@@ -100,25 +103,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !AXIsProcessTrusted() {
             let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
             _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
-        }
-
-        // Screen recording — CGPreflightScreenCaptureAccess() correctly returns false
-        // when TCC is denied and true when granted. Show our alert only on genuine denial.
-        if !CGPreflightScreenCaptureAccess() {
-            showScreenRecordingAlert()
-        }
-    }
-
-    @MainActor
-    private func showScreenRecordingAlert() {
-        let alert = NSAlert()
-        alert.messageText = "Screen Recording Permission Required"
-        alert.informativeText = "KosmoNotes needs Screen & System Audio Recording access to capture your screen and system audio.\n\nGrant access in System Settings → Privacy & Security → Screen & System Audio Recording, then relaunch the app."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Open System Settings")
-        alert.addButton(withTitle: "Later")
-        if alert.runModal() == .alertFirstButtonReturn {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
         }
     }
 
@@ -537,45 +521,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             await recorder.toggle()
             statusItem?.menu?.update()
-            // Check for non-fatal screen recording failure and surface it once.
-            if let warning = recorder.screenRecordingWarning {
-                let alert = NSAlert()
-                alert.messageText = "Screen Recording Unavailable"
-                alert.informativeText = warning
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "Open System Settings")
-                alert.addButton(withTitle: "Fix Permission")
-                alert.addButton(withTitle: "Continue Audio-Only")
-                let response = alert.runModal()
-                if response == .alertFirstButtonReturn {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-                } else if response == .alertSecondButtonReturn {
-                    // Reset TCC for the signed bundle ID and open System Settings so user can re-grant.
-                    let task = Process()
-                    task.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-                    task.arguments = ["reset", "ScreenCapture", "dev.kosmonotes.studio"]
-                    try? task.run()
-                    task.waitUntilExit()
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-                }
-                recorder.screenRecordingWarning = nil
-            }
-            switch recorder.status {
-            case .complete(_, let audioFile, let preview):
+            // No modals here. `recorder.screenRecordingWarning` and
+            // `recorder.status` are @Observable — RecorderView surfaces both
+            // inline. On `.complete`, just reveal the audio file in Finder so
+            // the user can grab it without a confirmation popup.
+            if case .complete(_, let audioFile, _) = recorder.status {
                 NSWorkspace.shared.activateFileViewerSelecting([audioFile])
-                let alert = NSAlert()
-                alert.messageText = "Recording complete"
-                alert.informativeText = preview.isEmpty ? "Transcript saved to the session folder." : preview
-                alert.alertStyle = .informational
-                alert.runModal()
-            case .failed(let message):
-                let alert = NSAlert()
-                alert.messageText = "Recording failed"
-                alert.informativeText = message
-                alert.alertStyle = .warning
-                alert.runModal()
-            default:
-                break  // .recording / .transcribing / .idle — no popup
             }
         }
     }

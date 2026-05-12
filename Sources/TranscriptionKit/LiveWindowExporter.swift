@@ -160,10 +160,12 @@ public actor LiveWindowExporter {
                 case .completed:
                     cont.resume()
                 default:
-                    cont.resume(throwing: ExportError.exportFailed(
+                    let error = ExportError.exportFailed(
                         status: exporter.status.rawValue,
                         underlying: exporter.error?.localizedDescription
-                    ))
+                    )
+                    exporterLog.error("LiveWindowExporter.runExport failed — \(error.localizedDescription, privacy: .public)")
+                    cont.resume(throwing: error)
                 }
             }
         }

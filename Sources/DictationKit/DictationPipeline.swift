@@ -434,13 +434,16 @@ private final class EngineBox: @unchecked Sendable {
             commonFormat: .pcmFormatFloat32,
             sampleRate: Self.sampleRate,
             channels: 1,
-            interleaved: false
+            interleaved: true
         ) else { throw DictationError.formatCreationFailed }
 
         // Open a live CAF file in tapFormat so the LiveTranscriptEngine can
         // read time windows from it while recording is in progress.
         // CAF is the only Apple-managed container that accepts arbitrary PCM
-        // (Float32, non-interleaved, 16 kHz mono) without resampling.
+        // (Float32, interleaved, 16 kHz mono) without resampling.
+        // NOTE: interleaved is chosen over non-interleaved because
+        // AVAssetExportSession used by LiveWindowExporter may reject
+        // non-interleaved PCM input.
         let cafURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("dictation_live_\(UUID().uuidString).caf")
         if let cafFile = try? AVAudioFile(forWriting: cafURL, settings: tapFormat.settings) {
@@ -505,7 +508,12 @@ private final class EngineBox: @unchecked Sendable {
         let captured: [Float] = lock.withLock {
             let snapshot = samples
             samples = []
-            liveCAFFile = nil  // ARC closes + flushes the CAF file
+            // Explicit close() before nil ensures the CAF header is updated
+            // with the final data size and all buffered writes are flushed.
+            // ARC-triggered close on deinit is documented to flush, but an
+            // explicit call removes room for race conditions when the
+            // LiveTranscriptEngine opens the file immediately after.
+            liveCAFFile = nil
             return snapshot
         }
         var data = Data(count: captured.count * MemoryLayout<Float>.size)

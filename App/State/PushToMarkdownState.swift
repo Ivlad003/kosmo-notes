@@ -162,7 +162,20 @@ final class PushToMarkdownState {
             uiStatus = .processing
             await p.stopCapture()
             await adapter.stopAndFlush()
-            uiStatus = .completed(lastSavedURL)
+            if !adapter.didFlush {
+                let reason: String
+                if let err = adapter.lastFlushError {
+                    reason = err.localizedDescription
+                } else if case .failed(let msg) = adapter.health {
+                    reason = msg
+                } else {
+                    reason = "No audio captured or transcription produced empty result"
+                }
+                pushToMDLog.error("PushToMarkdown: live adapter produced no text — \(reason, privacy: .public)")
+                uiStatus = .failed(reason)
+            } else {
+                uiStatus = .completed(lastSavedURL)
+            }
             return
         }
 

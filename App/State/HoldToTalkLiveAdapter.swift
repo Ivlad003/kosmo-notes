@@ -1,6 +1,9 @@
 import Foundation
 import Observation
+import os
 import TranscriptionKit
+
+private let adapterLog = Logger(subsystem: "dev.kosmonotes.studio", category: "HoldToTalkAdapter")
 
 /// App-side bridge around `LiveTranscriptEngine` for hold-to-talk flows.
 /// The current dictation-style paths still capture via `DictationPipeline`,
@@ -22,6 +25,15 @@ final class HoldToTalkLiveAdapter {
     var stableText: String = ""
     var mutableText: String = ""
     var health: LiveTranscriptHealth = .healthy
+
+    /// Set to `true` when `stopAndFlush()` called `sink` with a non-empty
+    /// transcript. Callers MUST check this after `stopAndFlush()` returns
+    /// to distinguish "produced text" from "silent failure".
+    var didFlush: Bool = false
+
+    /// Last error from `finish()`, preserved after `stopAndFlush()` so
+    /// callers can surface it in UI alerts. `nil` if the flush succeeded.
+    var lastFlushError: Error?
 
     private let engine: Engine
     private let configSource: ConfigSource
@@ -66,19 +78,35 @@ final class HoldToTalkLiveAdapter {
     }
 
     func stopAndFlush() async {
+        didFlush = false
+        lastFlushError = nil
+
         var flushError: Error?
         do {
             try await engine.finish(nowSource(), configSource())
         } catch {
             flushError = error
+            adapterLog.error("HoldToTalkAdapter.stopAndFlush: engine.finish threw — \(error.localizedDescription, privacy: .public)")
+            lastFlushError = error
         }
 
         let snapshot = await engine.snapshot()
         apply(snapshot: snapshot, overridingError: flushError)
 
         let finalText = Self.finalText(for: snapshot)
-        guard !finalText.isEmpty else { return }
+        guard !finalText.isEmpty else {
+            if let err = flushError {
+                adapterLog.error("HoldToTalkAdapter.stopAndFlush: no transcript produced — error: \(err.localizedDescription, privacy: .public)")
+            } else if case .failed(let reason) = snapshot.status {
+                adapterLog.error("HoldToTalkAdapter.stopAndFlush: no transcript produced — engine state: failed(\(reason, privacy: .public))")
+            } else {
+                adapterLog.warning("HoldToTalkAdapter.stopAndFlush: no transcript produced — audio may be empty or too short")
+            }
+            return
+        }
+        adapterLog.info("HoldToTalkAdapter.stopAndFlush: flushing \(finalText.count) chars to sink")
         await sink(finalText)
+        didFlush = true
     }
 
     private func apply(snapshot: LiveTranscriptState, overridingError: Error? = nil) {

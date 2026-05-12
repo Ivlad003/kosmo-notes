@@ -174,6 +174,18 @@ final class AgentHotkeyState {
             uiStatus = .processing
             await p.stopCapture()
             await adapter.stopAndFlush()
+            if !adapter.didFlush {
+                let reason: String
+                if let err = adapter.lastFlushError {
+                    reason = err.localizedDescription
+                } else if case .failed(let msg) = adapter.health {
+                    reason = msg
+                } else {
+                    reason = "No audio captured or transcription produced empty result"
+                }
+                agentHotkeyLog.error("AgentHotkey: live adapter produced no text — \(reason, privacy: .public)")
+                uiStatus = .failed(reason)
+            }
             return
         }
 
